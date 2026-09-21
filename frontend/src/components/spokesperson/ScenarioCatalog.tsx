@@ -1,9 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { INITIAL_SCENARIOS } from '../../mock/mockData';
+import { topicService } from '../../services/topicService';
+import { Scenario } from '../../types/api';
 
 interface ScenarioCatalogProps {
   onNavigate: (screen: VoceroScreen) => void;
@@ -15,8 +17,43 @@ export const ScenarioCatalog: React.FC<ScenarioCatalogProps> = ({ onNavigate }) 
 
   const [activeFilter, setActiveFilter] = useState('Todos');
   const [searchQuery, setSearchQuery] = useState('');
+  const [scenarios, setScenarios] = useState<Scenario[]>(INITIAL_SCENARIOS);
 
-  const filteredScenarios = INITIAL_SCENARIOS.filter((s) => {
+  useEffect(() => {
+    async function loadAdminTopics() {
+      const topics = await topicService.getTopics();
+      const adminScenarios: Scenario[] = topics.map(t => {
+        let category: 'Sanitaria' | 'Reputacional' | 'Operativa' = 'Operativa';
+        if (t.optics === 'Empática') category = 'Sanitaria';
+        if (t.optics === 'Formal') category = 'Reputacional';
+        if (t.optics === 'Técnica') category = 'Operativa';
+
+        return {
+          id: t.id,
+          name: t.name,
+          category,
+          context: t.context,
+          audience: t.audience,
+          difficulty: 'Intermedio',
+          estimatedMinutes: 5,
+          questionsCount: 5,
+          languages: t.languages,
+          imageUrl: ''
+        };
+      });
+
+      // Avoid exact duplicates by ID just in case
+      const newScenarios = adminScenarios.filter(
+        as => !INITIAL_SCENARIOS.some(is => is.id === as.id)
+      );
+
+      setScenarios([...INITIAL_SCENARIOS, ...newScenarios]);
+    }
+
+    loadAdminTopics();
+  }, []);
+
+  const filteredScenarios = scenarios.filter((s) => {
     const matchesCategory =
       activeFilter === 'Todos' ||
       s.category.toLowerCase() === activeFilter.toLowerCase();

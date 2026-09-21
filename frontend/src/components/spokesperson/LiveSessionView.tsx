@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 
@@ -15,6 +15,43 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({ onNavigate }) 
   const [isPaused, setIsPaused] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(3);
   const totalQuestions = 8;
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    let stream: MediaStream | null = null;
+    
+    async function setupCamera() {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        if (!isMounted) {
+          s.getTracks().forEach(track => track.stop());
+          return;
+        }
+        stream = s;
+        if (videoRef.current) {
+          videoRef.current.srcObject = s;
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          setStreamError('Error al acceder a la cámara o micrófono: ' + err.message);
+        }
+      }
+    }
+    setupCamera();
+
+    return () => {
+      isMounted = false;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
+  }, []);
 
   const questions = [
     '¿Cuál es la gravedad real de la falla detectada en el lote de producción?',
@@ -54,18 +91,32 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({ onNavigate }) 
         </div>
 
         {/* Right: User Self-View */}
-        <div className="self" style={{ minHeight: '260px' }}>
-          <div className="reclamp">
+        <div className="self" style={{ minHeight: '260px', position: 'relative', overflow: 'hidden' }}>
+          <video 
+            ref={videoRef} 
+            autoPlay 
+            muted 
+            playsInline 
+            style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', top: 0, left: 0 }} 
+          />
+          {streamError && (
+            <div style={{ position: 'absolute', top: '10px', left: '10px', background: 'rgba(255,0,0,0.7)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', zIndex: 10 }}>
+              {streamError}
+            </div>
+          )}
+          <div className="reclamp" style={{ position: 'absolute', top: '10px', left: '10px', zIndex: 10 }}>
             <i className="recdot" />
             <span>REC 02:14</span>
           </div>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '44px', marginBottom: '10px' }}>🎙️</div>
-            <div style={{ fontSize: '13px', color: '#cdd4da' }}>{d.selfV}</div>
-            <div style={{ fontSize: '11px', color: '#88939e', marginTop: '4px' }}>
-              Encuadre: Óptimo · Audio: Capturando
+          {!streamError && (
+            <div style={{ position: 'absolute', bottom: '10px', width: '100%', textAlign: 'center', zIndex: 10 }}>
+              <div style={{ display: 'inline-block', background: 'rgba(0,0,0,0.5)', padding: '4px 10px', borderRadius: '20px' }}>
+                <div style={{ fontSize: '11px', color: '#fff' }}>
+                  Encuadre: Óptimo · Audio: Capturando
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
