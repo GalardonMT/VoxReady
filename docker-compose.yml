@@ -36,7 +36,7 @@ services:
 
   client:
     build:
-      context: ./voxready-client
+      context: ./frontend
       dockerfile: Dockerfile
     depends_on:
       - api
