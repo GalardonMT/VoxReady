@@ -24,7 +24,7 @@ VoxReady/
 │   ├── app/                     # Código fuente de la API (routers, modelos, esquemas, servicios)
 │   └── tests/                   # Suite de pruebas unitarias y de integración (pytest)
 │
-└── voxready-client/             # Aplicación Web (Next.js 16 App Router + React 19 + TypeScript)
+└── frontend/             # Aplicación Web (Next.js 16 App Router + React 19 + TypeScript)
     ├── .gitignore
     ├── Dockerfile
     ├── README.md                # Documentación detallada del cliente
@@ -103,7 +103,7 @@ uvicorn app.main:app --reload --port 8000
 En otra terminal:
 
 ```bash
-cd voxready-client
+cd frontend
 
 # Instalar dependencias
 npm install
@@ -138,7 +138,7 @@ pytest -v
 
 ### Frontend
 ```bash
-cd voxready-client
+cd frontend
 npm run build
 npm run lint
 ```
