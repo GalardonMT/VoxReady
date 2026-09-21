@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 
 export default function RootPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
 
   useEffect(() => {
     if (user) {
@@ -20,6 +20,24 @@ export default function RootPage() {
       }
     }
   }, [user, router]);
+
+  // While MSAL is processing the redirect response, show a loading state
+  if (loading) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: '100vh',
+          color: 'var(--muted)',
+          fontSize: '14px',
+        }}
+      >
+        <p>Autenticando…</p>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -39,7 +57,7 @@ export default function RootPage() {
         justifyContent: 'center',
         minHeight: '100vh',
         color: 'var(--muted)',
-        fontSize: '14px'
+        fontSize: '14px',
       }}
     >
       <p>Redirigiendo a tu espacio de trabajo...</p>

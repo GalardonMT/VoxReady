@@ -84,14 +84,17 @@ def _decode_token(token: str, settings: Settings) -> dict | None:
 def _claims_to_principal(claims: dict) -> Principal:
     role = claims.get("role") or claims.get("extension_role")
     client_id = claims.get("clientId") or claims.get("client_id")
+    # Entra External ID uses "oid" (Object ID, always UUID) as the stable
+    # user identifier. "sub" may be a pairwise hash in some Entra flows.
+    user_id_raw = claims.get("oid") or claims.get("sub")
     return Principal(
-        user_id=uuid.UUID(str(claims["sub"])),
-        role=str(role),
+        user_id=uuid.UUID(str(user_id_raw)),
+        role=str(role) if role else "",
         client_id=uuid.UUID(str(client_id)) if client_id else None,
         preferred_language=claims.get("preferredLanguage")
         or claims.get("preferred_language")
         or "es",
-        email=claims.get("email"),
+        email=claims.get("email") or claims.get("preferred_username"),
         display_name=claims.get("name") or claims.get("displayName"),
     )
 

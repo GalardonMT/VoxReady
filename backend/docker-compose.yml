@@ -21,16 +21,21 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://voxready:voxready@db:5432/voxready
-      DEV_AUTH: "true"
-      DEV_AUTH_SECRET: cambia-este-secreto-dev
-      UPLOAD_SIGNING_SECRET: cambia-este-secreto-uploads
-      WEBHOOK_SECRET: cambia-este-secreto-webhooks
-      STORAGE_DIR: /data/storage
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://voxready:voxready@db:5432/voxready}
+      DEV_AUTH: ${DEV_AUTH:-false}
+      DEV_AUTH_SECRET: ${DEV_AUTH_SECRET:-cambia-este-secreto-dev}
+      JWKS_URL: ${JWKS_URL:-https://voxreadydev.ciamlogin.com/7f50eae1-4ea8-45eb-9ff7-02f82b2781a5/discovery/v2.0/keys}
+      JWT_ISSUER: ${JWT_ISSUER:-https://7f50eae1-4ea8-45eb-9ff7-02f82b2781a5.ciamlogin.com/7f50eae1-4ea8-45eb-9ff7-02f82b2781a5/v2.0}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-5dd1bf8d-c0de-4f67-8131-df42e93dcf29}
+      UPLOAD_SIGNING_SECRET: ${UPLOAD_SIGNING_SECRET:-cambia-este-secreto-uploads}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-cambia-este-secreto-webhooks}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "8000:8000"
     volumes:
       - storage:/data/storage
+      - ./app:/code/app
 
 volumes:
   pgdata:

@@ -23,25 +23,40 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://voxready:voxready@db:5432/voxready
-      DEV_AUTH: "true"
-      DEV_AUTH_SECRET: cambia-este-secreto-dev
-      UPLOAD_SIGNING_SECRET: cambia-este-secreto-uploads
-      WEBHOOK_SECRET: cambia-este-secreto-webhooks
-      STORAGE_DIR: /data/storage
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+asyncpg://voxready:voxready@db:5432/voxready}
+      DEV_AUTH: ${DEV_AUTH:-true}
+      DEV_AUTH_SECRET: ${DEV_AUTH_SECRET:-cambia-este-secreto-dev}
+      JWKS_URL: ${JWKS_URL:-}
+      JWT_ISSUER: ${JWT_ISSUER:-}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-}
+      UPLOAD_SIGNING_SECRET: ${UPLOAD_SIGNING_SECRET:-cambia-este-secreto-uploads}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-cambia-este-secreto-webhooks}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
     ports:
       - "8000:8000"
     volumes:
       - storage:/data/storage
+      - ./backend/app:/code/app
 
   client:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/v1}
+        NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:-}
+        NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:-}
+        NEXT_PUBLIC_AZURE_REDIRECT_URI: ${NEXT_PUBLIC_AZURE_REDIRECT_URI:-http://localhost:3000}
+        NEXT_PUBLIC_AZURE_API_SCOPE: ${NEXT_PUBLIC_AZURE_API_SCOPE:-}
     depends_on:
       - api
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/v1
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/v1}
+      NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:-}
+      NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:-}
+      NEXT_PUBLIC_AZURE_REDIRECT_URI: ${NEXT_PUBLIC_AZURE_REDIRECT_URI:-http://localhost:3000}
+      NEXT_PUBLIC_AZURE_API_SCOPE: ${NEXT_PUBLIC_AZURE_API_SCOPE:-}
     ports:
       - "3000:3000"
 

@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     jwt_issuer: str | None = None
     jwt_audience: str | None = None
 
+    # CORS
+    cors_origins: str = "http://localhost:3000"
+
     # Storage of recordings
     storage_dir: str = "./storage"
     upload_signing_secret: str = "upload-secret-change-me"

@@ -13,7 +13,10 @@ export const es = {
     signIn: "Iniciar sesión",
     err: "Correo no reconocido. Usa uno de los usuarios de prueba.",
     testL: "Usuarios de prueba para demostración",
-    logout: "Cerrar sesión"
+    logout: "Cerrar sesión",
+    azureBtn: "Iniciar sesión con Microsoft",
+    loading: "Autenticando…",
+    azureErr: "Error al iniciar sesión. Intenta de nuevo."
   },
   roles: {
     spokesperson: "Usuario final (vocero)",

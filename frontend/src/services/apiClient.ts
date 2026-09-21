@@ -28,41 +28,29 @@ export class ApiError extends Error {
 
 async function getAuthToken(): Promise<string | null> {
   if (typeof window === 'undefined') return null;
+
+  // 1. Check localStorage (set by AuthContext after login)
   const token = localStorage.getItem('voxready_token');
   if (token) return token;
 
-  const userJson = localStorage.getItem('voxready_user');
-  let email = 'admin@demo.voxready.io';
-  if (userJson) {
-    try {
-      const user = JSON.parse(userJson);
-      if (user.token) return user.token;
-      if (user.email) {
-        if (user.role === 'client_admin') email = 'admin@demo.voxready.io';
-        else if (user.role === 'master_config') email = 'master@voxready.io';
-        else email = 'vocero@demo.voxready.io';
-      }
-    } catch {
-      // Ignorar error al parsear user
-    }
-  }
-
-  // Intentar obtener dev token si el backend está activo
+  // 2. Try MSAL silent token renewal (if configured and user is signed in)
   try {
-    const res = await fetch(`${API_BASE_URL}/dev/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.accessToken) {
-        localStorage.setItem('voxready_token', data.accessToken);
-        return data.accessToken;
+    const { msalInstance, loginRequest, isAzureConfigured } = await import('./authConfig');
+    if (isAzureConfigured) {
+      const accounts = msalInstance.getAllAccounts();
+      if (accounts.length > 0) {
+        const response = await msalInstance.acquireTokenSilent({
+          ...loginRequest,
+          account: accounts[0],
+        });
+        if (response.accessToken) {
+          localStorage.setItem('voxready_token', response.accessToken);
+          return response.accessToken;
+        }
       }
     }
   } catch {
-    // Backend offline o dev token no habilitado
+    // MSAL not available or silent renewal failed
   }
 
   return null;

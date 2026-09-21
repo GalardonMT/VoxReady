@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import router as v1_router
 from app.config import get_settings
@@ -38,6 +39,17 @@ app = FastAPI(
     description="Plataforma SaaS multi-tenant de entrenamiento de vocería de crisis.",
     lifespan=lifespan,
 )
+
+# CORS — allow the frontend to call the API cross-origin
+_settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _settings.cors_origins.split(",") if o.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.add_middleware(CorrelationMiddleware)
 register_exception_handlers(app)
 app.include_router(v1_router, prefix="/v1")

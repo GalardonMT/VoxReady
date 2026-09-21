@@ -178,6 +178,9 @@ async def seed_data(session: AsyncSession) -> bool:
         return False
 
     client = Client(id=DEMO_CLIENT_ID, name="Cliente Demo", status="active")
+    session.add(client)
+    await session.flush()
+
     vocero = AppUser(
         id=VOCERO_ID,
         b2c_object_id="seed-vocero",
@@ -208,7 +211,8 @@ async def seed_data(session: AsyncSession) -> bool:
         preferred_language="es",
         status="active",
     )
-    session.add_all([client, vocero, admin, master])
+    session.add_all([vocero, admin, master])
+    await session.flush()
 
     # Retention policy (default, current version).
     session.add(
