@@ -1,0 +1,50 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: voxready
+      POSTGRES_PASSWORD: voxready
+      POSTGRES_DB: voxready
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voxready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://voxready:voxready@db:5432/voxready
+      DEV_AUTH: "true"
+      DEV_AUTH_SECRET: cambia-este-secreto-dev
+      UPLOAD_SIGNING_SECRET: cambia-este-secreto-uploads
+      WEBHOOK_SECRET: cambia-este-secreto-webhooks
+      STORAGE_DIR: /data/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage:/data/storage
+
+  client:
+    build:
+      context: ./voxready-client
+      dockerfile: Dockerfile
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/v1
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  storage:
