@@ -208,8 +208,9 @@ async def seed_data(session: AsyncSession) -> bool:
         preferred_language="es",
         status="active",
     )
-    session.add_all([client, vocero, admin, master])
-
+    session.add(client)
+    await session.flush()
+    session.add_all([vocero, admin, master])
     # Retention policy (default, current version).
     session.add(
         RetentionPolicy(

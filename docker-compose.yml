@@ -32,8 +32,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./backend:/code
       - storage:/data/storage
-
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
   client:
     build:
       context: ./frontend
@@ -44,6 +45,11 @@ services:
       NEXT_PUBLIC_API_URL: http://localhost:8000/v1
     ports:
       - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: ["npm", "run", "dev"]
 
 volumes:
   pgdata:
