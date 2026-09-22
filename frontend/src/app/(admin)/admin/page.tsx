@@ -1,27 +1,28 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ClientDashboard, AdminScreen } from '../../../components/client-admin/ClientDashboard';
 import { TopicEditorView } from '../../../components/client-admin/TopicEditorView';
 import { RetentionPolicyView } from '../../../components/client-admin/RetentionPolicyView';
 import { useAuth } from '../../../context/AuthContext';
+import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
 
 export default function AdminPage() {
+  return (
+    <ProtectedRoute allowedRoles={['client_admin']}>
+      <AdminContent />
+    </ProtectedRoute>
+  );
+}
+
+function AdminContent() {
   const router = useRouter();
   const { user, logout } = useAuth();
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('a1');
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
-  }, [user, router]);
-
-  if (!user) {
-    return null;
-  }
+  if (!user) return null; // guaranteed by ProtectedRoute
 
   const handleAdminNavigate = (screen: AdminScreen, topicId?: string | null) => {
     setSelectedTopicId(topicId ?? null);

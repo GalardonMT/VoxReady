@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { HomePracticeView, VoceroScreen } from '../../../components/spokesperson/HomePracticeView';
 import { ScenarioCatalog } from '../../../components/spokesperson/ScenarioCatalog';
@@ -11,23 +11,24 @@ import { CoachReportView } from '../../../components/spokesperson/CoachReportVie
 import { ProgressView } from '../../../components/spokesperson/ProgressView';
 import { LessonView } from '../../../components/spokesperson/LessonView';
 import { useAuth } from '../../../context/AuthContext';
+import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
 
 export default function SpokespersonPage() {
+  return (
+    <ProtectedRoute allowedRoles={['spokesperson']}>
+      <SpokespersonContent />
+    </ProtectedRoute>
+  );
+}
+
+function SpokespersonContent() {
   const router = useRouter();
   const { user, logout } = useAuth();
 
   const [voceroScreen, setVoceroScreen] = useState<VoceroScreen>('u1');
   const [selectedLesson, setSelectedLesson] = useState<string>('Mensajes puente (Bridging)');
 
-  useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
-  }, [user, router]);
-
-  if (!user) {
-    return null;
-  }
+  if (!user) return null; // guaranteed by ProtectedRoute
 
   const handleVoceroNavigate = (screen: VoceroScreen, extra?: string) => {
     if (extra && screen === 'lesson') {

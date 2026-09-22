@@ -53,6 +53,30 @@ async function getAuthToken(): Promise<string | null> {
     // MSAL not available or silent renewal failed
   }
 
+  // 3. Fallback: if user is logged in as a demo/dev user, try dev token if available
+  const userJson = localStorage.getItem('voxready_user');
+  if (userJson) {
+    try {
+      const user = JSON.parse(userJson);
+      if (user.token) return user.token;
+      const email = user.email || 'vocero@demo.voxready.io';
+      const res = await fetch(`${API_BASE_URL}/dev/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.accessToken) {
+          localStorage.setItem('voxready_token', data.accessToken);
+          return data.accessToken;
+        }
+      }
+    } catch {
+      // Backend offline or dev token not enabled
+    }
+  }
+
   return null;
 }
 
@@ -62,7 +86,6 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
   const token = await getAuthToken();
-
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -85,6 +108,7 @@ export async function apiFetch<T>(
   });
 
   if (!response.ok) {
+
     let problem: ProblemDetails;
     try {
       problem = await response.json();

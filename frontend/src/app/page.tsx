@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 
 export default function RootPage() {
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const { user, loading, authError } = useAuth();
 
   useEffect(() => {
     if (user) {
@@ -41,11 +41,21 @@ export default function RootPage() {
 
   if (!user) {
     return (
-      <LoginView
-        onLoginSuccess={() => {
-          // El useEffect redirigirá automáticamente al cambiar user
-        }}
-      />
+      <>
+        {authError && (
+          <div className="auth-error-banner">
+            <div className="auth-error-banner-inner">
+              <span className="auth-error-icon">⚠️</span>
+              <span>{authError}</span>
+            </div>
+          </div>
+        )}
+        <LoginView
+          onLoginSuccess={() => {
+            // El useEffect redirigirá automáticamente al cambiar user
+          }}
+        />
+      </>
     );
   }
 
@@ -64,3 +74,4 @@ export default function RootPage() {
     </div>
   );
 }
+

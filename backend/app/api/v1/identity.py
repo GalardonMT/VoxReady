@@ -42,14 +42,19 @@ async def get_me(
         )
     )
 
-    # Fallback: try matching by email
+    # Fallback: try matching by email (case-insensitive)
     if user is None and principal.email:
+        from sqlalchemy import func
         user = await db.scalar(
             select(AppUser).where(
-                AppUser.email == principal.email,
+                func.lower(AppUser.email) == principal.email.strip().lower(),
                 AppUser.is_deleted.is_(False),
             )
         )
+        if user and user.b2c_object_id != str(principal.user_id):
+            user.b2c_object_id = str(principal.user_id)
+            await db.commit()
+            await db.refresh(user)
 
     if user is None:
         # Auto-provision verified Entra CIAM user into the active client

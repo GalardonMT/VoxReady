@@ -16,6 +16,7 @@ import { API_BASE_URL } from '../services/apiClient';
 interface AuthContextType {
   user: UserSession | null;
   loading: boolean;
+  authError: string | null;
   loginAs: (user: UserSession) => void;
   loginWithEmail: (email: string) => boolean;
   loginWithAzure: () => Promise<void>;
@@ -32,6 +33,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
   const { instance, accounts, inProgress } = useMsal();
   const [user, setUser] = useState<UserSession | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Restore from localStorage on first render (fast paint while MSAL resolves)
   useEffect(() => {
@@ -98,10 +100,30 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
           preferredLanguage: profile.preferredLanguage ?? 'es',
         };
         setUser(session);
+        setAuthError(null);
         localStorage.setItem('voxready_user', JSON.stringify(session));
+      } else if (res.status === 403) {
+        // User authenticated via Entra but not provisioned in VoxReady
+        let detail = 'Tu cuenta no está autorizada en VoxReady. Contacta al administrador de tu organización.';
+        try {
+          const body = await res.json();
+          if (body.detail) detail = body.detail;
+        } catch { /* use default message */ }
+        setAuthError(detail);
+        setUser(null);
+        localStorage.removeItem('voxready_user');
+        localStorage.removeItem('voxready_token');
       } else {
-        // Backend rejected the token (user not in app_user table, etc.)
         console.warn('[Auth] Backend /me returned', res.status);
+        let detail = `Error al obtener perfil del usuario (${res.status}).`;
+        try {
+          const body = await res.json();
+          if (body.detail) detail = body.detail;
+        } catch { /* use default message */ }
+        setAuthError(detail);
+        setUser(null);
+        localStorage.removeItem('voxready_user');
+        localStorage.removeItem('voxready_token');
       }
     } catch (err) {
       console.warn('[Auth] Token acquisition or backend profile fetch failed:', err);
@@ -116,6 +138,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithAzure = async () => {
     setLoading(true);
+    setAuthError(null);
     try {
       await instance.loginRedirect(loginRedirectRequest);
     } catch (err) {
@@ -126,6 +149,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginAs = (u: UserSession) => {
     setUser(u);
+    setAuthError(null);
     localStorage.setItem('voxready_user', JSON.stringify(u));
     localStorage.removeItem('voxready_token');
   };
@@ -142,6 +166,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     setUser(null);
+    setAuthError(null);
     localStorage.removeItem('voxready_user');
     localStorage.removeItem('voxready_token');
 
@@ -155,6 +180,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         loading,
+        authError,
         loginAs,
         loginWithEmail,
         loginWithAzure,
@@ -214,6 +240,7 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         loading: false,
+        authError: null,
         loginAs,
         loginWithEmail,
         loginWithAzure,

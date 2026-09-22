@@ -87,6 +87,9 @@ def _claims_to_principal(claims: dict) -> Principal:
     # Entra External ID uses "oid" (Object ID, always UUID) as the stable
     # user identifier. "sub" may be a pairwise hash in some Entra flows.
     user_id_raw = claims.get("oid") or claims.get("sub")
+    email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
+    if not email and isinstance(claims.get("emails"), list) and claims.get("emails"):
+        email = claims["emails"][0]
     return Principal(
         user_id=uuid.UUID(str(user_id_raw)),
         role=str(role) if role else "",
@@ -94,7 +97,7 @@ def _claims_to_principal(claims: dict) -> Principal:
         preferred_language=claims.get("preferredLanguage")
         or claims.get("preferred_language")
         or "es",
-        email=claims.get("email") or claims.get("preferred_username"),
+        email=email,
         display_name=claims.get("name") or claims.get("displayName"),
     )
 

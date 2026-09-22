@@ -83,7 +83,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         <h1 className="login-title">{t.login.title}</h1>
         <p className="login-sub">{t.login.sub}</p>
 
-        {/* ---- Primary: Azure login ---- */}
+        {/* ---- Primary: Azure / Microsoft login ---- */}
         {isAzureConfigured && (
           <>
             <button
@@ -106,50 +106,46 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
               {t.login.azureBtn ?? 'Iniciar sesión con Microsoft'}
             </button>
 
-            <div className="login-divider">{t.login.testL}</div>
+            <div className="login-divider">{t.login.dividerOr ?? 'o'}</div>
           </>
         )}
 
-        {/* ---- Secondary: email/password form ---- */}
-        {!isAzureConfigured && (
-          <>
-            <form onSubmit={handleSubmit}>
-              <div className="login-field">
-                <label>{t.login.emailL}</label>
-                <input
-                  type="email"
-                  className="login-input"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder={t.login.emailPh}
-                  autoComplete="username"
-                />
-              </div>
+        {/* ---- Email / password credentials form ---- */}
+        <form onSubmit={handleSubmit}>
+          <div className="login-field">
+            <label>{t.login.emailL}</label>
+            <input
+              type="email"
+              className="login-input"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder={t.login.emailPh}
+              autoComplete="username"
+            />
+          </div>
 
-              <div className="login-field">
-                <label>{t.login.passL}</label>
-                <input
-                  type="password"
-                  className="login-input"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={t.login.passPh}
-                  autoComplete="current-password"
-                />
-              </div>
+          <div className="login-field">
+            <label>{t.login.passL}</label>
+            <input
+              type="password"
+              className="login-input"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={t.login.passPh}
+              autoComplete="current-password"
+            />
+          </div>
 
-              <button type="submit" className="login-btn">
-                {t.login.signIn}
-              </button>
-            </form>
+          <button type="submit" className="login-btn">
+            {t.login.signIn}
+          </button>
+        </form>
 
-            {error && <p className="login-err">{error}</p>}
+        {error && <p className="login-err">{error}</p>}
 
-            <div className="login-divider">{t.login.testL}</div>
-          </>
-        )}
+        <div className="login-divider">{t.login.testL}</div>
 
-        {/* ---- Test users (always visible as fallback) ---- */}
+        {/* ---- Demo test users list ---- */}
         <div>
           {testUsers.map((user) => (
             <button
@@ -169,8 +165,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
             </button>
           ))}
         </div>
-
-        {error && isAzureConfigured && <p className="login-err">{error}</p>}
       </div>
     </div>
   );

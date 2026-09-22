@@ -16,7 +16,9 @@ export const es = {
     logout: "Cerrar sesión",
     azureBtn: "Iniciar sesión con Microsoft",
     loading: "Autenticando…",
-    azureErr: "Error al iniciar sesión. Intenta de nuevo."
+    azureErr: "Error al iniciar sesión. Intenta de nuevo.",
+    azureSub: "Inicia sesión con tu cuenta corporativa de Microsoft.",
+    dividerOr: "o"
   },
   roles: {
     spokesperson: "Usuario final (vocero)",

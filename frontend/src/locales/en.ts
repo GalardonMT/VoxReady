@@ -16,7 +16,9 @@ export const en = {
     logout: "Sign out",
     azureBtn: "Sign in with Microsoft",
     loading: "Authenticating…",
-    azureErr: "Sign in failed. Please try again."
+    azureErr: "Sign in failed. Please try again.",
+    azureSub: "Sign in with your corporate Microsoft account.",
+    dividerOr: "or"
   },
   roles: {
     spokesperson: "End user (spokesperson)",

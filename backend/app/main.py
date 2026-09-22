@@ -20,6 +20,17 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     init_storage(settings)
+
+    # Ensure database schema exists
+    try:
+        from app import db as db_module
+        from app.models.base import Base
+        engine = db_module.init_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Database initialization: %s", exc)
+
     worker = AnalysisWorker(settings)
     retention = RetentionJob(settings)
     app.state.analysis_worker = worker
