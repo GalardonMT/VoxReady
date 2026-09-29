@@ -139,8 +139,8 @@ export const TopicEditorView: React.FC<TopicEditorViewProps> = ({ onNavigate, to
       setTimeout(() => {
         onNavigate('a1');
       }, 700);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Error al guardar el tema. Intenta nuevamente.');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Error al guardar el tema. Intenta nuevamente.');
     } finally {
       setIsSaving(false);
     }

@@ -39,6 +39,7 @@ async def get_own_session(
         session is None
         or session.is_deleted
         or session.user_id != principal.user_id
+        or session.client_id != principal.client_id
     ):
         raise AppError(
             404, "session_not_found", "La sesión no existe o no pertenece al usuario."

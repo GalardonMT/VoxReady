@@ -1,26 +1,19 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MasterDashboard, MasterScreen } from '../../../components/master/MasterDashboard';
 import { RubricEditorView } from '../../../components/master/RubricEditorView';
 import { LabelingQueueView } from '../../../components/master/LabelingQueueView';
 import { useAuth } from '../../../context/AuthContext';
+import { RoleGate } from '../../../components/auth/RoleGate';
 
 export default function MasterPage() {
   const router = useRouter();
   const { user, logout } = useAuth();
   const [masterScreen, setMasterScreen] = useState<MasterScreen>('m1');
 
-  useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
-  }, [user, router]);
-
-  if (!user) {
-    return null;
-  }
+  if (!user) return <RoleGate role="master_config">{null}</RoleGate>;
 
   const handleMasterNavigate = (screen: MasterScreen) => {
     setMasterScreen(screen);
@@ -34,7 +27,7 @@ export default function MasterPage() {
   ];
 
   return (
-    <div className="platform-container">
+    <RoleGate role="master_config"><div className="platform-container">
       <header className="vocero-header">
         <div className="vocero-brand" onClick={() => handleMasterNavigate('m1')} style={{ cursor: 'pointer' }}>
           <img
@@ -105,6 +98,6 @@ export default function MasterPage() {
         {masterScreen === 'm2' && <RubricEditorView onNavigate={handleMasterNavigate} />}
         {masterScreen === 'm3' && <LabelingQueueView onNavigate={handleMasterNavigate} />}
       </main>
-    </div>
+    </div></RoleGate>
   );
 }

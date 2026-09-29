@@ -5,7 +5,7 @@ export interface UserSession {
   email: string;
   displayName: string;
   role: Role;
-  clientId: string;
+  clientId: string | null;
   clientName: string;
   clientLogo?: string;
   initials: string;

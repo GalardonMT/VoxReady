@@ -8,7 +8,7 @@ import pytest_asyncio
 _TMP = Path(__file__).parent / ".tmp"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP.as_posix()}/test.db"
 os.environ["DEV_AUTH"] = "true"
-os.environ["DEV_AUTH_SECRET"] = "test-secret"
+os.environ["DEV_AUTH_SECRET"] = "test-secret-at-least-32-characters-long"
 os.environ["STORAGE_DIR"] = (_TMP / "storage").as_posix()
 os.environ["UPLOAD_SIGNING_SECRET"] = "test-upload-secret"
 os.environ["ANALYSIS_STEP_SECONDS"] = "0.02"

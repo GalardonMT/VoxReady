@@ -18,11 +18,13 @@ async def issue_dev_token(
     body: DevTokenIn, db: AsyncSession = Depends(get_db)
 ) -> dict:
     settings = get_settings()
-    if not settings.dev_auth:
+    if settings.environment != "development" or not settings.dev_auth:
         raise AppError(404, "not_found", "Recurso no disponible.")
     user = await db.scalar(
         select(AppUser).where(
-            AppUser.email == body.email, AppUser.is_deleted.is_(False)
+            AppUser.email == body.email,
+            AppUser.is_deleted.is_(False),
+            AppUser.status == "active",
         )
     )
     if user is None:

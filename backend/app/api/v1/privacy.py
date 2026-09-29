@@ -32,6 +32,7 @@ async def create_deletion_request(
             session is None
             or session.is_deleted
             or session.user_id != principal.user_id
+            or session.client_id != principal.client_id
         ):
             raise AppError(
                 404,

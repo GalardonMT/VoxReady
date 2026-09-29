@@ -1,5 +1,4 @@
 import {
-  UserSession,
   Scenario,
   Microlesson,
   TopicConfig,
@@ -8,42 +7,6 @@ import {
   LabelingCase,
   CoachReport
 } from '../types/api';
-
-export const TEST_USERS: UserSession[] = [
-  {
-    userId: 'usr-spokesperson-01',
-    email: 'ana@visum.com',
-    displayName: 'Ana Torres',
-    role: 'spokesperson',
-    clientId: 'tenant-visum',
-    clientName: 'Visum Corp',
-    clientLogo: '/Visum_logo.png',
-    initials: 'AT',
-    preferredLanguage: 'es'
-  },
-  {
-    userId: 'usr-admin-01',
-    email: 'carlos@visum.com',
-    displayName: 'Carlos Ruiz',
-    role: 'client_admin',
-    clientId: 'tenant-visum',
-    clientName: 'Visum Corp',
-    clientLogo: '/Visum_logo.png',
-    initials: 'CR',
-    preferredLanguage: 'es'
-  },
-  {
-    userId: 'usr-master-01',
-    email: 'marta@voxready.io',
-    displayName: 'Marta Vidal',
-    role: 'master_config',
-    clientId: 'tenant-voxready-central',
-    clientName: 'VoxReady Central / Visum',
-    clientLogo: '/VoxReady_logo.png',
-    initials: 'MV',
-    preferredLanguage: 'es'
-  }
-];
 
 export const INITIAL_SCENARIOS: Scenario[] = [
   {

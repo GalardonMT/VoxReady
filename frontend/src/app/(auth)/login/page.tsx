@@ -7,7 +7,7 @@ import { useAuth } from '../../../context/AuthContext';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, status } = useAuth();
 
   // Si ya está autenticado, redirigir según su rol
   React.useEffect(() => {
@@ -18,9 +18,7 @@ export default function LoginPage() {
     }
   }, [user, router]);
 
-  const handleLoginSuccess = () => {
-    // Redirigirá vía useEffect al cambiar user
-  };
-
-  return <LoginView onLoginSuccess={handleLoginSuccess} />;
+  if (status === 'loading') return <p>Validando sesión...</p>;
+  if (user) return <p>Redirigiendo...</p>;
+  return <LoginView />;
 }

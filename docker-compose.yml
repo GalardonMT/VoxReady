@@ -24,6 +24,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://voxready:voxready@db:5432/voxready
+      ENVIRONMENT: development
       DEV_AUTH: "true"
       DEV_AUTH_SECRET: cambia-este-secreto-dev
       UPLOAD_SIGNING_SECRET: cambia-este-secreto-uploads
@@ -43,6 +44,7 @@ services:
       - api
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000/v1
+      NEXT_PUBLIC_AUTH_MODE: local
     ports:
       - "3000:3000"
     volumes:

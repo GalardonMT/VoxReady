@@ -1,119 +1,81 @@
-/**
- * Base API Client for VoxReady Backend
- * Handles RFC 7807 Problem Details errors, authentication tokens, and correlation IDs.
- */
+/** API calls use the access token only; user roles always come from GET /me. */
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/v1';
+const TOKEN_KEY = 'voxready_access_token';
+let tokenProvider: (() => Promise<string | null>) | null = null;
 
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/v1';
+export function registerTokenProvider(provider: (() => Promise<string | null>) | null): void {
+  tokenProvider = provider;
+}
 
 export interface ProblemDetails {
   type?: string;
   title: string;
   status: number;
   detail?: string;
-  instance?: string;
   correlationId?: string;
   code?: string;
 }
 
 export class ApiError extends Error {
-  problem: ProblemDetails;
-
-  constructor(problem: ProblemDetails) {
-    super(problem.detail || problem.title || `API Error ${problem.status}`);
+  constructor(public problem: ProblemDetails) {
+    super(problem.detail || problem.title);
     this.name = 'ApiError';
-    this.problem = problem;
   }
 }
 
-async function getAuthToken(): Promise<string | null> {
-  if (typeof window === 'undefined') return null;
-  const token = localStorage.getItem('voxready_token');
-  if (token) return token;
-
-  const userJson = localStorage.getItem('voxready_user');
-  let email = 'admin@demo.voxready.io';
-  if (userJson) {
-    try {
-      const user = JSON.parse(userJson);
-      if (user.token) return user.token;
-      if (user.email) {
-        if (user.role === 'client_admin') email = 'admin@demo.voxready.io';
-        else if (user.role === 'master_config') email = 'master@voxready.io';
-        else email = 'vocero@demo.voxready.io';
-      }
-    } catch {
-      // Ignorar error al parsear user
-    }
+export class NetworkError extends Error {
+  constructor() {
+    super('No se pudo conectar con la API. Comprueba tu conexión e inténtalo de nuevo.');
+    this.name = 'NetworkError';
   }
+}
 
-  // Intentar obtener dev token si el backend está activo
+export function isAccessError(error: unknown): boolean {
+  return error instanceof ApiError && (error.problem.status === 401 || error.problem.status === 403);
+}
+
+export function getAccessToken(): string | null {
+  return typeof window === 'undefined' ? null : sessionStorage.getItem(TOKEN_KEY);
+}
+
+export function setAccessToken(token: string): void {
+  sessionStorage.setItem(TOKEN_KEY, token);
+  localStorage.removeItem('voxready_token');
+  localStorage.removeItem('voxready_user');
+}
+
+export function clearAccessToken(): void {
+  sessionStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem('voxready_token');
+  localStorage.removeItem('voxready_user');
+}
+
+export async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const token = tokenProvider ? await tokenProvider() : getAccessToken();
+  const headers = new Headers(options.headers);
+  headers.set('Accept', 'application/json, application/problem+json');
+  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  if (!headers.has('x-correlation-id')) headers.set('x-correlation-id', `client-${crypto.randomUUID()}`);
+
+  let response: Response;
   try {
-    const res = await fetch(`${API_BASE_URL}/dev/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
+    response = await fetch(`${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`, {
+      ...options, headers, cache: 'no-store',
     });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.accessToken) {
-        localStorage.setItem('voxready_token', data.accessToken);
-        return data.accessToken;
-      }
-    }
   } catch {
-    // Backend offline o dev token no habilitado
+    throw new NetworkError();
   }
-
-  return null;
-}
-
-export async function apiFetch<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-  const token = await getAuthToken();
-
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json, application/problem+json',
-    ...(options.headers as Record<string, string> || {})
-  };
-
-  if (token && !headers['Authorization']) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  // Generar correlation-id para trazabilidad
-  if (!headers['x-correlation-id']) {
-    headers['x-correlation-id'] = `client-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  }
-
-  const response = await fetch(url, {
-    ...options,
-    headers
-  });
-
   if (!response.ok) {
     let problem: ProblemDetails;
-    try {
-      problem = await response.json();
-    } catch {
-      problem = {
-        title: response.statusText || 'Error de comunicación con el servidor',
-        status: response.status,
-        detail: `HTTP status ${response.status} en ${endpoint}`
-      };
+    try { problem = await response.json(); }
+    catch { problem = { title: response.statusText || 'Error de API', status: response.status }; }
+    if (response.status === 401) {
+      clearAccessToken();
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('voxready:session-expired'));
     }
-    throw new ApiError(problem);
+    throw new ApiError({ ...problem, status: response.status });
   }
-
-  // Manejar respuestas sin contenido (204 No Content)
-  if (response.status === 204) {
-    return {} as T;
-  }
-
+  if (response.status === 204) return {} as T;
   return response.json() as Promise<T>;
 }

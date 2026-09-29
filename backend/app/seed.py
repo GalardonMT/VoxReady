@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db as db_module
+from app.config import get_settings
 from app.models.base import Base
 from app.models.content import (
     Question,
@@ -174,6 +175,8 @@ MICROLESSONS = [
 
 async def seed_data(session: AsyncSession) -> bool:
     """Insert the demo dataset. Returns False if it already exists."""
+    if get_settings().environment != "development":
+        raise RuntimeError("Los datos demo solo pueden cargarse en development.")
     if await session.get(Client, DEMO_CLIENT_ID) is not None:
         return False
 

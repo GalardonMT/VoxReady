@@ -1,11 +1,23 @@
 /**
  * Service for Topics & Scenarios management (Client Admin)
  */
-import { apiFetch } from './apiClient';
+import { apiFetch, isAccessError } from './apiClient';
 import { TopicConfig, RetentionSettings, InstitutionalOptics, InternalAudience } from '../types/api';
 import { INITIAL_TOPICS, INITIAL_RETENTION_SETTINGS } from '../mock/mockData';
 
 const TOPICS_STORAGE_KEY = 'voxready_topics';
+
+interface BackendTopic {
+  id: string;
+  name: string;
+  context?: string;
+  optics: string;
+  audience: string;
+  languages?: string[];
+  retentionDays?: number;
+  keyMessages?: string[];
+  redLines?: string[];
+}
 
 // Mapeo de ópticas entre UI (Español) y Backend (Inglés)
 const opticsToBackendMap: Record<string, 'empathetic' | 'formal' | 'technical'> = {
@@ -51,7 +63,7 @@ export const topicService = {
    */
   async getTopics(): Promise<TopicConfig[]> {
     try {
-      const res = await apiFetch<{ items: any[]; total: number }>('/topics');
+      const res = await apiFetch<{ items: BackendTopic[]; total: number }>('/topics');
       if (res && Array.isArray(res.items)) {
         const mapped: TopicConfig[] = res.items.map((item) => ({
           id: String(item.id),
@@ -73,7 +85,7 @@ export const topicService = {
         setStoredTopics(combined);
         return combined;
       }
-    } catch {
+    } catch (error) { if (isAccessError(error)) throw error;
       // Fallback a localStorage o datos iniciales
     }
     return getStoredTopics();
@@ -141,8 +153,8 @@ export const topicService = {
           savedId = res.id;
         }
       }
-    } catch {
-      // Backend no disponible: se persiste localmente sin interrumpir la experiencia
+    } catch (error) {
+      throw error;
     }
 
     const savedTopic: TopicConfig = {
@@ -176,8 +188,8 @@ export const topicService = {
       if (!id.startsWith('top-')) {
         await apiFetch(`/topics/${id}`, { method: 'DELETE' });
       }
-    } catch {
-      // Si el backend falla, remover localmente de todas formas
+    } catch (error) {
+      throw error;
     }
 
     const currentList = getStoredTopics();
@@ -192,7 +204,7 @@ export const topicService = {
   async getRetentionSettings(): Promise<RetentionSettings> {
     try {
       return await apiFetch<RetentionSettings>('/privacy/retention');
-    } catch {
+    } catch (error) { if (isAccessError(error)) throw error;
       return INITIAL_RETENTION_SETTINGS;
     }
   },
@@ -206,8 +218,8 @@ export const topicService = {
         method: 'PUT',
         body: JSON.stringify(settings)
       });
-    } catch {
-      return { ...INITIAL_RETENTION_SETTINGS, ...settings };
+    } catch (error) {
+      throw error;
     }
   }
 };

@@ -1,24 +1,31 @@
 """Application settings loaded from environment / .env file."""
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Central configuration. All values can be overridden via env vars."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
 
     app_name: str = "VoxReady API"
     database_url: str = "sqlite+aiosqlite:///./voxready.db"
+    cors_origins: str = "http://localhost:3000"
 
     # Auth
+    environment: str = "development"
     dev_auth: bool = False
     dev_auth_secret: str = "dev-secret-change-me"
     dev_token_ttl_hours: int = 8
     jwks_url: str | None = None
     jwt_issuer: str | None = None
     jwt_audience: str | None = None
+    azure_tenant_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AZURE_TENANT_ID", "NEXT_PUBLIC_AZURE_TENANT_ID"),
+    )
 
     # Storage of recordings
     storage_dir: str = "./storage"
@@ -45,6 +52,10 @@ class Settings(BaseSettings):
     @property
     def webhook_endpoint_list(self) -> list[str]:
         return [e.strip() for e in self.webhook_endpoints.split(",") if e.strip()]
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 @lru_cache

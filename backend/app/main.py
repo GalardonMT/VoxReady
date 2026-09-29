@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import router as v1_router
 from app.config import get_settings
@@ -39,6 +40,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(CorrelationMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_origin_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "x-correlation-id"],
+)
 register_exception_handlers(app)
 app.include_router(v1_router, prefix="/v1")
 

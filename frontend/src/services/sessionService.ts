@@ -1,7 +1,7 @@
 /**
  * Service for Practice Sessions, Audio/Video Upload and Analysis
  */
-import { apiFetch } from './apiClient';
+import { apiFetch, isAccessError } from './apiClient';
 import {
   Scenario,
   CoachReport,
@@ -53,7 +53,7 @@ export const sessionService = {
   async getScenarios(): Promise<Scenario[]> {
     try {
       return await apiFetch<Scenario[]>('/scenarios');
-    } catch {
+    } catch (error) { if (isAccessError(error)) throw error;
       // Fallback a datos mock si el backend no está disponible
       return INITIAL_SCENARIOS;
     }
@@ -68,13 +68,8 @@ export const sessionService = {
         method: 'POST',
         body: JSON.stringify({ scenarioId })
       });
-    } catch {
-      return {
-        sessionId: `sess-${Date.now()}`,
-        status: 'created',
-        scenarioId,
-        createdAt: new Date().toISOString()
-      };
+    } catch (error) {
+      throw error;
     }
   },
 
@@ -91,8 +86,8 @@ export const sessionService = {
         })
       });
       return true;
-    } catch {
-      return true;
+    } catch (error) {
+      throw error;
     }
   },
 
@@ -104,13 +99,8 @@ export const sessionService = {
       return await apiFetch<RecordingUrlResponse>(`/sessions/${sessionId}/recording-url`, {
         method: 'POST'
       });
-    } catch {
-      return {
-        uploadUrl: `/v1/uploads/${sessionId}`,
-        blobPath: `recordings/${sessionId}.webm`,
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-        maxSizeBytes: 524288000
-      };
+    } catch (error) {
+      throw error;
     }
   },
 
@@ -123,8 +113,8 @@ export const sessionService = {
         method: 'POST'
       });
       return true;
-    } catch {
-      return true;
+    } catch (error) {
+      throw error;
     }
   },
 
@@ -135,12 +125,12 @@ export const sessionService = {
     try {
       const res = await apiFetch<AnalysisStatusResponse>(`/sessions/${sessionId}/analysis`);
       return [
-        { id: 'content', label: 'Contenido y coherencia de discurso', status: res.pipelines.content as any },
-        { id: 'voice', label: 'Tono de voz y modulación acústica', status: res.pipelines.voice as any },
-        { id: 'image', label: 'Expresión visual y contacto visual', status: res.pipelines.image as any },
-        { id: 'fusion', label: 'Fusión multimodal e índice de empatía', status: res.pipelines.fusion as any }
+        { id: 'content', label: 'Contenido y coherencia de discurso', status: res.pipelines.content as MultimodalAnalysisStep['status'] },
+        { id: 'voice', label: 'Tono de voz y modulación acústica', status: res.pipelines.voice as MultimodalAnalysisStep['status'] },
+        { id: 'image', label: 'Expresión visual y contacto visual', status: res.pipelines.image as MultimodalAnalysisStep['status'] },
+        { id: 'fusion', label: 'Fusión multimodal e índice de empatía', status: res.pipelines.fusion as MultimodalAnalysisStep['status'] }
       ];
-    } catch {
+    } catch (error) { if (isAccessError(error)) throw error;
       return DEFAULT_ANALYSIS_STEPS;
     }
   },
@@ -151,9 +141,8 @@ export const sessionService = {
   async getCoachReport(sessionId: string): Promise<CoachReport> {
     try {
       return await apiFetch<CoachReport>(`/sessions/${sessionId}/report`);
-    } catch {
+    } catch (error) { if (isAccessError(error)) throw error;
       return INITIAL_REPORT;
     }
   }
 };
-

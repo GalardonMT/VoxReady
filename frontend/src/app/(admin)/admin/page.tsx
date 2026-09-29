@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ClientDashboard, AdminScreen } from '../../../components/client-admin/ClientDashboard';
 import { TopicEditorView } from '../../../components/client-admin/TopicEditorView';
 import { RetentionPolicyView } from '../../../components/client-admin/RetentionPolicyView';
 import { useAuth } from '../../../context/AuthContext';
+import { RoleGate } from '../../../components/auth/RoleGate';
 
 export default function AdminPage() {
   const router = useRouter();
@@ -13,15 +14,7 @@ export default function AdminPage() {
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('a1');
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
-  }, [user, router]);
-
-  if (!user) {
-    return null;
-  }
+  if (!user) return <RoleGate role="client_admin">{null}</RoleGate>;
 
   const handleAdminNavigate = (screen: AdminScreen, topicId?: string | null) => {
     setSelectedTopicId(topicId ?? null);
@@ -37,7 +30,7 @@ export default function AdminPage() {
   ];
 
   return (
-    <div className="platform-container">
+    <RoleGate role="client_admin"><div className="platform-container">
       <header className="vocero-header">
         <div className="vocero-brand" onClick={() => handleAdminNavigate('a1')} style={{ cursor: 'pointer' }}>
           <img
@@ -57,7 +50,7 @@ export default function AdminPage() {
             padding: '3px 10px'
           }}
         >
-          🏢 {user.clientName || 'Visum Corp'}
+          🏢 {user.clientName || 'Cliente'}
         </div>
 
         <nav className="vocero-nav-tabs">
@@ -105,6 +98,6 @@ export default function AdminPage() {
         {adminScreen === 'a3' && <RetentionPolicyView />}
       </main>
 
-    </div>
+    </div></RoleGate>
   );
 }

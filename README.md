@@ -53,6 +53,8 @@ VoxReady/
 
 ## Arranque Rápido con Docker Compose
 
+Para usar el inicio de sesión de Microsoft y la base Azure SQL configurados en el `.env` de la raíz, ejecuta `docker compose -f docker-compose.azure.yml up --build`. Este arranque usa el usuario vocero ya provisionado y no carga usuarios demo. Consulta [AUTENTICACION.md](AUTENTICACION.md) para los requisitos de Azure, sesión y permisos.
+
 La forma más rápida de levantar toda la plataforma (Base de datos PostgreSQL, Backend FastAPI y Frontend Next.js):
 
 ```bash
@@ -142,3 +144,5 @@ cd frontend
 npm run build
 npm run lint
 ```
+
+La configuración de sesiones, JWT, acceso local y proveedor externo está en [AUTENTICACION.md](AUTENTICACION.md).

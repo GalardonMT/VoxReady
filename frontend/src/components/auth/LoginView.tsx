@@ -1,108 +1,33 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
-import { UserSession } from '../../types/api';
 
-interface LoginViewProps {
-  onLoginSuccess?: () => void;
-}
-
-export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
-  const { t } = useI18n();
-  const { loginAs, loginWithEmail, testUsers } = useAuth();
-
+export const LoginView: React.FC = () => {
+  const { mode, status, error, loginWithEmail, loginExternal, retry } = useAuth();
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [localError, setLocalError] = useState('');
+  const busy = status === 'loading';
 
-  const handleSubmit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setError('');
-    const success = loginWithEmail(email);
-    if (success) {
-      if (onLoginSuccess) onLoginSuccess();
-    } else {
-      setError(t.login.err);
-    }
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); setLocalError('');
+    try { await loginWithEmail(email); }
+    catch (cause) { setLocalError(cause instanceof Error ? cause.message : 'No se pudo iniciar sesión.'); }
   };
-
-  const handleSelectTestUser = (user: UserSession) => {
-    loginAs(user);
-    if (onLoginSuccess) onLoginSuccess();
-  };
-
   return (
-    <div className="login-view">
-      <div className="login-card">
-        <div className="login-logo">
-          <div className="brandlogo-wrap">
-            <img
-              src="/VoxReady_logo.png"
-              alt="VoxReady"
-              style={{ height: '42px', width: 'auto', display: 'block' }}
-            />
-          </div>
-        </div>
-
-        <h1 className="login-title">{t.login.title}</h1>
-        <p className="login-sub">{t.login.sub}</p>
-
-        <form onSubmit={handleSubmit}>
-          <div className="login-field">
-            <label>{t.login.emailL}</label>
-            <input
-              type="email"
-              className="login-input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t.login.emailPh}
-              autoComplete="username"
-            />
-          </div>
-
-          <div className="login-field">
-            <label>{t.login.passL}</label>
-            <input
-              type="password"
-              className="login-input"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t.login.passPh}
-              autoComplete="current-password"
-            />
-          </div>
-
-          <button type="submit" className="login-btn">
-            {t.login.signIn}
-          </button>
-
-          {error && <p className="login-err">{error}</p>}
-        </form>
-
-        <div className="login-divider">{t.login.testL}</div>
-
-        <div>
-          {testUsers.map((user) => (
-            <button
-              key={user.userId}
-              type="button"
-              className="tu"
-              onClick={() => handleSelectTestUser(user)}
-            >
-              <span className="tuava">{user.initials}</span>
-              <span className="tumeta">
-                <span className="tuname">{user.displayName}</span>
-                <span className="turole">
-                  {t.roles[user.role]} · {user.email}
-                </span>
-              </span>
-              <span className="tugo">→</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
+    <div className="login-view"><div className="login-card">
+      <div className="login-logo"><img src="/VoxReady_logo.png" alt="VoxReady" style={{ height: 42 }} /></div>
+      <h1 className="login-title">Iniciar sesión</h1>
+      {status === 'expired' && <p className="login-err">Tu sesión caducó. Inicia sesión nuevamente.</p>}
+      {status === 'offline' && <p className="login-err">{error} <button type="button" onClick={retry}>Reintentar</button></p>}
+      {mode === 'local' && <form onSubmit={submit}>
+        <p className="login-sub">Acceso local de desarrollo. Usa el correo de un usuario semilla.</p>
+        <div className="login-field"><label htmlFor="dev-email">Correo</label><input id="dev-email" type="email" required className="login-input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" /></div>
+        <button className="login-btn" type="submit" disabled={busy}>Ingresar en desarrollo</button>
+      </form>}
+      {mode === 'azure' && <button className="login-btn" type="button" disabled={busy} onClick={() => loginExternal().catch((cause) => setLocalError(cause.message))}>Continuar con Microsoft</button>}
+      {mode === 'unconfigured' && <p className="login-err">La autenticación no está configurada. Contacta al administrador.</p>}
+      {(localError || (status !== 'expired' && status !== 'offline' && error)) && <p className="login-err">{localError || error}</p>}
+    </div></div>
   );
 };

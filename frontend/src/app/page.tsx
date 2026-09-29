@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 
 export default function RootPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, status } = useAuth();
 
   useEffect(() => {
     if (user) {
@@ -21,15 +21,8 @@ export default function RootPage() {
     }
   }, [user, router]);
 
-  if (!user) {
-    return (
-      <LoginView
-        onLoginSuccess={() => {
-          // El useEffect redirigirá automáticamente al cambiar user
-        }}
-      />
-    );
-  }
+  if (status === 'loading') return <p>Validando sesión...</p>;
+  if (!user) return <LoginView />;
 
   return (
     <div

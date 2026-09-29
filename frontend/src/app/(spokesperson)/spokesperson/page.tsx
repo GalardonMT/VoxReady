@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { HomePracticeView, VoceroScreen } from '../../../components/spokesperson/HomePracticeView';
 import { ScenarioCatalog } from '../../../components/spokesperson/ScenarioCatalog';
@@ -11,6 +11,7 @@ import { CoachReportView } from '../../../components/spokesperson/CoachReportVie
 import { ProgressView } from '../../../components/spokesperson/ProgressView';
 import { LessonView } from '../../../components/spokesperson/LessonView';
 import { useAuth } from '../../../context/AuthContext';
+import { RoleGate } from '../../../components/auth/RoleGate';
 
 export default function SpokespersonPage() {
   const router = useRouter();
@@ -19,15 +20,7 @@ export default function SpokespersonPage() {
   const [voceroScreen, setVoceroScreen] = useState<VoceroScreen>('u1');
   const [selectedLesson, setSelectedLesson] = useState<string>('Mensajes puente (Bridging)');
 
-  useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
-  }, [user, router]);
-
-  if (!user) {
-    return null;
-  }
+  if (!user) return <RoleGate role="spokesperson">{null}</RoleGate>;
 
   const handleVoceroNavigate = (screen: VoceroScreen, extra?: string) => {
     if (extra && screen === 'lesson') {
@@ -45,7 +38,7 @@ export default function SpokespersonPage() {
   ];
 
   return (
-    <div className="platform-container">
+    <RoleGate role="spokesperson"><div className="platform-container">
       <header className="vocero-header">
         <div className="vocero-brand" onClick={() => handleVoceroNavigate('u1')} style={{ cursor: 'pointer' }}>
           <img
@@ -102,6 +95,6 @@ export default function SpokespersonPage() {
           <LessonView lessonTitle={selectedLesson} onNavigate={handleVoceroNavigate} />
         )}
       </main>
-    </div>
+    </div></RoleGate>
   );
 }
