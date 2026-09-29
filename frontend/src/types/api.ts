@@ -73,6 +73,7 @@ export interface CoachReport {
   improveAspects: string[];
   crossSignalQuote: string;
   areas: AreaScore[];
+  metrics?: any;
 }
 
 export interface ProgressTrend {

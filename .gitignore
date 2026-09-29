@@ -1,50 +1,123 @@
-# Dependencies
-node_modules/
-/.pnp
-.pnp.js
+# ==============================================================================
+# VoxReady - Global .gitignore
+# ==============================================================================
 
-# Environments
-.venv/
-venv/
-ENV/
-env/
-
-# Production builds
-.next/
-out/
-build/
-dist/
-
-# Python caches & tests
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.coverage
-htmlcov/
-.ruff_cache/
-
-# Local data & storage
-storage/
-*.sqlite3
-*.db
-
-# Environment variables & secrets
+# ------------------------------------------------------------------------------
+# 1. Variables de Entorno y Secretos (NUNCA SUBIR A GIT)
+# ------------------------------------------------------------------------------
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
-*.env
+*.pem
+*.key
+*.cert
+*.pfx
+secrets/
+Indicaciones/
 
-# Debug & Logs
+# ------------------------------------------------------------------------------
+# 2. Node.js & Next.js (Frontend)
+# ------------------------------------------------------------------------------
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+out/
+**/out/
+build/
+**/build/
+dist/
+**/dist/
+.eslintcache
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs de gestores de paquetes
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-*.log
+pnpm-debug.log*
+lerna-debug.log*
 
-# OS & Editor
+# ------------------------------------------------------------------------------
+# 3. Python (Backend, Worker, Vision, Lab)
+# ------------------------------------------------------------------------------
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing, Cobertura y Linters
+.pytest_cache/
+**/.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+*.egg
+
+# ------------------------------------------------------------------------------
+# 4. Multimedia y Archivos Temporales de Grabación
+# ------------------------------------------------------------------------------
+# Videos y Audios pesados
+*.wav
+*.mp3
+*.ogg
+*.opus
+*.webm
+*.mp4
+*.mkv
+*.avi
+
+# Carpetas de procesamiento multimedia
+outputs/
+**/outputs/
+grabaciones/
+**/grabaciones/
+frames/
+**/frames/
+*_frames/
+
+# Modelos pesados de MediaPipe y Vision
+*.task
+models/
+**/models/
+python-clients/
+**/python-clients/
+
+# ------------------------------------------------------------------------------
+# 5. Sistema Operativo y Editores
+# ------------------------------------------------------------------------------
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-.vscode/
+[Dd]esktop.ini
+
+# IDEs y editores
 .idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# Archivos de depuración y temporales locales
+*.log
+-
+scratch/
