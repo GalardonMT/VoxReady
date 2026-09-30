@@ -3,6 +3,15 @@ finish -> analysis -> report, plus idempotency and state validations."""
 import asyncio
 import uuid
 
+from sqlalchemy import select
+
+from app import db as db_module
+from app.models.content import Scenario
+from app.models.identity import AppUser, Client
+from app.models.privacy import AuditEvent
+from app.models.sessions import Consent, IdempotencyKey, PracticeSession, SessionQuestion
+from app.seed import DEMO_CLIENT_ID, VOCERO_ID
+
 from tests.conftest import VOCERO_EMAIL, auth, token_for
 
 
@@ -201,3 +210,98 @@ async def test_session_of_another_user_returns_404(client):
     )
     assert response.status_code == 404
     assert response.json()["title"] == "session_not_found"
+
+
+async def test_setup_consent_audit_and_retry(client):
+    headers = auth(await token_for(client, VOCERO_EMAIL))
+    catalog = await client.get('/v1/scenarios?category=health&q=brote&page=1&pageSize=1', headers=headers)
+    assert catalog.status_code == 200
+    assert catalog.json()['total'] == 1
+    scenario_id = catalog.json()['items'][0]['id']
+    detail = await client.get(f'/v1/scenarios/{scenario_id}', headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()['id'] == scenario_id
+
+    key = uuid.uuid4().hex
+    created = await client.post('/v1/sessions', json={'scenarioId': scenario_id}, headers={**headers, 'Idempotency-Key': key})
+    repeated = await client.post('/v1/sessions', json={'scenarioId': scenario_id}, headers={**headers, 'Idempotency-Key': key})
+    assert created.status_code == repeated.status_code == 201
+    assert created.json() == repeated.json()
+    other_id = (await client.get('/v1/scenarios', headers=headers)).json()['items'][0]['id']
+    if other_id == scenario_id:
+        other_id = (await client.get('/v1/scenarios', headers=headers)).json()['items'][1]['id']
+    conflict = await client.post('/v1/sessions', json={'scenarioId': other_id}, headers={**headers, 'Idempotency-Key': key})
+    assert conflict.status_code == 409
+    sid = created.json()['sessionId']
+    setup = await client.get(f'/v1/sessions/{sid}', headers=headers)
+    assert setup.status_code == 200
+    assert len(setup.json()['questions']) == created.json()['questionCount']
+    assert all(q['text'] for q in setup.json()['questions'])
+    assert [q['sequenceNo'] for q in setup.json()['questions']] == list(range(1, created.json()['questionCount'] + 1))
+    version = setup.json()['retentionPolicy']['version']
+
+    omitted = await client.post(f'/v1/sessions/{sid}/consent', json={
+        'acceptRecording': True, 'acknowledgeDeletion': False, 'policyVersion': version,
+    }, headers=headers)
+    assert omitted.status_code == 400
+    stale = await client.post(f'/v1/sessions/{sid}/consent', json={
+        'acceptRecording': True, 'acknowledgeDeletion': True, 'policyVersion': 'obsolete',
+    }, headers=headers)
+    assert stale.status_code == 409
+    accepted = await client.post(f'/v1/sessions/{sid}/consent', json={
+        'acceptRecording': True, 'acknowledgeDeletion': True, 'policyVersion': version,
+    }, headers=headers)
+    assert accepted.status_code == 200
+    assert accepted.json()['status'] == 'consented'
+
+    async with db_module.new_session() as db:
+        session = await db.get(PracticeSession, uuid.UUID(sid))
+        consent = await db.scalar(select(Consent).where(Consent.session_id == session.id))
+        links = (await db.scalars(select(SessionQuestion).where(SessionQuestion.session_id == session.id))).all()
+        sessions = (await db.scalars(select(PracticeSession).where(PracticeSession.user_id == VOCERO_ID))).all()
+        events = (await db.scalars(select(AuditEvent).where(AuditEvent.entity_id == session.id))).all()
+        keys = (await db.scalars(select(IdempotencyKey).where(IdempotencyKey.key == key))).all()
+        assert session.user_id == consent.user_id == VOCERO_ID
+        assert session.client_id == DEMO_CLIENT_ID
+        assert len(links) == created.json()['questionCount']
+        assert len(sessions) == 1
+        assert len(events) == 2
+        assert {event.event_type for event in events} == {'session_created', 'consent_given'}
+        assert all(event.client_id == DEMO_CLIENT_ID and event.actor_user_id == VOCERO_ID for event in events)
+        assert len(keys) == 1
+
+
+async def test_foreign_archived_scenario_and_company_change(client):
+    headers = auth(await token_for(client, VOCERO_EMAIL))
+    scenario_id = (await client.get('/v1/scenarios', headers=headers)).json()['items'][0]['id']
+    foreign_client_id = uuid.uuid4()
+    foreign_scenario_id = uuid.uuid4()
+    async with db_module.new_session() as db:
+        original = await db.get(Scenario, uuid.UUID(scenario_id))
+        db.add(Client(id=foreign_client_id, name='Otra empresa', status='active'))
+        db.add(Scenario(id=foreign_scenario_id, topic_id=original.topic_id, client_id=foreign_client_id,
+                        title='Privado', category='health', difficulty='basic',
+                        estimated_minutes=5, question_count=1, status='active'))
+        await db.commit()
+
+    for sid in (str(foreign_scenario_id),):
+        assert (await client.get(f'/v1/scenarios/{sid}', headers=headers)).status_code == 404
+        assert (await client.post('/v1/sessions', json={'scenarioId': sid}, headers=headers)).status_code == 404
+
+    created = await _create_session(client, headers)
+    async with db_module.new_session() as db:
+        original = await db.get(Scenario, uuid.UUID(scenario_id))
+        original.status = 'archived'
+        await db.commit()
+    assert (await client.get(f'/v1/scenarios/{scenario_id}', headers=headers)).status_code == 404
+    assert (await client.post('/v1/sessions', json={'scenarioId': scenario_id}, headers=headers)).status_code == 404
+
+    async with db_module.new_session() as db:
+        user = await db.get(AppUser, VOCERO_ID)
+        user.client_id = foreign_client_id
+        await db.commit()
+    changed_headers = auth(await token_for(client, VOCERO_EMAIL))
+    assert (await client.get(f"/v1/sessions/{created['sessionId']}", headers=changed_headers)).status_code == 404
+    catalog = await client.get('/v1/scenarios', headers=changed_headers)
+    assert catalog.status_code == 200
+    assert catalog.json()['total'] == 0

@@ -47,6 +47,35 @@ async def get_own_session(
     return session
 
 
+async def get_session_setup(db: AsyncSession, principal: Principal, session_id: str) -> dict:
+    session = await get_own_session(db, principal, session_id)
+    rows = (
+        await db.execute(
+            select(SessionQuestion, Question)
+            .join(Question, SessionQuestion.question_id == Question.id)
+            .where(SessionQuestion.session_id == session.id)
+            .order_by(SessionQuestion.sequence_no)
+        )
+    ).all()
+    policy = await get_current_policy(db, session.client_id)
+    if policy is None:
+        raise AppError(500, "internal_error", "El cliente no tiene política de retención vigente.")
+    return {
+        "sessionId": str(session.id),
+        "scenarioId": str(session.scenario_id),
+        "status": session.status,
+        "questions": [
+            {"id": str(question.id), "sequenceNo": link.sequence_no, "text": question.text}
+            for link, question in rows
+        ],
+        "retentionPolicy": {
+            "version": policy.version_label,
+            "keep": policy.keep,
+            "termDays": policy.term_days,
+        },
+    }
+
+
 async def _pick_questions(
     db: AsyncSession,
     scenario: Scenario,
@@ -107,6 +136,11 @@ async def create_session(
             )
         )
         if existing is not None:
+            if existing.response_json.get("scenarioId") != body.scenarioId:
+                raise AppError(409, "idempotency_conflict", "La clave de reintento ya se usó para otro escenario.")
+            previous_session = await db.get(PracticeSession, to_uuid(existing.response_json.get("sessionId"), "session_not_found"))
+            if previous_session is None or previous_session.client_id != principal.client_id:
+                raise AppError(409, "idempotency_conflict", "La clave de reintento pertenece a otra empresa.")
             return existing.response_json
 
     scenario_id = to_uuid(body.scenarioId, "scenario_not_found")
@@ -122,6 +156,10 @@ async def create_session(
             "scenario_not_found",
             "El escenario indicado no existe o no está disponible.",
         )
+
+    topic = await db.get(Topic, scenario.topic_id)
+    if topic is None or topic.is_deleted or topic.client_id != principal.client_id:
+        raise AppError(404, "scenario_not_found", "El escenario indicado no existe o no está disponible.")
 
     language = body.language or principal.preferred_language
     if language not in LANGUAGES:
@@ -171,6 +209,15 @@ async def create_session(
                 created_at=utcnow(),
             )
         )
+    audit(
+        db,
+        "session_created",
+        actor_user_id=principal.user_id,
+        client_id=principal.client_id,
+        entity_type="session",
+        entity_id=session.id,
+        detail={"scenarioId": str(scenario.id), "questionCount": len(questions)},
+    )
     await db.commit()
     return response
 
@@ -196,6 +243,8 @@ async def register_consent(
         raise AppError(
             500, "internal_error", "El cliente no tiene política de retención vigente."
         )
+    if body.policyVersion != policy.version_label:
+        raise AppError(409, "policy_version_changed", "La política de retención cambió; revísela antes de consentir.")
 
     consent = Consent(
         session_id=session.id,

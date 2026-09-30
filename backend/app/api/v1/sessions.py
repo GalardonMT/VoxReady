@@ -31,6 +31,15 @@ async def create_session(
     return await session_service.create_session(db, principal, body, idempotency_key)
 
 
+@router.get("/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    principal: Principal = Depends(require_roles("spokesperson")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await session_service.get_session_setup(db, principal, session_id)
+
+
 @router.post("/sessions/{session_id}/consent")
 async def consent(
     session_id: str,

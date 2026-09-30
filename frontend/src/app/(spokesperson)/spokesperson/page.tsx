@@ -12,6 +12,7 @@ import { ProgressView } from '../../../components/spokesperson/ProgressView';
 import { LessonView } from '../../../components/spokesperson/LessonView';
 import { useAuth } from '../../../context/AuthContext';
 import { RoleGate } from '../../../components/auth/RoleGate';
+import type { SessionSetup } from '../../../services/sessionFlowService';
 
 export default function SpokespersonPage() {
   const router = useRouter();
@@ -19,10 +20,16 @@ export default function SpokespersonPage() {
 
   const [voceroScreen, setVoceroScreen] = useState<VoceroScreen>('u1');
   const [selectedLesson, setSelectedLesson] = useState<string>('Mensajes puente (Bridging)');
+  const [selectedSession, setSelectedSession] = useState<{ setup: SessionSetup; userId: string; clientId: string | null } | null>(null);
+  const activeSession = selectedSession && selectedSession.userId === user?.userId && selectedSession.clientId === user?.clientId ? selectedSession.setup : null;
+
+  const displayScreen = !activeSession && (voceroScreen === 'u3' || voceroScreen === 'u4') ? 'u2' : voceroScreen;
 
   if (!user) return <RoleGate role="spokesperson">{null}</RoleGate>;
 
   const handleVoceroNavigate = (screen: VoceroScreen, extra?: string) => {
+    if ((screen === 'u3' || screen === 'u4') && !activeSession) screen = 'u2';
+    if (screen === 'u4' && activeSession?.status !== 'consented') screen = 'u3';
     if (extra && screen === 'lesson') {
       setSelectedLesson(extra);
     }
@@ -53,7 +60,7 @@ export default function SpokespersonPage() {
             <button
               key={item.id}
               type="button"
-              className={`vtab ${voceroScreen === item.id ? 'active' : ''}`}
+              className={`vtab ${displayScreen === item.id ? 'active' : ''}`}
               onClick={() => handleVoceroNavigate(item.id)}
             >
               <span>{item.icon}</span>
@@ -84,14 +91,22 @@ export default function SpokespersonPage() {
       </header>
 
       <main className="canvas">
-        {voceroScreen === 'u1' && <HomePracticeView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u2' && <ScenarioCatalog onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u3' && <TechConsentView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u4' && <LiveSessionView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u5' && <AnalyzingView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u6' && <CoachReportView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u7' && <ProgressView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'lesson' && (
+        {displayScreen === 'u1' && <HomePracticeView onNavigate={handleVoceroNavigate} />}
+        {displayScreen === 'u2' && <ScenarioCatalog key={`${user.userId}:${user.clientId}`} onSelected={(setup) => {
+          setSelectedSession({ setup, userId: user.userId, clientId: user.clientId });
+          setVoceroScreen('u3');
+        }} />}
+        {displayScreen === 'u3' && activeSession && <TechConsentView key={activeSession.sessionId} setup={activeSession}
+          onCancel={() => { setSelectedSession(null); handleVoceroNavigate('u2'); }}
+          onBegin={() => {
+            setSelectedSession({ setup: { ...activeSession, status: 'consented' }, userId: user.userId, clientId: user.clientId });
+            setVoceroScreen('u4');
+          }} />}
+        {displayScreen === 'u4' && activeSession?.status === 'consented' && <LiveSessionView setup={activeSession} onNavigate={handleVoceroNavigate} />}
+        {displayScreen === 'u5' && <AnalyzingView onNavigate={handleVoceroNavigate} />}
+        {displayScreen === 'u6' && <CoachReportView onNavigate={handleVoceroNavigate} />}
+        {displayScreen === 'u7' && <ProgressView onNavigate={handleVoceroNavigate} />}
+        {displayScreen === 'lesson' && (
           <LessonView lessonTitle={selectedLesson} onNavigate={handleVoceroNavigate} />
         )}
       </main>

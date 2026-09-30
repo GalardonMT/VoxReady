@@ -53,22 +53,23 @@ VoxReady/
 
 ## Arranque Rápido con Docker Compose
 
+Para probar el flujo local con autenticación demo, PostgreSQL aislado y puertos
+3100/8100, sigue [LOCAL_DOCKER.md](LOCAL_DOCKER.md). Usa el proyecto
+`voxready-local` indicado allí para conservar separados los contenedores y datos
+del despliegue Azure.
+
 Para usar el inicio de sesión de Microsoft y la base Azure SQL configurados en el `.env` de la raíz, ejecuta `docker compose -f docker-compose.azure.yml up --build`. Este arranque usa el usuario vocero ya provisionado y no carga usuarios demo. Consulta [AUTENTICACION.md](AUTENTICACION.md) para los requisitos de Azure, sesión y permisos.
 
-La forma más rápida de levantar toda la plataforma (Base de datos PostgreSQL, Backend FastAPI y Frontend Next.js):
+Para iniciar el entorno demo aislado:
 
 ```bash
-# 1. Clonar el repositorio y situarse en la raíz
-cd VoxReady
-
-# 2. Levantar todos los servicios en contenedores
-docker compose up --build
+docker compose -p voxready-local -f docker-compose.local.yml up --build -d --wait
 ```
 
 Una vez iniciados los servicios:
-- **Frontend (Aplicación Web):** [http://localhost:3000](http://localhost:3000)
-- **Backend (API REST Docs):** [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Base de datos PostgreSQL:** `localhost:5432`
+- **Frontend (Aplicación Web):** [http://localhost:3100/login](http://localhost:3100/login)
+- **Backend (API REST Docs):** [http://localhost:8100/docs](http://localhost:8100/docs)
+- **Base de datos PostgreSQL:** dentro de la red Docker del proyecto local.
 
 ---
 

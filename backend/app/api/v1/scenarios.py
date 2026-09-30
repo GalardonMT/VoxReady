@@ -32,6 +32,7 @@ def _base_query(principal: Principal):
         .join(Topic, Scenario.topic_id == Topic.id)
         .where(
             Scenario.client_id == principal.client_id,
+            Topic.client_id == principal.client_id,
             Scenario.status == "active",
             Scenario.is_deleted.is_(False),
             Topic.is_deleted.is_(False),
