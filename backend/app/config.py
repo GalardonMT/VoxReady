@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Central configuration. All values can be overridden via env vars."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore")
 
     app_name: str = "VoxReady API"
     database_url: str = "sqlite+aiosqlite:///./voxready.db"

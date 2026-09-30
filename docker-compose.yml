@@ -1,29 +1,10 @@
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: voxready
-      POSTGRES_PASSWORD: voxready
-      POSTGRES_DB: voxready
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U voxready"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   api:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+asyncpg://voxready:voxready@db:5432/voxready}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./voxready.db}
       DEV_AUTH: ${DEV_AUTH:-true}
       DEV_AUTH_SECRET: ${DEV_AUTH_SECRET:-cambia-este-secreto-dev}
       JWKS_URL: ${JWKS_URL:-}
@@ -63,5 +44,4 @@ services:
       - "3000:3000"
 
 volumes:
-  pgdata:
   storage:

@@ -35,7 +35,7 @@ async function getAuthToken(): Promise<string | null> {
 
   // 2. Try MSAL silent token renewal (if configured and user is signed in)
   try {
-    const { msalInstance, loginRequest, isAzureConfigured } = await import('./authConfig');
+    const { msalInstance, loginRequest, loginRedirectRequest, isAzureConfigured } = await import('./authConfig');
     if (isAzureConfigured) {
       const accounts = msalInstance.getAllAccounts();
       if (accounts.length > 0) {
@@ -49,8 +49,21 @@ async function getAuthToken(): Promise<string | null> {
         }
       }
     }
-  } catch {
-    // MSAL not available or silent renewal failed
+  } catch (err: unknown) {
+    // Clear stale token so subsequent calls don't use an expired one
+    localStorage.removeItem('voxready_token');
+
+    // If the error requires user interaction (expired refresh token, MFA, etc.)
+    // redirect to the Microsoft login page
+    if (err && typeof err === 'object' && 'name' in err &&
+        (err as { name: string }).name === 'InteractionRequiredAuthError') {
+      try {
+        const { msalInstance, loginRedirectRequest } = await import('./authConfig');
+        await msalInstance.acquireTokenRedirect(loginRedirectRequest);
+      } catch {
+        // redirect will navigate away; ignore errors here
+      }
+    }
   }
 
   // 3. Fallback: if user is logged in as a demo/dev user, try dev token if available

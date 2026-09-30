@@ -1,6 +1,7 @@
 """JWT validation (RS256 via JWKS, HS256 dev mode) and RBAC dependencies."""
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
@@ -13,6 +14,8 @@ from jwt import PyJWKClient
 from app.config import Settings, get_settings
 from app.core.errors import AppError
 from app.utils import utcnow
+
+logger = logging.getLogger(__name__)
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -76,7 +79,8 @@ def _decode_token(token: str, settings: Settings) -> dict | None:
                     "verify_iss": bool(settings.jwt_issuer),
                 },
             )
-        except jwt.PyJWTError:
+        except jwt.PyJWTError as e:
+            logger.error("JWT Validation Error: %s", e)
             return None
     return None
 

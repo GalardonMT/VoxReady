@@ -12,7 +12,7 @@ interface LoginViewProps {
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const { t } = useI18n();
-  const { loginAs, loginWithEmail, loginWithAzure, loading, testUsers } = useAuth();
+  const { loginAs, loginWithEmail, loginWithAzure, loading, authError, testUsers } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -141,7 +141,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           </button>
         </form>
 
-        {error && <p className="login-err">{error}</p>}
+        {(error || authError) && <p className="login-err">{error || authError}</p>}
 
         <div className="login-divider">{t.login.testL}</div>
 

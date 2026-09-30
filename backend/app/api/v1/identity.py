@@ -6,13 +6,13 @@ in the `app_user` table by their Object ID (oid/sub) or email to resolve the
 full profile.
 """
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
 from app.core.security import Principal, get_principal
 from app.db import get_db
-from app.models.identity import AppUser
+from app.models.identity import AppUser, Client
 
 router = APIRouter(tags=["identity"])
 
@@ -38,17 +38,16 @@ async def get_me(
     user = await db.scalar(
         select(AppUser).where(
             AppUser.b2c_object_id == str(principal.user_id),
-            AppUser.is_deleted.is_(False),
+            AppUser.is_deleted == False,
         )
     )
 
     # Fallback: try matching by email (case-insensitive)
     if user is None and principal.email:
-        from sqlalchemy import func
         user = await db.scalar(
             select(AppUser).where(
                 func.lower(AppUser.email) == principal.email.strip().lower(),
-                AppUser.is_deleted.is_(False),
+                AppUser.is_deleted == False,
             )
         )
         if user and user.b2c_object_id != str(principal.user_id):
@@ -58,7 +57,6 @@ async def get_me(
 
     if user is None:
         # Auto-provision verified Entra CIAM user into the active client
-        from app.models.identity import Client
         client = await db.scalar(select(Client).where(Client.status == "active").limit(1))
         if client:
             user = AppUser(

@@ -127,6 +127,11 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err) {
       console.warn('[Auth] Token acquisition or backend profile fetch failed:', err);
+      const message = err instanceof Error ? err.message : String(err);
+      setAuthError(`Error al conectar con el servidor: ${message}`);
+      setUser(null);
+      localStorage.removeItem('voxready_user');
+      localStorage.removeItem('voxready_token');
     } finally {
       setLoading(false);
     }
