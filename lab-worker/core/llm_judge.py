@@ -2,15 +2,12 @@ import os
 import re
 import json
 import logging
-from typing import Optional, List, Dict, Any
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
+from typing import Optional, List
+from dotenv import load_dotenv
 from openai import OpenAI
 from core.schemas import EvaluacionLLMResponse, ReporteJuezConsolidado
+
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +26,6 @@ def _clean_and_parse_json(content: str) -> dict:
             text = text[start_idx : end_idx + 1].strip()
 
     return json.loads(text)
-
 
 SYSTEM_PROMPT = """
 Eres un consultor senior de Media Training y Manejo de Crisis corporativas, riguroso, crítico y pedagógico.
@@ -67,7 +63,6 @@ PESOS_DIMENSIONES = {
     "claridad_mensaje": 0.05,
 }
 
-
 class LLMJudgeService:
     def __init__(
         self,
@@ -76,49 +71,35 @@ class LLMJudgeService:
         model: Optional[str] = None,
         timeout: Optional[float] = None,
     ):
-        try:
-            from services.keyvault_service import get_secret
-            kv_get = get_secret
-        except ImportError:
-            kv_get = lambda k, d=None: os.getenv(k, d)
-
-        self.api_key = api_key or kv_get("NVIDIA_API_KEY") or os.getenv("NVIDIA_API_KEY")
+        self.api_key = api_key or os.getenv("NVIDIA_API_KEY")
         
         # Sanitizar base_url: OpenAI SDK concatena /chat/completions por defecto.
+        # Si el usuario colocó '/chat/completions' al final, se normaliza automáticamente.
         raw_base_url = (
             base_url
-            or kv_get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
             or os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
         ).strip().rstrip("/")
         if raw_base_url.endswith("/chat/completions"):
             raw_base_url = raw_base_url[:-len("/chat/completions")].rstrip("/")
         self.base_url = raw_base_url
 
-        self.model = (
-            model
-            or kv_get("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
-            or os.getenv("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
+        self.model = model or os.getenv(
+            "LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct"
         )
         
         # Timeout amplio (120s por defecto) para permitir que NVIDIA NIM termine la inferencia
         self.timeout = timeout if timeout is not None else float(
-            kv_get("LLM_TIMEOUT", "120.0") or os.getenv("LLM_TIMEOUT", "120.0")
+            os.getenv("LLM_TIMEOUT", "120.0")
         )
 
         if not self.api_key:
-            logger.warning("NVIDIA_API_KEY no configurada en variables de entorno o Key Vault")
+            raise ValueError("NVIDIA_API_KEY no configurada en las variables de entorno")
 
-        self._client = None
-
-    @property
-    def client(self) -> OpenAI:
-        if self._client is None:
-            self._client = OpenAI(
-                base_url=self.base_url,
-                api_key=self.api_key,
-                timeout=self.timeout,
-            )
-        return self._client
+        self.client = OpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=self.timeout,
+        )
 
     def evaluate_response(
         self,
@@ -150,7 +131,7 @@ Genera el análisis en formato JSON estricto con las claves:
   Cada dimensión debe contener: 'nivel' (entero 1 a 5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta).
 - feedback_pedagogico (fortaleza_principal, brecha_critica, recomendacion_accionable)
 """
-
+        print(user_prompt)
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -170,6 +151,7 @@ Genera el análisis en formato JSON estricto con las claves:
                 logger.warning(
                     f"Fallo con {self.model} ({primary_err}). Reintentando con modelo ligero {fallback_model}..."
                 )
+                print(f"[REINTENTO] Fallo con {self.model} ({primary_err}). Reintentando con {fallback_model}...")
                 response = self.client.chat.completions.create(
                     model=fallback_model,
                     messages=[
@@ -214,61 +196,3 @@ Genera el análisis en formato JSON estricto con las claves:
             feedback=parsed_eval.feedback_pedagogico,
             raw_evaluation=parsed_eval,
         )
-
-
-class LLMJudge(LLMJudgeService):
-    """
-    Wrapper compatible hacia atrás para llamadas previas tipo evaluate_transcript.
-    """
-
-    def evaluate_transcript(
-        self,
-        transcript: str,
-        crisis_context: Optional[str] = None,
-        key_messages: Optional[List[str]] = None,
-        question: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if not transcript or not transcript.strip():
-            return {
-                "puntaje_global_100": 0.0,
-                "key_message_adherence_score": 0,
-                "crisis_control_score": 0,
-                "bridging_detected": False,
-                "strengths": [],
-                "weaknesses": ["No se detectó audio ni transcripción inteligible."],
-                "executive_summary": "No fue posible evaluar la declaración debido a la ausencia de contenido verbal.",
-            }
-
-        try:
-            reporte = self.evaluate_response(
-                pregunta_periodista=question or "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?",
-                mensajes_clave=key_messages or ["Nuestra máxima prioridad es la seguridad y el restablecimiento del servicio."],
-                contexto_crisis=crisis_context or "Incidente corporativo y vocería de crisis.",
-                transcripcion_vocero=transcript,
-            )
-            reporte_dict = reporte.model_dump()
-            # Mapear claves heredadas para compatibilidad con dashboards frontend existentes
-            reporte_dict["key_message_adherence_score"] = int(
-                reporte.dimensiones.get("alineacion_mensaje_clave", {}).get("score_100", 75)
-            )
-            reporte_dict["crisis_control_score"] = int(
-                reporte.dimensiones.get("tecnicas_control", {}).get("score_100", 75)
-            )
-            reporte_dict["bridging_detected"] = len(
-                reporte.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
-            ) > 0
-            reporte_dict["strengths"] = [reporte.feedback.fortaleza_principal] if reporte.feedback.fortaleza_principal else []
-            reporte_dict["weaknesses"] = [reporte.feedback.brecha_critica] if reporte.feedback.brecha_critica else []
-            reporte_dict["executive_summary"] = reporte.feedback.recomendacion_accionable
-            return reporte_dict
-        except Exception as e:
-            logger.warning(f"Evaluación LLM Juez falló ({e}); retornando evaluación de contingencia.")
-            return {
-                "puntaje_global_100": 75.0,
-                "key_message_adherence_score": 75,
-                "crisis_control_score": 75,
-                "bridging_detected": True,
-                "strengths": ["Mantuvo compostura adecuada ante la consulta"],
-                "weaknesses": ["Oportunidad de reforzar datos cuantitativos y síntesis"],
-                "executive_summary": "El vocero mantuvo la estabilidad institucional durante la vocería.",
-            }

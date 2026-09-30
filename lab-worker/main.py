@@ -70,6 +70,7 @@ def preparar_directorio_salida(
         "consolidated_json_path": video_output_dir / "resultado_consolidado.json",
         "video_metrics_json_path": video_output_dir / "metricas_video.json",
         "voice_metrics_json_path": video_output_dir / "metricas_voz.json",
+        "judge_metrics_json_path": video_output_dir / "metricas_juez.json",
     }
 
 
@@ -78,6 +79,10 @@ def procesar_video_completo(
     output_base_dir: Optional[Union[str, Path]] = None,
     fps: float = 0.5,
     evaluar_audio: bool = True,
+    evaluar_juez_llm: bool = True,
+    pregunta_periodista: Optional[str] = None,
+    mensajes_clave: Optional[list] = None,
+    contexto_crisis: Optional[str] = None,
     con_timestamp: bool = False,
 ) -> Dict:
     """
@@ -88,12 +93,18 @@ def procesar_video_completo(
     4. Guarda metricas_video.json.
     5. Evalúa el audio con NVIDIA Riva (ASR, fluidez, dicción, muletillas).
     6. Guarda metricas_voz.json.
-    7. Genera y guarda resultado_consolidado.json.
+    7. Evalúa la respuesta transcrita con el LLM Juez Visum (NVIDIA Build API).
+    8. Guarda metricas_juez.json.
+    9. Genera y guarda resultado_consolidado.json.
     
     :param video_path: Ruta del video (WebM o MP4).
-    :param output_base_dir: Carpeta base para outputs (por defecto nvidia/outputs/).
+    :param output_base_dir: Carpeta base para outputs (por defecto lab-worker/outputs/).
     :param fps: Frecuencia de muestreo de fotogramas (por defecto 0.5 fps = 1 foto cada 2s).
     :param evaluar_audio: Si True, ejecuta la transcripción y evaluación de voz con NVIDIA Riva.
+    :param evaluar_juez_llm: Si True, ejecuta la evaluación estructurada con LLMJudgeService.
+    :param pregunta_periodista: Pregunta del periodista para el análisis de pertinencia.
+    :param mensajes_clave: Lista de mensajes clave obligatorios.
+    :param contexto_crisis: Contexto del escenario de crisis.
     :param con_timestamp: Si True, agrega sufijo de fecha/hora al nombre de la carpeta.
     :return: Diccionario consolidado con métricas completas y rutas de los archivos generados.
     """
@@ -145,7 +156,30 @@ def procesar_video_completo(
         except Exception as e:
             print(f"[AVISO] No se pudo procesar el audio con NVIDIA Riva: {e}")
 
-    # Paso 4: Construir Payload Consolidado Final
+    # Paso 4: Evaluar con LLM Juez Visum (NVIDIA Build API)
+    resultado_juez = None
+    transcripcion = (resultado_audio.get("transcription") or "").strip() if resultado_audio else ""
+    
+    if evaluar_juez_llm and transcripcion:
+        try:
+            from core.llm_judge import LLMJudgeService
+            judge_service = LLMJudgeService()
+            print("[INFO] Evaluando respuesta con LLM Juez Visum (NVIDIA NIM)...")
+            reporte_juez = judge_service.evaluate_response(
+                pregunta_periodista=pregunta_periodista or "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?",
+                mensajes_clave=mensajes_clave or ["Nuestra máxima prioridad es la seguridad y el restablecimiento del servicio."],
+                contexto_crisis=contexto_crisis or "Crisis institucional y operacional con impacto en la comunidad.",
+                transcripcion_vocero=transcripcion
+            )
+            resultado_juez = reporte_juez.model_dump()
+            with open(rutas["judge_metrics_json_path"], "w", encoding="utf-8") as f:
+                json.dump(resultado_juez, f, indent=2, ensure_ascii=False)
+            print(f"[OK] Metricas del Juez LLM Visum guardadas en: {rutas['judge_metrics_json_path'].name}")
+            print(f"     Puntaje Global LLM: {resultado_juez['puntaje_global_100']}/100")
+        except Exception as e:
+            print(f"[AVISO] No se pudo procesar la evaluacion del LLM Juez ({type(e).__name__}): {e}")
+
+    # Paso 5: Construir Payload Consolidado Final
     payload_consolidado = {
         "video_origen": str(video_path),
         "fecha_procesamiento": datetime.datetime.now().isoformat(),
@@ -155,17 +189,20 @@ def procesar_video_completo(
             "carpeta_frames": str(rutas["frames_dir"]),
             "json_metricas_video": str(rutas["video_metrics_json_path"]),
             "json_metricas_voz": str(rutas["voice_metrics_json_path"]) if resultado_audio else None,
+            "json_metricas_juez": str(rutas["judge_metrics_json_path"]) if resultado_juez else None,
             "json_consolidado": str(rutas["consolidated_json_path"])
         },
         "resumen_ejecutivo": {
             "total_frames_analizados": resultado_video.get("total_frames_analizados", 0),
             "score_expresion_video": resultado_video.get("score_area_expresion", 0.0),
             "score_fluidez_voz": resultado_audio.get("metrics", {}).get("score_fluidez") if resultado_audio else None,
-            "score_diccion_voz": resultado_audio.get("metrics", {}).get("score_diccion") if resultado_audio else None
+            "score_diccion_voz": resultado_audio.get("metrics", {}).get("score_diccion") if resultado_audio else None,
+            "score_global_juez_llm": resultado_juez.get("puntaje_global_100") if resultado_juez else None,
         },
         "metricas_video": resultado_video,
         "metricas_audio": resultado_audio.get("metrics") if resultado_audio else None,
-        "transcripcion": resultado_audio.get("transcription") if resultado_audio else None
+        "metricas_juez": resultado_juez,
+        "transcripcion": transcripcion or None
     }
 
     # Guardar JSON consolidado final
@@ -178,19 +215,38 @@ def procesar_video_completo(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Uso: python main.py <ruta_del_video_webm_o_mp4> [fps] [carpeta_salida]")
+        print("Uso: python main.py <ruta_del_video_webm_o_mp4> [fps] [carpeta_salida] [escenario_json]")
         print("Ejemplo: python main.py grabacion.webm 0.5")
         sys.exit(1)
 
     video_input = sys.argv[1]
     fps_input = float(sys.argv[2]) if len(sys.argv) > 2 else 0.5
     output_dir_arg = sys.argv[3] if len(sys.argv) > 3 else None
+    
+    pregunta_arg = None
+    mensajes_arg = None
+    contexto_arg = None
+    if len(sys.argv) > 4:
+        # Permite pasar un archivo JSON con la metadata del escenario
+        escenario_file = Path(sys.argv[4])
+        if escenario_file.exists():
+            with open(escenario_file, "r", encoding="utf-8") as f:
+                escenario_data = json.load(f)
+                pregunta_arg = escenario_data.get("pregunta_periodista") or escenario_data.get("question_text")
+                mensajes_arg = escenario_data.get("mensajes_clave") or escenario_data.get("key_messages")
+                contexto_arg = escenario_data.get("contexto_crisis") or escenario_data.get("scenario_description")
 
     resultado = procesar_video_completo(
         video_path=video_input,
         output_base_dir=output_dir_arg,
-        fps=fps_input
+        fps=fps_input,
+        pregunta_periodista=pregunta_arg,
+        mensajes_clave=mensajes_arg,
+        contexto_crisis=contexto_arg
     )
     print("=== PROCESAMIENTO COMPLETADO ===")
     print(f"Carpeta de salida: {resultado['archivos_generados']['carpeta_output']}")
     print(f"JSON consolidado: {resultado['archivos_generados']['json_consolidado']}")
+    if resultado.get("resumen_ejecutivo", {}).get("score_global_juez_llm") is not None:
+        print(f"Score Global Juez Visum: {resultado['resumen_ejecutivo']['score_global_juez_llm']}/100")
+

@@ -10,6 +10,7 @@ import requests
 from openai import OpenAI
 from azure.servicebus import ServiceBusClient, AutoLockRenewer
 from azure.storage.blob import BlobServiceClient
+from core.llm_judge import LLMJudgeService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -127,7 +128,9 @@ def analyze_vision(frame_files: list) -> dict:
 
 
 def evaluate_with_llm(scenario_id: str, transcript: str) -> dict:
-    base_url = (NVIDIA_BASE_URL or "https://integrate.api.nvidia.com/v1").strip()
+    base_url = (NVIDIA_BASE_URL or "https://integrate.api.nvidia.com/v1").strip().rstrip("/")
+    if base_url.endswith("/chat/completions"):
+        base_url = base_url[:-len("/chat/completions")].rstrip("/")
     if "[" in base_url and "]" in base_url:
         match = re.search(r'\((https?://[^)]+)\)', base_url)
         if match:
@@ -145,7 +148,7 @@ def evaluate_with_llm(scenario_id: str, transcript: str) -> dict:
             "executive_summary": "El vocero proyectó seguridad y control en la declaración."
         }
 
-    client = OpenAI(base_url=base_url, api_key=api_key, timeout=45.0)
+    client = OpenAI(base_url=base_url, api_key=api_key, timeout=120.0)
 
     system_prompt = (
         "Eres un evaluador experto y juez de comunicación estratégica y manejo de crisis corporativa.\n"
@@ -172,7 +175,7 @@ def evaluate_with_llm(scenario_id: str, transcript: str) -> dict:
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
-            timeout=45.0
+            timeout=120.0
         )
         content = response.choices[0].message.content
         return json.loads(content)
@@ -227,7 +230,7 @@ def process_message(body: dict):
 
         # 2. Transcripción / Audio (acústico y muletillas)
         logging.info("Calculando métricas acústicas...")
-        transcript = "Mensaje de respuesta institucional emitido por el vocero para evaluación de crisis."
+        transcript = payload.get("transcript") or payload.get("transcription") or "Mensaje de respuesta institucional emitido por el vocero para evaluación de crisis."
         audio_metrics = {
             "wpm": 128,
             "fillers_count": 2,
@@ -235,14 +238,55 @@ def process_message(body: dict):
             "audio_duration_sec": 5.0
         }
 
-        # 3. LLM Juez
-        logging.info("Ejecutando evaluación con NVIDIA LLM Judge...")
-        llm_metrics = evaluate_with_llm(scenario_id, transcript)
+        # 3. LLM Juez Visum (NVIDIA NIM)
+        logging.info("Ejecutando evaluación con LLM Juez Visum...")
+        try:
+            judge_svc = LLMJudgeService()
+            pregunta = (
+                payload.get("question_text")
+                or payload.get("pregunta_periodista")
+                or "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
+            )
+            mensajes = (
+                payload.get("key_messages")
+                or payload.get("mensajes_clave")
+                or ["Nuestra prioridad es la seguridad y el restablecimiento del servicio."]
+            )
+            contexto = (
+                payload.get("scenario_description")
+                or payload.get("contexto_crisis")
+                or scenario_id
+                or "Incidente corporativo y vocería de crisis."
+            )
+            reporte_juez = judge_svc.evaluate_response(
+                pregunta_periodista=pregunta,
+                mensajes_clave=mensajes,
+                contexto_crisis=contexto,
+                transcripcion_vocero=transcript
+            )
+            llm_metrics = reporte_juez.model_dump()
+            # Mapear claves heredadas para retrocompatibilidad con frontend existente
+            llm_metrics["key_message_adherence_score"] = int(
+                reporte_juez.dimensiones.get("alineacion_mensaje_clave", {}).get("score_100", 75)
+            )
+            llm_metrics["crisis_control_score"] = int(
+                reporte_juez.dimensiones.get("tecnicas_control", {}).get("score_100", 75)
+            )
+            llm_metrics["bridging_detected"] = len(
+                reporte_juez.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
+            ) > 0
+            llm_metrics["strengths"] = [reporte_juez.feedback.fortaleza_principal] if reporte_juez.feedback.fortaleza_principal else []
+            llm_metrics["weaknesses"] = [reporte_juez.feedback.brecha_critica] if reporte_juez.feedback.brecha_critica else []
+            llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
+            score_estrategico = reporte_juez.puntaje_global_100
+        except Exception as e:
+            logging.warning(f"Evaluación con LLMJudgeService falló ({e}); usando fallback.")
+            llm_metrics = evaluate_with_llm(scenario_id, transcript)
+            score_estrategico = (llm_metrics.get("key_message_adherence_score", 75) * 0.5) + (llm_metrics.get("crisis_control_score", 75) * 0.5)
 
         # Score global compuesto
         score_visual = (vision_metrics["eye_contact_percentage"] * 0.6) + (vision_metrics["average_posture_score"] * 0.4)
         score_verbal = 80.0
-        score_estrategico = (llm_metrics.get("key_message_adherence_score", 75) * 0.5) + (llm_metrics.get("crisis_control_score", 75) * 0.5)
         score_global = round((score_visual * 0.25) + (score_verbal * 0.35) + (score_estrategico * 0.40), 1)
 
         consolidated_report = {

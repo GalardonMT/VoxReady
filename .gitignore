@@ -91,6 +91,10 @@ frames/
 **/frames/
 *_frames/
 
+# Reportes temporales generados
+*_report.json
+reporte_*.json
+
 # Modelos pesados de MediaPipe y Vision
 *.task
 models/

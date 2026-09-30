@@ -33,10 +33,15 @@ class ReportBuilder:
         score_diccion = float(audio_metrics.get("score_diccion", 0.0))
         score_verbal = round(max(0.0, min(100.0, (score_fluidez * 0.60) + (score_diccion * 0.40))), 1)
 
-        # LLM: apego a mensajes y control de crisis
-        score_adherencia = float(llm_result.get("key_message_adherence_score", 70.0))
-        score_control = float(llm_result.get("crisis_control_score", 70.0))
-        score_estrategico = round(max(0.0, min(100.0, (score_adherencia * 0.50) + (score_control * 0.50))), 1)
+        # LLM: Juez Visum o apego a mensajes
+        if "puntaje_global_100" in llm_result:
+            score_estrategico = float(llm_result["puntaje_global_100"])
+            score_adherencia = float(llm_result.get("dimensiones", {}).get("alineacion_mensaje_clave", {}).get("score_100", score_estrategico))
+            score_control = float(llm_result.get("dimensiones", {}).get("tecnicas_control", {}).get("score_100", score_estrategico))
+        else:
+            score_adherencia = float(llm_result.get("key_message_adherence_score", 70.0))
+            score_control = float(llm_result.get("crisis_control_score", 70.0))
+            score_estrategico = round(max(0.0, min(100.0, (score_adherencia * 0.50) + (score_control * 0.50))), 1)
 
         # 2. Score Global Compuesto de la Sesión
         # Ponderación integral: 25% No verbal / 35% Expresión vocal / 40% Manejo estratégico y apego al mensaje
@@ -57,6 +62,9 @@ class ReportBuilder:
                 "score_estrategia_crisis": score_estrategico,
             },
             "evaluacion_llm_crisis": {
+                "score_global_visum": score_estrategico,
+                "dimensiones_visum": llm_result.get("dimensiones", {}),
+                "feedback_pedagogico": llm_result.get("feedback", {}),
                 "key_message_adherence_score": score_adherencia,
                 "crisis_control_score": score_control,
                 "bridging_detected": llm_result.get("bridging_detected", False),
