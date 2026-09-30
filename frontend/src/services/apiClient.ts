@@ -4,7 +4,9 @@
  */
 
 export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/v1';
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_API_URL ||
+  'https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io';
 
 export interface ProblemDetails {
   type?: string;
@@ -106,8 +108,10 @@ export async function apiFetch<T>(
     ...(options.headers as Record<string, string> || {})
   };
 
-  if (token && !headers['Authorization']) {
-    headers['Authorization'] = `Bearer ${token}`;
+  const devToken = process.env.NEXT_PUBLIC_DEV_AUTH === 'true' ? 'dev-token' : null;
+  const effectiveToken = token || devToken;
+  if (effectiveToken && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${effectiveToken}`;
   }
 
   // Generar correlation-id para trazabilidad

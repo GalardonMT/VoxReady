@@ -27,12 +27,19 @@ function SpokespersonContent() {
 
   const [voceroScreen, setVoceroScreen] = useState<VoceroScreen>('u1');
   const [selectedLesson, setSelectedLesson] = useState<string>('Mensajes puente (Bridging)');
+  const [activeSessionId, setActiveSessionId] = useState<string>('session-e2e-final-002');
+  const [activeScenarioId, setActiveScenarioId] = useState<string>('crisis-voceria-01');
 
   if (!user) return null; // guaranteed by ProtectedRoute
 
   const handleVoceroNavigate = (screen: VoceroScreen, extra?: string) => {
     if (extra && screen === 'lesson') {
       setSelectedLesson(extra);
+    }
+    if (screen === 'u3') {
+      if (extra) setActiveScenarioId(extra);
+      const newSession = `session-${extra || 'crisis'}-${Date.now()}`;
+      setActiveSessionId(newSession);
     }
     setVoceroScreen(screen);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -95,9 +102,26 @@ function SpokespersonContent() {
         {voceroScreen === 'u1' && <HomePracticeView onNavigate={handleVoceroNavigate} />}
         {voceroScreen === 'u2' && <ScenarioCatalog onNavigate={handleVoceroNavigate} />}
         {voceroScreen === 'u3' && <TechConsentView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u4' && <LiveSessionView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u5' && <AnalyzingView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u6' && <CoachReportView onNavigate={handleVoceroNavigate} />}
+        {voceroScreen === 'u4' && (
+          <LiveSessionView
+            onNavigate={handleVoceroNavigate}
+            sessionId={activeSessionId}
+            scenarioId={activeScenarioId}
+            onSessionComplete={(sId) => setActiveSessionId(sId)}
+          />
+        )}
+        {voceroScreen === 'u5' && (
+          <AnalyzingView
+            onNavigate={handleVoceroNavigate}
+            sessionId={activeSessionId}
+          />
+        )}
+        {voceroScreen === 'u6' && (
+          <CoachReportView
+            onNavigate={handleVoceroNavigate}
+            sessionId={activeSessionId}
+          />
+        )}
         {voceroScreen === 'u7' && <ProgressView onNavigate={handleVoceroNavigate} />}
         {voceroScreen === 'lesson' && (
           <LessonView lessonTitle={selectedLesson} onNavigate={handleVoceroNavigate} />

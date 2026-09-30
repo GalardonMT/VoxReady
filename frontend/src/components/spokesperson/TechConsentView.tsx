@@ -14,6 +14,32 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
 
   const [chk1, setChk1] = useState(false);
   const [chk2, setChk2] = useState(false);
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const [streamActive, setStreamActive] = useState(false);
+
+  React.useEffect(() => {
+    let stream: MediaStream | null = null;
+    async function setupCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true
+        });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+        setStreamActive(true);
+      } catch (e) {
+        console.warn('Camera access in TechConsentView:', e);
+      }
+    }
+    setupCamera();
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
 
   const isEnabled = chk1 && chk2;
 
@@ -23,17 +49,33 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
         {/* Left Column: Tech validation */}
         <div className="card col">
           <div className="label">{d.camL}</div>
-          <div className="self" style={{ minHeight: '220px' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '38px', marginBottom: '8px' }}>👤</div>
-              <div style={{ fontSize: '13px', color: '#cdd4da' }}>{d.camL}</div>
-            </div>
+          <div className="self" style={{ minHeight: '220px', position: 'relative', overflow: 'hidden', borderRadius: '8px', background: '#000' }}>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{
+                width: '100%',
+                height: '100%',
+                minHeight: '220px',
+                objectFit: 'cover',
+                transform: 'scaleX(-1)',
+                display: streamActive ? 'block' : 'none'
+              }}
+            />
+            {!streamActive && (
+              <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                <div style={{ fontSize: '38px', marginBottom: '8px' }}>👤</div>
+                <div style={{ fontSize: '13px', color: '#cdd4da' }}>{d.camL}</div>
+              </div>
+            )}
             <div
               className="reclamp"
-              style={{ background: 'rgba(0, 0, 0, 0.45)', color: '#fff' }}
+              style={{ background: 'rgba(0, 0, 0, 0.65)', color: '#fff', position: 'absolute', bottom: '10px', left: '10px' }}
             >
-              <i className="recdot" style={{ background: '#3b6d11' }} />
-              <span>{d.camOk}</span>
+              <i className="recdot" style={{ background: streamActive ? '#3b6d11' : '#c93b2b' }} />
+              <span>{streamActive ? d.camOk : 'Iniciando cámara...'}</span>
             </div>
           </div>
 
