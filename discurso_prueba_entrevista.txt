@@ -1,0 +1,29 @@
+================================================================================
+GUION DE PRUEBA PARA ENTREVISTA / MEDIA TRAINING (VOXREADY)
+Duración estimada: 1 min 30 s a 1 min 45 s (a ritmo conversacional de 130-140 ppm)
+Objetivo de prueba: Evaluar contacto visual, modulación de voz, técnicas de control
+                    (Bridging, Flagging) y respuesta a escenarios de crisis/gestión.
+================================================================================
+
+[00:00 - 00:20] INTRODUCCIÓN Y RECONOCIMIENTO DIRECTO:
+"Buenas tardes. Entiendo perfectamente la inquietud que existe sobre este tema y es una pregunta muy legítima. Como organización, asumimos con total seriedad y transparencia el momento que estamos atravesando, porque nuestro primer compromiso siempre ha sido con la confianza de nuestros clientes y de la comunidad."
+
+[00:20 - 00:50] PUENTE NARRATIVO (BRIDGING) Y ACCIONES CONCRETAS:
+[Pausa breve - Mirada firme a cámara]
+"Ahora bien, lo importante aquí es poner el foco en las soluciones concretas. Desde el primer minuto activamos un protocolo de respuesta inmediata y auditoría externa, lo que nos ha permitido aislar el incidente y garantizar que el noventa y cinco por ciento de nuestras operaciones continúe funcionando con absoluta normalidad y estándares de seguridad reforzados."
+
+[00:50 - 01:25] MENSAJE CLAVE Y TÉCNICA DE DESTACADO (FLAGGING):
+[Tono seguro y pausado]
+"Si hay un mensaje central que quiero enfatizar hoy, es este: no nos estamos quedando en explicaciones, estamos actuando con hechos. Hemos dispuesto un plan de acompañamiento directo a todos los usuarios afectados y un fondo extraordinario para asegurar que esta situación no vuelva a repetirse."
+
+[01:25 - 01:40] CIERRE Y COMPROMISO A FUTURO:
+[Pausa de 1 segundo]
+"Seguiremos informando cada avance con total apertura en nuestros canales oficiales. Estamos aquí para responder y salir fortalecidos. Muchas gracias."
+
+================================================================================
+CONSEJOS RÁPIDOS PARA LA GRABACIÓN EN VOXREADY:
+1. Ritmo: Habla con calma, haciendo pausas donde están indicados los puntos.
+2. Mirada: Mantén la mirada fija en el lente de la cámara (para visión y head pose).
+3. Postura: Hombros alineados y postura erguida.
+4. Voz: Evita muletillas ("ehhh", "este"); si dudas, haz un silencio de 1 segundo.
+================================================================================

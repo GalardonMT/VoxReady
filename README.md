@@ -1,144 +1,131 @@
-# VoxReady — Plataforma de Entrenamiento en Vocería de Crisis
+# 🎙️ VoxReady - Plataforma Multimodal de Entrenamiento y Vocería de Crisis
 
-**VoxReady** es una plataforma SaaS multi-tenant diseñada para el entrenamiento de voceros organizacionales ante situaciones de crisis, incorporando evaluación multimodal asistida por IA (análisis de voz/prosodia, expresión no verbal y coherencia del mensaje institucional).
-
-Este repositorio está organizado como un **Monorepo** que aloja tanto la API REST (Backend) como la aplicación web interactiva (Frontend).
+**VoxReady** es una plataforma integral de simulación y entrenamiento de voceros de crisis corporativa, impulsada por inteligencia artificial multimodal. Permite a líderes y portavoces entrenar en escenarios de alta presión, evaluando su desempeño en tres dimensiones clave: **comunicación no verbal (visión)**, **comunicación verbal y prosodia (voz)** y **apego estratégico al mensaje de crisis (LLM Juez)**.
 
 ---
 
-## Estructura del Monorepo
+## 🏗️ Arquitectura del Repositorio
+
+El proyecto está organizado en una arquitectura de microservicios desacoplada y modular:
 
 ```text
-VoxReady/
-├── .gitignore                   # Reglas globales de exclusión (entornos, caches, builds)
-├── docker-compose.yml           # Orquestación de Base de Datos, Backend y Frontend
-├── README.md                    # Este documento
-│
-├── backend/                     # API REST (FastAPI + SQLAlchemy async + PostgreSQL 16)
-│   ├── .gitignore
-│   ├── .env.example
-│   ├── Dockerfile
-│   ├── pytest.ini               # Configuración de pruebas (pythonpath = .)
-│   ├── requirements.txt
-│   ├── alembic/                 # Migraciones de base de datos asíncronas
-│   ├── app/                     # Código fuente de la API (routers, modelos, esquemas, servicios)
-│   └── tests/                   # Suite de pruebas unitarias y de integración (pytest)
-│
-└── frontend/             # Aplicación Web (Next.js 16 App Router + React 19 + TypeScript)
-    ├── .gitignore
-    ├── Dockerfile
-    ├── README.md                # Documentación detallada del cliente
-    ├── package.json
-    ├── public/                  # Assets estáticos y logos
-    └── src/
-        ├── app/                 # Rutas de la aplicación (/login, /spokesperson, /admin, /master)
-        ├── components/          # Componentes organizados por dominio de usuario
-        ├── context/             # Proveedores de estado global (Auth, I18n, Theme)
-        ├── locales/             # Soporte multidioma (ES, EN, PT)
-        ├── mock/                # Datos semilla para desarrollo y fallback
-        ├── services/            # Clientes HTTP hacia la API REST
-        └── types/               # Definiciones de tipos TypeScript
+voxready/
+├── frontend/             # Aplicación Web para el Vocero (Next.js 16 + React 19 + TypeScript)
+├── backend/              # API REST Orquestadora (FastAPI en Azure Container Apps: ca-backend-api)
+├── worker/               # Procesador Asíncrono de IA (Azure Container Apps: ca-analysis-worker)
+├── voxready-vision/      # Microservicio de Visión Computacional (MediaPipe en ca-vision-service)
+├── lab-worker/           # Banco de Pruebas y Laboratorio Local (CLI main.py y scripts de prueba)
+├── dev-tools.ps1         # Script PowerShell de utilidades (Arranque local y logs en vivo de Azure)
+├── .env.example          # Plantilla de variables de entorno globales
+├── .gitignore            # Exclusión de binarios, dependencias y secretos
+└── README.md             # Documentación maestra del proyecto
 ```
 
 ---
 
-## Requisitos Previos
+## 🧩 Componentes del Ecosistema
 
-- **Docker y Docker Compose** (Recomendado para levantar el entorno completo con un comando).
-- O alternativamente para ejecución nativa:
-  - **Python 3.12+**
-  - **Node.js 20+** y **npm 10+**
+### 1. `frontend/` (Next.js 16, React 19, TypeScript)
+* **Onboarding & Selección:** Catálogo dinámico de escenarios de crisis corporativa.
+* **Consentimiento Técnico (`TechConsentView`):** Validación en tiempo real de permisos de cámara y micrófono.
+* **Sala de Simulación en Vivo (`LiveSessionView`):** 
+  - Grabación en flujo continuo y sincronizado (sin saltos temporales ni desincronización).
+  - Audio calibrado profesionalmente (sin saturación ni distorsión digital).
+  - Cronómetro de sesión y preguntas interactivas del entrevistador de IA.
+* **Subida Zero-Proxy:** Envío binario directo desde el navegador hacia Azure Blob Storage mediante SAS Token prefirmado.
+* **Reporte y Coaching (`CoachReportView`):** Visualización interactiva con radar de competencias, métricas de contacto visual, WPM, muletillas y resumen ejecutivo.
+
+### 2. `backend/` (FastAPI - `ca-backend-api`)
+* **Gestión de Sesiones:** Creación de sesiones y catálogo de crisis.
+* **Generación de SAS Tokens:** Endpoint `/api/sessions/{id}/upload-url` para subida directa a Blob Storage sin sobrecargar el backend.
+* **Productor de Mensajería:** Publica el evento `SESSION_RECORDING_COMPLETED` en **Azure Service Bus** (`sb-voxready-dev`) para disparar el procesamiento del worker.
+* **Consulta de Reportes:** Endpoint `/api/sessions/{id}/report` para entregar el reporte consolidado al frontend.
+
+### 3. `worker/` (Python Serverless - `ca-analysis-worker`)
+* **Consumidor de Service Bus:** Escucha la cola `analysis-queue` de forma asíncrona.
+* **Procesamiento Multimedia (FFmpeg):** Descarga el video a `/tmp`, extrae el audio en PCM 16-bit 16kHz mono y genera fotogramas clave muestreados a 0.5 FPS.
+* **Análisis de Voz y Acústica:** Evaluación de velocidad (WPM), pausas, silencios y dicción con NVIDIA Riva / Parakeet.
+* **Análisis de Visión:** Integración vía HTTP con `ca-vision-service` para calcular estabilidad postural, contacto visual y expresiones.
+* **LLM Juez de Crisis:** Evaluación cualitativa de apego a mensajes clave institucionales y técnica de *bridging* utilizando **NVIDIA Llama 3.2 90B**.
+* **Persistencia:** Almacenamiento en Azure SQL Serverless y respaldo en Azure Blob Storage (`reports/`).
+
+### 4. `voxready-vision/` (FastAPI + MediaPipe - `ca-vision-service`)
+* Microservicio dedicado a la visión artificial.
+* Procesa los fotogramas extraídos utilizando modelos de MediaPipe (Face Mesh, Pose Landmark Detection) para calificar la presencia y control del vocero.
+
+### 5. `lab-worker/` (Laboratorio Local)
+* Espacio de pruebas independiente para ejecutar y depurar algoritmos de análisis multimedia de forma 100% local, sin necesidad de desplegar en Azure.
+* Contiene:
+  - `main.py`: Orquestador CLI local (`python main.py <video.webm> 0.5`).
+  - `separar-audio-video/`: Módulo de prueba de FFmpeg.
+  - `video/`: Módulo de prueba de MediaPipe.
+  - `voice/`: Módulo de prueba de audio y NVIDIA Riva.
+  - `outputs/`: Carpeta donde se guardan los audios extraídos, fotogramas y reportes JSON locales.
 
 ---
 
-## Arranque Rápido con Docker Compose
+## 🛠️ Herramientas de Desarrollo (`dev-tools.ps1`)
 
-La forma más rápida de levantar toda la plataforma (Base de datos PostgreSQL, Backend FastAPI y Frontend Next.js):
+Para facilitar el desarrollo local y el monitoreo de la infraestructura en Azure, se incluye un menú interactivo en PowerShell:
 
-```bash
-# 1. Clonar el repositorio y situarse en la raíz
-cd VoxReady
-
-# 2. Levantar todos los servicios en contenedores
-docker compose up --build
+```powershell
+.\dev-tools.ps1
 ```
 
-Una vez iniciados los servicios:
-- **Frontend (Aplicación Web):** [http://localhost:3000](http://localhost:3000)
-- **Backend (API REST Docs):** [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Base de datos PostgreSQL:** `localhost:5432`
+Opciones disponibles:
+1. **Iniciar Frontend Local:** Entra automáticamente a `frontend/` y levanta el servidor Next.js en `http://localhost:3000`.
+2. **Ver Logs del Worker:** Conecta con `az containerapp logs` para ver en tiempo real el procesamiento multimedia y de IA.
+3. **Ver Logs del Backend API:** Muestra las peticiones HTTP entrantes, creación de sesiones y firmas SAS.
+4. **Ver Logs de Visión:** Monitorea el análisis de fotogramas en `ca-vision-service`.
 
 ---
 
-## Ejecución Local para Desarrollo (Sin Docker)
+## 🚀 Puesta en Marcha Rápida
 
-### 1. Backend (FastAPI + SQLite)
+### Prerrequisitos
+- **Node.js 18+** y npm
+- **Python 3.10+**
+- **Azure CLI (`az`)** autenticado con permisos en la suscripción de desarrollo.
 
-```bash
-cd backend
-
-# Crear y activar entorno virtual
-python -m venv .venv
-# En Windows:
-.venv\Scripts\activate
-# En Linux/Mac:
-# source .venv/bin/activate
-
-# Instalar dependencias
-pip install -r requirements.txt
-
-# Configurar variables de entorno
-cp .env.example .env
-
-# Aplicar migraciones y cargar datos semilla
-alembic upgrade head
-python -m app.seed
-
-# Iniciar servidor de desarrollo
-uvicorn app.main:app --reload --port 8000
-```
-
-### 2. Frontend (Next.js 16)
-
-En otra terminal:
-
+### 1. Iniciar el Frontend
 ```bash
 cd frontend
-
-# Instalar dependencias
 npm install
-
-# Iniciar servidor de desarrollo
 npm run dev
 ```
+Abre en tu navegador: [http://localhost:3000](http://localhost:3000).
 
-La interfaz estará disponible en [http://localhost:3000](http://localhost:3000).
+### 2. Ejecutar Pruebas Locales en `lab-worker/`
+```bash
+cd lab-worker
+pip install -r requirements.txt
+python main.py tu_video.webm 0.5
+```
+Los resultados se generarán en la subcarpeta `lab-worker/outputs/<nombre_video>/`.
 
 ---
 
-## Perfiles de Acceso (Modo Demo)
+## 🔐 Configuración de Variables de Entorno
 
-La plataforma incluye 3 roles de usuario preconfigurados con datos semilla:
+### Frontend (`frontend/.env.local`)
+```env
+NEXT_PUBLIC_API_URL=https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io
+NEXT_PUBLIC_BACKEND_API_URL=https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io
+NEXT_PUBLIC_DEV_AUTH=true
+```
 
-| Rol | Usuario | Email de prueba | Espacio / Ruta |
-| :--- | :--- | :--- | :--- |
-| **Vocero** | Ana Torres | `ana@visum.com` o `vocero@demo.voxready.io` | [`/spokesperson`](http://localhost:3000/spokesperson) |
-| **Admin de Cliente** | Carlos Ruiz | `carlos@visum.com` o `admin@demo.voxready.io` | [`/admin`](http://localhost:3000/admin) |
-| **Configurador Maestro** | Marta Vidal | `marta@voxready.io` o `master@voxready.io` | [`/master`](http://localhost:3000/master) |
+### Backend (`backend/.env`)
+```env
+STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=stavoxreadydev;..."
+SERVICE_BUS_CONNECTION_STRING="Endpoint=sb://sb-voxready-dev.servicebus.windows.net/;..."
+BLOB_CONTAINER_NAME="recordings"
+SERVICE_BUS_QUEUE_NAME="analysis-queue"
+DEV_AUTH="true"
+CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestaticapps.net"
+```
 
 ---
 
-## Ejecución de Pruebas
+## 📄 Licencia
 
-### Backend
-```bash
-cd backend
-pytest -v
-```
-
-### Frontend
-```bash
-cd frontend
-npm run build
-npm run lint
-```
+Este proyecto es propiedad confidencial de desarrollo para la plataforma **VoxReady**.
