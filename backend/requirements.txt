@@ -8,6 +8,5 @@ pyodbc==5.1.0
 sqlalchemy==2.0.35
 PyJWT[crypto]==2.9.0
 requests==2.32.3
-python-multipart==0.0.12
 aioodbc>=0.5.0
-pyodbc>=5.0.0
+python-multipart>=0.0.9

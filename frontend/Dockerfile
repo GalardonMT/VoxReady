@@ -3,7 +3,7 @@ FROM node:20-alpine AS base
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm install
+RUN npm install && npm install -g serve
 
 COPY . .
 
@@ -29,4 +29,4 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["npm", "run", "start"]
+CMD ["serve", "-s", "out", "-l", "3000"]

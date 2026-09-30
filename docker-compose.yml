@@ -14,11 +14,15 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-cambia-este-secreto-webhooks}
       STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      STORAGE_CONNECTION_STRING: ${STORAGE_CONNECTION_STRING:-}
+      BLOB_CONTAINER_NAME: ${BLOB_CONTAINER_NAME:-recordings}
+      SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
+      SERVICE_BUS_QUEUE_NAME: ${SERVICE_BUS_QUEUE_NAME:-analysis-queue}
     ports:
       - "8000:8000"
     volumes:
       - storage:/data/storage
-      - ./backend/app:/code/app
+      - ./backend:/app
 
   client:
     build:
