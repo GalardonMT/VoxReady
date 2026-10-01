@@ -1,10 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mediaErrorMessage, requestAudioAndVideo, stopMediaStream, trackAvailable } from '../src/services/mediaCheck.ts';
+import { blockedByMediaPolicy, mediaApiError, mediaErrorMessage, requestAudioAndVideo, stopMediaStream, trackAvailable } from '../src/services/mediaCheck.ts';
 
 test('un permiso rechazado y un dispositivo ausente producen errores distintos', () => {
-  assert.match(mediaErrorMessage(Object.assign(new Error('denied'), { name: 'NotAllowedError' }), 'microphone'), /permiso de micrófono/);
+  assert.match(mediaErrorMessage(Object.assign(new Error('denied'), { name: 'NotAllowedError' }), 'microphone'), /acceso a micrófono/);
   assert.match(mediaErrorMessage(Object.assign(new Error('missing'), { name: 'NotFoundError' }), 'camera'), /cámara disponible/);
+});
+
+test('explica por qué no aparece la solicitud de permisos', () => {
+  assert.match(mediaApiError(false, false), /HTTPS o localhost/);
+  assert.match(mediaApiError(true, false), /no ofrece acceso/);
+  assert.equal(mediaApiError(true, true), null);
+  assert.match(mediaErrorMessage({ name: 'NotAllowedError' }, 'camera'), /no apareció una solicitud/);
+});
+
+test('detecta una política que bloquea un dispositivo sin culpar al usuario', () => {
+  const policy = { allowsFeature: (feature) => feature !== 'camera' };
+  assert.equal(blockedByMediaPolicy('camera', policy), true);
+  assert.equal(blockedByMediaPolicy('microphone', policy), false);
+  assert.equal(blockedByMediaPolicy('camera', undefined), false);
+  assert.match(mediaErrorMessage({ name: 'NotAllowedError' }, 'camera', true), /Esta página no tiene permitido usar cámara/);
 });
 
 test('una pista deja de estar disponible al terminar, mutearse o deshabilitarse', () => {

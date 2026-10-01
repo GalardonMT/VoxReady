@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { sessionFlowService, type SessionSetup } from '../../services/sessionFlowService';
 import { ApiError } from '../../services/apiClient';
-import { mediaErrorMessage, requestAudioAndVideo, stopMediaStream, trackAvailable } from '../../services/mediaCheck';
+import { blockedByMediaPolicy, mediaApiError, mediaErrorMessage, requestAudioAndVideo, stopMediaStream, trackAvailable } from '../../services/mediaCheck';
 
 interface Props {
   setup: SessionSetup;
@@ -51,8 +51,9 @@ export const TechConsentView: React.FC<Props> = ({ setup, onBegin, onCancel }) =
     setChecking(true);
     setCameraError('');
     setMicrophoneError('');
-    if (!navigator.mediaDevices?.getUserMedia) {
-      const message = 'El navegador no permite acceder a dispositivos aquí. Abre la aplicación mediante HTTPS o localhost.';
+    const apiError = mediaApiError(window.isSecureContext, typeof navigator.mediaDevices?.getUserMedia === 'function');
+    if (apiError) {
+      const message = apiError;
       setCameraError(message);
       setMicrophoneError(message);
       setChecked(true);
@@ -62,6 +63,11 @@ export const TechConsentView: React.FC<Props> = ({ setup, onBegin, onCancel }) =
     try {
       const result = await requestAudioAndVideo(navigator.mediaDevices, () => requestId === requestRef.current);
       if (!result) return;
+      const browserDocument = document as Document & {
+        permissionsPolicy?: { allowsFeature: (feature: string) => boolean };
+        featurePolicy?: { allowsFeature: (feature: string) => boolean };
+      };
+      const mediaPolicy = browserDocument.permissionsPolicy ?? browserDocument.featurePolicy;
       const stream = new MediaStream([
         ...(result.audio?.getAudioTracks() ?? []),
         ...(result.video?.getVideoTracks() ?? []),
@@ -74,10 +80,10 @@ export const TechConsentView: React.FC<Props> = ({ setup, onBegin, onCancel }) =
         setCameraReady(video);
         setMicrophoneReady(audio);
         setCameraError(video ? '' : result.videoError
-          ? mediaErrorMessage(result.videoError, 'camera')
+          ? mediaErrorMessage(result.videoError, 'camera', blockedByMediaPolicy('camera', mediaPolicy))
           : 'Se perdió el acceso a la cámara. Repite la comprobación.');
         setMicrophoneError(audio ? '' : result.audioError
-          ? mediaErrorMessage(result.audioError, 'microphone')
+          ? mediaErrorMessage(result.audioError, 'microphone', blockedByMediaPolicy('microphone', mediaPolicy))
           : 'Se perdió el acceso al micrófono. Repite la comprobación.');
       };
       stream.getTracks().forEach((track) => {
@@ -125,11 +131,12 @@ export const TechConsentView: React.FC<Props> = ({ setup, onBegin, onCancel }) =
   return <div className="canvas-content"><div className="row">
     <div className="card col">
       <div className="label">Comprobación técnica</div>
+      <p>Pulsa el botón para solicitar acceso a la cámara y al micrófono. Si el navegador ya recuerda tu decisión, puede que no muestre otra solicitud.</p>
       <div className="self" style={{ minHeight: 220 }}>
         <video ref={videoRef} autoPlay playsInline muted aria-label="Vista previa de cámara"
           style={{ width: '100%', maxHeight: 300, objectFit: 'contain' }} />
       </div>
-      <p role="status">Cámara: {!checked ? 'sin comprobar' : cameraReady ? 'disponible' : 'no disponible'} · Micrófono: {!checked ? 'sin comprobar' : microphoneReady ? 'disponible' : 'no disponible'}</p>
+      <p role="status">Cámara: {checking ? 'solicitando permiso' : !checked ? 'sin comprobar' : cameraReady ? 'disponible' : 'no disponible'} · Micrófono: {checking ? 'solicitando permiso' : !checked ? 'sin comprobar' : microphoneReady ? 'disponible' : 'no disponible'}</p>
       {cameraError && <p role="alert" style={{ color: 'var(--danger)' }}>{cameraError}</p>}
       {microphoneError && <p role="alert" style={{ color: 'var(--danger)' }}>{microphoneError}</p>}
       <button type="button" className="btn" disabled={checking || submitting} onClick={() => void checkDevices()}>
