@@ -1,0 +1,236 @@
+# Especificación Técnica para Generación de Worker Serverless en Azure (`voxready-analyzer-worker`)
+
+Este documento define la arquitectura, contratos de datos, dependencias y estructura de código requerida para refactorizar y empaquetar las funciones locales de procesamiento multimedia (separación FFmpeg, análisis acústico/voz y métricas de visión) en un worker asíncrono desacoplado para Azure.
+
+---
+
+## 1. Contexto y Arquitectura de Ejecución
+
+El worker opera como un consumidor asíncrono activado por eventos en **Azure Service Bus**, interactuando con el ecosistema de Azure y APIs externas según el siguiente flujo:
+
+```text
+[Azure Service Bus: analysis-queue]
+         │ (Trigger con session_id y blob_name)
+         ▼
+[Azure Function Worker / Container App Job]
+         ├── 1. Descarga video (.webm/.mp4) desde Azure Blob Storage (`recordings/`)
+         ├── 2. Ejecuta FFmpeg (vía /tmp):
+         │       ├── Extrae audio: .wav PCM 16kHz mono
+         │       └── Extrae frames: JPEG a 0.5 FPS (1 frame cada 2 seg)
+         ├── 3. Ejecuta análisis de Audio/Voz:
+         │       ├── ASR: NVIDIA Parakeet API (timestamps y transcripción)
+         │       └── Acústico: Análisis de muletillas, silencios y WPM
+         ├── 4. Ejecuta análisis de Visión:
+         │       └── Peticiones HTTP al microservicio MediaPipe (`ca-vision-service`)
+         ├── 5. Ejecuta LLM Juez:
+         │       └── Inferencia vía NVIDIA Build API (`meta/llama-3.2-90b-vision-instruct`)
+         ├── 6. Fusión y Persistencia:
+         │       └── Consolida JSON final y actualiza estado en Azure SQL (`sqldb-voxready`)
+         └── 7. Limpieza estricta de archivos temporales en `/tmp`
+
+```
+
+---
+
+## 2. Árbol de Archivos Solicitado
+
+Genera la siguiente estructura de proyecto modular bajo el modelo de programación **Azure Functions Python v2** (o empaquetado para Container App Job):
+
+```text
+voxready-worker/
+├── function_app.py              # Entrypoint con ServiceBusQueueTrigger
+├── host.json                    # Configuración de timeouts y concurrencia
+├── local.settings.json.example  # Variables de entorno locales
+├── requirements.txt             # Dependencias del runtime
+├── Dockerfile                   # Imagen base con FFmpeg preinstalado
+├── core/
+│   ├── __init__.py
+│   ├── media_splitter.py       # Wrapper de FFmpeg optimizado para /tmp
+│   ├── audio_analyzer.py       # Lógica adaptada de acústica, ASR y muletillas
+│   ├── vision_client.py        # Cliente HTTP asíncrono para ca-vision-service
+│   ├── llm_judge.py            # Calificador de crisis con NVIDIA Build API
+│   └── report_builder.py       # Fusión matemática de métricas y JSON consolidado
+├── services/
+│   ├── __init__.py
+│   ├── blob_service.py         # Descarga y lectura con azure-storage-blob
+│   ├── db_service.py           # Conexión resiliente a Azure SQL (pyodbc/SQLAlchemy)
+│   └── keyvault_service.py     # Carga de credenciales y secrets
+└── utils/
+    ├── __init__.py
+    └── logger.py               # Telemetría estructurada en JSON
+
+```
+
+---
+
+## 3. Especificación Técnica de los Módulos
+
+### Módulo A: Entrypoint (`function_app.py`)
+
+* Implementar un trigger sobre la cola `analysis-queue` de Service Bus:
+```python
+import azure.functions as func
+
+app = func.FunctionApp()
+
+@app.service_bus_queue_trigger(
+    arg_name="msg",
+    queue_name="analysis-queue",
+    connection="SERVICE_BUS_CONNECTION_STRING"
+)
+def process_crisis_session(msg: func.ServiceBusMessage):
+    # Parseo del payload JSON
+    # Orquestación de pipeline
+    # Manejo de reintentos y Dead-Letter
+
+```
+
+
+* **Control de excepciones:** Si el análisis falla por error irrecuperable (ej. archivo corrupto), capturar la excepción, marcar la sesión como `failed` en la base de datos y permitir que el mensaje pase a la Dead-Letter Queue tras 3 intentos.
+
+### Módulo B: Separación Multimedia (`core/media_splitter.py`)
+
+* Adaptar el código local de FFmpeg para trabajar exclusivamente sobre el directorio `/tmp` (sistema de archivos volátil en Linux serverless).
+* Métodos obligatorios:
+* `extract_audio_pcm16(input_video_path: str, output_wav_path: str) -> bool`:
+* Comando base: `ffmpeg -y -i input.webm -vn -acodec pcm_s16le -ar 16000 -ac 1 output.wav`
+
+
+* `extract_sampled_frames(input_video_path: str, output_dir: str, fps: float = 0.5) -> List[str]`:
+* Comando base: `ffmpeg -y -i input.webm -vf "fps=0.5" -q:v 2 /tmp/frames/frame_%04d.jpg`
+
+
+* `cleanup_temp_files(*paths: str)`: Eliminación explícita mediante `os.remove` o `shutil.rmtree` para evitar fugas de memoria en disco dentro de la instancia serverless.
+
+
+
+### Módulo C: Cliente de Visión (`core/vision_client.py`)
+
+* Adaptar la función local de visión para enviar los frames extraídos al microservicio `ca-vision-service`:
+* Enviar peticiones multipart `POST /analyze-frame` utilizando `httpx` asíncrono o `requests` con pool de conexiones.
+* Implementar concurrencia controlada (ej. `asyncio.gather` con un semáforo de máximo 5 peticiones simultáneas) para no sobrecargar el endpoint de Container Apps durante el escalado en frío.
+* Consolidar el porcentaje de contacto visual:
+
+$$\text{Eye Contact \%} = \left( \frac{\text{Frames con eye\_contact == True}}{\text{Total de frames válidos}} \right) \times 100$$
+
+
+* Promediar la estabilidad de postura (`posture_stability_score`).
+
+
+
+### Módulo D: Análisis de Voz y Audio (`core/audio_analyzer.py`)
+
+* Adaptar la función local para que reciba el `.wav` de 16kHz y ejecute:
+1. **Transcripción ASR:** Invocación al endpoint de NVIDIA Parakeet (`nvidia/parakeet-tdt-1.1b`) enviando el buffer de audio para obtener la transcripción y marcas de tiempo fonéticas (*word-level timestamps*).
+2. **Métricas Acústicas Locales:**
+* Cálculo de pausas prolongadas (silencios superiores a 1.5 segundos mediante RMS o umbral de decibelios).
+* Cálculo de Palabras por Minuto (WPM):
+
+$$\text{WPM} = \frac{\text{Total de palabras}}{\text{Duración audible en segundos} / 60}$$
+
+
+* Detección y conteo de muletillas léxicas comunes en español corporativo (*"ehh"*, *"este"*, *"o sea"*, *"digamos"*, *"verdad"*).
+
+
+
+
+
+### Módulo E: Evaluador LLM Juez (`core/llm_judge.py`)
+
+* Invocación a NVIDIA Build API con el SDK oficial de `openai` en Python:
+* **Base URL:** `[https://integrate.api.nvidia.com/v1](https://integrate.api.nvidia.com/v1)`
+* **Modelo:** `meta/llama-3.2-90b-vision-instruct`
+* **Parámetros:** `temperature=0.1`, `response_format={"type": "json_object"}`.
+* **Estructura del System Prompt:** Evaluar apego a mensajes clave institucionales, técnica de *bridging* (desvío de preguntas hostiles), control de crisis y consistencia narrativa.
+* **Salida esperada:**
+```json
+{
+  "key_message_adherence_score": 85,
+  "crisis_control_score": 78,
+  "bridging_detected": true,
+  "strengths": ["Mantuvo la calma", "Repitió el mensaje de seguridad"],
+  "weaknesses": ["Demoró 45 segundos en abordar el tema central"],
+  "executive_summary": "El vocero contuvo la hostilidad pero evadió cifras concretas."
+}
+
+```
+
+
+
+
+
+### Módulo F: Persistencia y Resiliencia en BD (`services/db_service.py`)
+
+* Conexión a Azure SQL Serverless (`sqldb-voxready`) usando `pyodbc` con el driver `ODBC Driver 18 for SQL Server`.
+* **Manejo del Cold-Start de Serverless:** Implementar reintentos con *exponential backoff* (hasta 3 intentos espaciados por 15 segundos) para tolerar el tiempo de reactivación de la base de datos si se encuentra en estado *Auto-paused*.
+* Operaciones requeridas:
+* `update_session_status(session_id: str, status: str)` (`processing`, `completed`, `failed`).
+* `save_analysis_report(session_id: str, report_data: dict)`: Guardar el JSON consolidado en la tabla de reportes y actualizar las marcas temporales `completed_at`.
+
+
+
+---
+
+## 4. Requisitos de Contenedorización (`Dockerfile`)
+
+Dado que Azure Functions Consumption estándar en Linux tiene limitaciones para compilar librerías nativas como FFmpeg, genera el `Dockerfile` optimizado para desplegarse como **Azure Functions Custom Container** o **Container App Job**:
+
+```dockerfile
+FROM mcr.microsoft.com/azure-functions/python:4-python3.11
+
+ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
+    AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Instalación de FFmpeg estático y drivers ODBC para Azure SQL
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    gnupg \
+    unixodbc-dev \
+    && curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
+    && curl https://packages.microsoft.com/config/debian/11/prod.list > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /
+RUN pip install --no-cache-dir -r /requirements.txt
+
+COPY . /home/site/wwwroot
+
+```
+
+---
+
+## 5. Parámetros de Configuración Requeridos (`local.settings.json`)
+
+El archivo de configuración local generado debe contener las claves necesarias para desarrollo:
+
+```json
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=false",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "SERVICE_BUS_CONNECTION_STRING": "@Microsoft.KeyVault(SecretUri=...)",
+    "STORAGE_CONNECTION_STRING": "@Microsoft.KeyVault(SecretUri=...)",
+    "DATABASE_URL": "@Microsoft.KeyVault(SecretUri=...)",
+    "NVIDIA_API_KEY": "@Microsoft.KeyVault(SecretUri=...)",
+    "NVIDIA_BASE_URL": "https://integrate.api.nvidia.com/v1",
+    "LLM_MODEL_NAME": "meta/llama-3.2-90b-vision-instruct",
+    "VISION_SERVICE_URL": "https://ca-vision-service.<dominio>.eastus2.azurecontainerapps.io"
+  }
+}
+
+```
+
+---
+
+## 6. Instrucciones Directas para el Agente Antigravity
+
+1. **Modularidad estricta:** No unificar toda la lógica en un script monolítico; separa la extracción de medios, clientes de red y persistencia SQL en sus respectivos submódulos.
+2. **Sin dependencias pesadas de GUI:** Usar `opencv-python-headless` y llamadas HTTP directas para la visión; el contenedor del worker no debe ejecutar MediaPipe localmente, sino delegar los frames a `ca-vision-service`.
+3. **Gestión de memoria de audio:** Si el archivo de audio `.wav` se envía a una API ASR, utilizar streaming o lectura en bloques para no saturar la RAM de la instancia serverless.
+4. **Validación de salida:** Incluir un bloque de pruebas unitarias o script de verificación (`test_pipeline.py`) que permita simular un mensaje de Service Bus localmente con un archivo de prueba.
