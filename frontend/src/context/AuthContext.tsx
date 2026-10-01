@@ -121,17 +121,17 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
           if (body.detail) detail = body.detail;
         } catch { /* use default message */ }
         setAuthError(detail);
-        setUser(null);
-        localStorage.removeItem('voxready_user');
-        localStorage.removeItem('voxready_token');
+        // Don't clear the cached user from localStorage — keep the session
+        // alive so ProtectedRoute can still show AccessDenied correctly.
+        // The user can still log out manually if needed.
       }
     } catch (err) {
       console.warn('[Auth] Token acquisition or backend profile fetch failed:', err);
-      const message = err instanceof Error ? err.message : String(err);
-      setAuthError(`Error al conectar con el servidor: ${message}`);
-      setUser(null);
-      localStorage.removeItem('voxready_user');
-      localStorage.removeItem('voxready_token');
+      // Don't clear the existing user when MSAL token refresh fails.
+      // This prevents a race condition where a valid cached user (from
+      // localStorage) gets wiped out during MSAL re-authentication,
+      // causing ProtectedRoute to lose the role and redirect incorrectly.
+      // The user remains logged in with their cached session.
     } finally {
       setLoading(false);
     }

@@ -143,9 +143,9 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const handleNextQuestion = () => {
     if (questionIndex < totalQuestions) {
       setQuestionIndex((prev) => prev + 1);
-    } else {
-      handleFinishSession();
     }
+    // No hacer nada en la última pregunta — la sesión solo termina
+    // cuando el usuario presiona explícitamente "Finalizar grabación"
   };
 
   const handleFinishSession = async () => {
@@ -446,9 +446,10 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           type="button"
           className="btn ghost"
           onClick={handleNextQuestion}
-          title="Simular siguiente pregunta"
+          disabled={questionIndex >= totalQuestions}
+          title={questionIndex >= totalQuestions ? 'Última pregunta alcanzada' : 'Simular siguiente pregunta'}
         >
-          Siguiente pregunta ➔
+          {questionIndex >= totalQuestions ? 'Última pregunta ✓' : 'Siguiente pregunta ➔'}
         </button>
 
         <div className="meter col" style={{ maxWidth: '240px' }}>
