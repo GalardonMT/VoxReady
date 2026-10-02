@@ -252,6 +252,23 @@ def grant_consent(session_id: str, payload: ConsentRequest, user: dict = Depends
         "consentedAt": datetime.now(timezone.utc).isoformat()
     }
 
+class DevTokenRequest(BaseModel):
+    email: str = "ana.torres@acme-corp.com"
+
+@app.post("/dev/token")
+@app.post("/v1/dev/token")
+def create_dev_token(payload: DevTokenRequest):
+    return {
+        "accessToken": "dev-local-jwt-token-voxready",
+        "tokenType": "Bearer",
+        "expiresIn": 28800
+    }
+
+@app.put("/sessions/{session_id}/mock-upload")
+@app.put("/v1/sessions/{session_id}/mock-upload")
+def mock_upload(session_id: str):
+    return {"status": "uploaded"}
+
 @app.post("/sessions/{session_id}/recording-url")
 @app.post("/v1/sessions/{session_id}/recording-url")
 @app.post("/api/sessions/{session_id}/upload-url")
@@ -259,7 +276,13 @@ def grant_consent(session_id: str, payload: ConsentRequest, user: dict = Depends
 def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal para subida directa desde el navegador (PUT)"""
     if not STORAGE_CONN_STR:
-        raise HTTPException(status_code=500, detail="Storage Connection String no configurada")
+        mock_url = f"http://localhost:8000/v1/sessions/{session_id}/mock-upload"
+        return {
+            "upload_url": mock_url,
+            "uploadUrl": mock_url,
+            "blob_name": f"recordings/{session_id}.webm",
+            "blobPath": f"recordings/{session_id}.webm"
+        }
     
     blob_name = f"recordings/{session_id}.webm"
     try:
@@ -287,7 +310,7 @@ def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
 def finish_session(session_id: str, payload: FinishSessionRequest, user: dict = Depends(verify_token)):
     """Publica evento en Service Bus para iniciar pipeline del worker"""
     if not SERVICE_BUS_CONN_STR:
-        raise HTTPException(status_code=500, detail="Service Bus Connection String no configurada")
+        return {"status": "queued", "session_id": session_id, "mock": True}
 
     message_payload = {
         "event_type": "SESSION_RECORDING_COMPLETED",
@@ -314,12 +337,24 @@ def finish_session(session_id: str, payload: FinishSessionRequest, user: dict = 
         raise HTTPException(status_code=500, detail=f"Error encolando en Service Bus: {str(e)}")
 
 
+@app.get("/sessions/{session_id}/report")
+@app.get("/v1/sessions/{session_id}/report")
 @app.get("/api/sessions/{session_id}/report")
 @app.get("/v1/api/sessions/{session_id}/report")
 def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     """Obtiene el reporte consolidado desde Blob Storage o retorna estado processing"""
     if not STORAGE_CONN_STR:
-        raise HTTPException(status_code=500, detail="Storage Connection String no configurada")
+        return {
+            "session_id": session_id,
+            "status": "completed",
+            "message": "Reporte local de desarrollo",
+            "puntuacion_global": {
+                "score_general": 85,
+                "score_comunicacion_verbal": 82,
+                "score_comunicacion_no_verbal": 88,
+                "score_estrategia_crisis": 84
+            }
+        }
     
     try:
         blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
