@@ -27,6 +27,8 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [streamActive, setStreamActive] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   // Lista y selección de dispositivos de entrada
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
@@ -93,12 +95,22 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
   useEffect(() => {
     let isCancelled = false;
     let stream: MediaStream | null = null;
+    let audioStream: MediaStream | null = null;
+    let videoStream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
     let analyser: AnalyserNode | null = null;
     let animationFrameId: number;
     let lightIntervalId: NodeJS.Timeout;
+    let prevFrameData: Uint8ClampedArray | null = null;
+    let staticCount = 0;
+    let dynamicFrames = 0;
 
     async function setupDevices() {
+      setCameraActive(false);
+      setCameraError(null);
+      setLightLevel(0);
+      setLightPassed(false);
+
       try {
         const videoConstraints: MediaTrackConstraints = {
           width: { ideal: 1280 },
@@ -113,22 +125,76 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
           ...(selectedAudioId ? { deviceId: { exact: selectedAudioId } } : {})
         };
 
-        const mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: videoConstraints,
-          audio: audioConstraints
-        });
+        // 1. Obtener stream de audio de forma desacoplada
+        try {
+          audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: false
+          });
+        } catch (err) {
+          console.warn('Error accediendo al micrófono:', err);
+        }
+
+        // 2. Obtener stream de video de forma desacoplada
+        try {
+          videoStream = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: false
+          });
+        } catch (err) {
+          console.warn('Error accediendo a la cámara:', err);
+          setCameraError('Cámara no disponible o permiso no concedido');
+        }
 
         if (isCancelled) {
-          mediaStream.getTracks().forEach((track) => track.stop());
+          audioStream?.getTracks().forEach((track) => track.stop());
+          videoStream?.getTracks().forEach((track) => track.stop());
           return;
         }
 
-        stream = mediaStream;
+        const combinedTracks: MediaStreamTrack[] = [
+          ...(videoStream ? videoStream.getVideoTracks() : []),
+          ...(audioStream ? audioStream.getAudioTracks() : [])
+        ];
+        stream = new MediaStream(combinedTracks);
 
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+        // Configuración y validación del stream de video
+        const vTracks = videoStream ? videoStream.getVideoTracks() : [];
+        if (vTracks.length > 0 && vTracks[0].readyState === 'live' && !vTracks[0].muted) {
+          const vTrack = vTracks[0];
+          setStreamActive(true);
+
+          if (videoRef.current) {
+            videoRef.current.srcObject = videoStream;
+            videoRef.current.onloadedmetadata = () => {
+              if (isCancelled) return;
+              videoRef.current?.play().catch((err) => {
+                console.warn('Error al reproducir video:', err);
+                setCameraActive(false);
+              });
+            };
+          }
+
+          vTrack.onmute = () => {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+          };
+          vTrack.onunmute = () => {
+            // El estado activo se confirmará en checkLighting
+          };
+          vTrack.onended = () => {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+          };
+        } else {
+          setCameraActive(false);
+          setStreamActive(false);
+          if (videoRef.current) {
+            videoRef.current.srcObject = null;
+          }
         }
-        setStreamActive(true);
 
         // Guardar preferencias seleccionadas
         if (selectedVideoId) {
@@ -144,7 +210,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
         if (isCancelled) return;
 
         // --- 1. CONFIGURACIÓN DEL MICRÓFONO CON WEB AUDIO API ---
-        const audioTracks = stream.getAudioTracks();
+        const audioTracks = audioStream ? audioStream.getAudioTracks() : [];
         if (audioTracks.length > 0) {
           const AudioContextClass =
             window.AudioContext ||
@@ -155,7 +221,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
             await audioContext.resume();
           }
 
-          const source = audioContext.createMediaStreamSource(stream);
+          const source = audioContext.createMediaStreamSource(audioStream!);
           analyser = audioContext.createAnalyser();
           analyser.fftSize = 512;
           analyser.smoothingTimeConstant = 0.3; // Más responsivo al habla inmediata
@@ -199,7 +265,12 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
         const checkLighting = () => {
           const video = videoRef.current;
           const canvas = canvasRef.current;
-          if (!video || !canvas || video.readyState < 2) return;
+          if (!video || !canvas || video.readyState < 2 || video.videoWidth === 0) {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+            return;
+          }
 
           const ctx = canvas.getContext('2d', { willReadFrequently: true });
           if (!ctx) return;
@@ -212,6 +283,32 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
           ctx.drawImage(video, 0, 0, w, h);
           const imageData = ctx.getImageData(0, 0, w, h);
           const data = imageData.data;
+
+          // Detección de imagen estática / tarjeta de prueba congelada (como Camo desconectado)
+          if (prevFrameData) {
+            let totalDiff = 0;
+            for (let i = 0; i < data.length; i += 8) {
+              totalDiff += Math.abs(data[i] - prevFrameData[i]);
+            }
+            if (totalDiff === 0) {
+              staticCount++;
+              dynamicFrames = 0;
+            } else {
+              dynamicFrames++;
+              staticCount = Math.max(0, staticCount - 1);
+            }
+          }
+          prevFrameData = new Uint8ClampedArray(data);
+
+          // Si la imagen está 100% congelada o es un gráfico estático artificial por varios ciclos
+          if (dynamicFrames < 2 || staticCount >= 2) {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+            return;
+          }
+
+          setCameraActive(true);
 
           let totalBrightness = 0;
           const totalPixels = data.length / 4;
@@ -258,13 +355,19 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
       if (audioContext && audioContext.state !== 'closed') {
         audioContext.close();
       }
+      if (audioStream) {
+        audioStream.getTracks().forEach((track) => track.stop());
+      }
+      if (videoStream) {
+        videoStream.getTracks().forEach((track) => track.stop());
+      }
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
       }
     };
   }, [selectedVideoId, selectedAudioId]);
 
-  const isTechnicalReady = streamActive && micPassed && lightPassed;
+  const isTechnicalReady = cameraActive && micPassed && lightPassed;
   const isEnabled = chk1 && chk2 && isTechnicalReady && !submitting;
 
   const handleBegin = async () => {
@@ -326,13 +429,15 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
                 minHeight: '220px',
                 objectFit: 'cover',
                 transform: 'scaleX(-1)',
-                display: streamActive ? 'block' : 'none'
+                display: cameraActive ? 'block' : 'none'
               }}
             />
-            {!streamActive && (
+            {!cameraActive && (
               <div style={{ textAlign: 'center', padding: '40px 0' }}>
                 <div style={{ fontSize: '38px', marginBottom: '8px' }}>👤</div>
-                <div style={{ fontSize: '13px', color: '#cdd4da' }}>{d.camL || 'Iniciando cámara...'}</div>
+                <div style={{ fontSize: '13px', color: '#cdd4da' }}>
+                  {cameraError || (streamActive ? 'Detectando señal de video...' : (d.camL || 'Iniciando cámara...'))}
+                </div>
               </div>
             )}
             
@@ -360,10 +465,10 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
                   width: '6px',
                   height: '6px',
                   borderRadius: '50%',
-                  background: streamActive ? '#22c55e' : '#ef4444'
+                  background: cameraActive ? '#22c55e' : '#ef4444'
                 }}
               />
-              <span>{streamActive ? (d.camOk || 'Cámara activa') : 'Conectando'}</span>
+              <span>{cameraActive ? (d.camOk || 'Cámara activa') : (cameraError ? 'Sin cámara' : 'Cámara inactiva')}</span>
             </div>
           </div>
 
@@ -438,7 +543,9 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
               <span style={{ fontWeight: 500 }}>💡 Iluminación de sala</span>
               <span
                 style={{
-                  color: lightPassed
+                  color: !cameraActive
+                    ? '#94a3b8'
+                    : lightPassed
                     ? '#22c55e'
                     : lightLevel < LIGHT_MIN_THRESHOLD
                     ? '#eab308'
@@ -447,7 +554,9 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
                   fontSize: '11.5px'
                 }}
               >
-                {lightPassed
+                {!cameraActive
+                  ? 'Requiere cámara activa'
+                  : lightPassed
                   ? `✓ Óptima (${lightLevel}%)`
                   : lightLevel < LIGHT_MIN_THRESHOLD
                   ? `Baja (${lightLevel}% / mín. ${LIGHT_MIN_THRESHOLD}%)`
@@ -479,8 +588,10 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
               />
               <i
                 style={{
-                  width: `${lightLevel}%`,
-                  background: lightPassed
+                  width: `${cameraActive ? lightLevel : 0}%`,
+                  background: !cameraActive
+                    ? '#94a3b8'
+                    : lightPassed
                     ? '#22c55e'
                     : lightLevel < LIGHT_MIN_THRESHOLD
                     ? '#eab308'
@@ -600,8 +711,8 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
                   lineHeight: 1.45
                 }}
               >
-                {!streamActive
-                  ? '• Activa los permisos de tu cámara web.'
+                {!cameraActive
+                  ? '• Activa o conecta tu cámara web para verificar la imagen e iluminación.'
                   : !micPassed
                   ? '• Pronuncia unas palabras en el micrófono seleccionado para validar el umbral.'
                   : '• Ajusta la iluminación de tu entorno (mínimo 30%).'}
@@ -715,8 +826,16 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
           </div>
 
           {!isEnabled && !submitting && (
-            <div className="legend" style={{ marginTop: '10px', fontSize: '11px', color: 'var(--muted)' }}>
-              Para comenzar necesitas cámara activa, hablar al micrófono hasta superar el umbral, iluminación adecuada y ambas casillas marcadas.
+            <div className="legend" style={{ marginTop: '10px', fontSize: '11px', color: 'var(--muted)', lineHeight: 1.4 }}>
+              {!cameraActive
+                ? '⚠️ Requiere encender/conectar la cámara web para evaluar la imagen.'
+                : !micPassed
+                ? '⚠️ Habla al micrófono hasta superar el umbral de audio requerido.'
+                : !lightPassed
+                ? '⚠️ Ajusta la iluminación hasta que sea óptima (mínimo 30%).'
+                : (!chk1 || !chk2)
+                ? '⚠️ Marca ambas casillas de consentimiento para continuar.'
+                : 'Completa todas las validaciones técnicas y legales.'}
             </div>
           )}
         </div>
