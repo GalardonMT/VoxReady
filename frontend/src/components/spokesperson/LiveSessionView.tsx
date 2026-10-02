@@ -21,7 +21,8 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const { t } = useI18n();
   const d = t.L.u4;
 
-  const activeSessionId = sessionId || `session-crisis-${Date.now()}`;
+  const [generatedSessionId] = useState(() => `session-crisis-${Date.now()}`);
+  const activeSessionId = sessionId || generatedSessionId;
 
   const [isPaused, setIsPaused] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(3);
@@ -55,7 +56,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
   // Iniciar cámara y grabación automática al entrar
   useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
+    let isCancelled = false;
 
     async function initMedia() {
       try {
@@ -91,6 +92,11 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           });
         }
 
+        if (isCancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
         streamRef.current = stream;
         setStreamActive(true);
         if (videoRef.current) {
@@ -119,25 +125,20 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           }
         };
 
-        // INICIAR EN FLUJO CONTINUO (SIN timeslice para eliminar los 1.374 saltos temporales rotos)
+        // INICIAR EN FLUJO CONTINUO (SIN timeslice para eliminar saltos temporales)
         recorder.start();
         mediaRecorderRef.current = recorder;
-
-        timer = setInterval(() => {
-          if (!isPaused) {
-            setRecordingSeconds((prev) => prev + 1);
-          }
-        }, 1000);
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
         console.warn('Error al iniciar cámara/micrófono:', err);
-        setErrorMessage(`Dispositivo de video no disponible: ${err.message}. Modo simulación activado.`);
+        setErrorMessage(`Dispositivo de video no disponible: ${message}. Modo simulación activado.`);
       }
     }
 
     initMedia();
 
     return () => {
-      if (timer) clearInterval(timer);
+      isCancelled = true;
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
           mediaRecorderRef.current.stop();
@@ -145,9 +146,41 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
     };
   }, []);
+
+  // Temporizador de grabación reactivo al estado de grabación y pausa
+  useEffect(() => {
+    if (!streamActive || isPaused) return;
+
+    const timer = setInterval(() => {
+      setRecordingSeconds((prev) => prev + 1);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [streamActive, isPaused]);
+
+  // Sincronizar estado del MediaRecorder con pausa/reanudación
+  useEffect(() => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+
+    if (isPaused && recorder.state === 'recording') {
+      try {
+        recorder.pause();
+      } catch (e) {
+        console.warn('Advertencia al pausar MediaRecorder:', e);
+      }
+    } else if (!isPaused && recorder.state === 'paused') {
+      try {
+        recorder.resume();
+      } catch (e) {
+        console.warn('Advertencia al reanudar MediaRecorder:', e);
+      }
+    }
+  }, [isPaused]);
 
   const handleNextQuestion = () => {
     if (questionIndex < totalQuestions) {
@@ -237,9 +270,10 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       setTimeout(() => {
         onNavigate('u5');
       }, 1000);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
       console.error('Error al subir grabación a Azure:', err);
-      setErrorMessage(`Fallo en el pipeline de subida: ${err.message}. Pasando a análisis.`);
+      setErrorMessage(`Fallo en el pipeline de subida: ${message}. Pasando a análisis.`);
       setTimeout(() => {
         if (onSessionComplete) onSessionComplete(activeSessionId);
         onNavigate('u5');

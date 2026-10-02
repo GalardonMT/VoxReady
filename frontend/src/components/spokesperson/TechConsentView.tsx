@@ -21,8 +21,22 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
   // Lista y selección de dispositivos de entrada
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedVideoId, setSelectedVideoId] = useState<string>('');
-  const [selectedAudioId, setSelectedAudioId] = useState<string>('');
+  const [selectedVideoId, setSelectedVideoId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return localStorage.getItem('voxready_selected_camera') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [selectedAudioId, setSelectedAudioId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return localStorage.getItem('voxready_selected_mic') || '';
+    } catch {
+      return '';
+    }
+  });
 
   // Estados de micrófono en tiempo real
   const [audioLevel, setAudioLevel] = useState(0); // 0 a 100
@@ -34,16 +48,6 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
   const [lightPassed, setLightPassed] = useState(false);
   const LIGHT_MIN_THRESHOLD = 30; // Mínimo 30% para no estar demasiado oscuro
   const LIGHT_MAX_THRESHOLD = 90; // Máximo 90% para no estar sobreexpuesto
-
-  // Cargar dispositivos guardados de localStorage si existen
-  React.useEffect(() => {
-    try {
-      const savedVideo = localStorage.getItem('voxready_selected_camera');
-      const savedAudio = localStorage.getItem('voxready_selected_mic');
-      if (savedVideo) setSelectedVideoId(savedVideo);
-      if (savedAudio) setSelectedAudioId(savedAudio);
-    } catch {}
-  }, []);
 
   // Función para listar cámaras y micrófonos con etiquetas
   const enumerateUserDevices = async () => {
@@ -71,6 +75,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
 
   // Re-iniciar stream cada vez que cambie selectedVideoId o selectedAudioId
   React.useEffect(() => {
+    let isCancelled = false;
     let stream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
     let analyser: AnalyserNode | null = null;
@@ -92,10 +97,17 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
           ...(selectedAudioId ? { deviceId: { exact: selectedAudioId } } : {})
         };
 
-        stream = await navigator.mediaDevices.getUserMedia({
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
           video: videoConstraints,
           audio: audioConstraints
         });
+
+        if (isCancelled) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        stream = mediaStream;
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -113,10 +125,14 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
         // Una vez concedidos permisos, listar dispositivos para obtener etiquetas reales
         await enumerateUserDevices();
 
+        if (isCancelled) return;
+
         // --- 1. CONFIGURACIÓN DEL MICRÓFONO CON WEB AUDIO API ---
         const audioTracks = stream.getAudioTracks();
         if (audioTracks.length > 0) {
-          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          const AudioContextClass =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
           audioContext = new AudioContextClass();
           
           if (audioContext.state === 'suspended') {
@@ -219,6 +235,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
     navigator.mediaDevices?.addEventListener('devicechange', handleDeviceChange);
 
     return () => {
+      isCancelled = true;
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
       if (lightIntervalId) clearInterval(lightIntervalId);
       navigator.mediaDevices?.removeEventListener('devicechange', handleDeviceChange);
