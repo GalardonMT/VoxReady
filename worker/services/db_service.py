@@ -22,7 +22,11 @@ class DatabaseService:
         max_retries: int = 3,
         retry_delay_seconds: float = 15.0,
     ):
-        self.connection_string = connection_string or get_secret("DATABASE_URL")
+        self.connection_string = (
+            connection_string
+            or get_secret("SQL_CONNECTION_STRING")
+            or get_secret("DATABASE_URL")
+        )
         self.max_retries = max_retries
         self.retry_delay_seconds = retry_delay_seconds
 
@@ -47,7 +51,7 @@ class DatabaseService:
         """
         if not self.connection_string:
             raise ValueError(
-                "No se encontró la cadena de conexión DATABASE_URL para Azure SQL."
+                "No se encontró la cadena de conexión SQL_CONNECTION_STRING ni DATABASE_URL para Azure SQL."
             )
 
         try:

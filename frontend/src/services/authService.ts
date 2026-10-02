@@ -11,7 +11,7 @@ import type { Role, UserSession } from '../types/api';
 const MODE = process.env.NEXT_PUBLIC_AUTH_MODE;
 const CLIENT_ID = process.env.NEXT_PUBLIC_AZURE_CLIENT_ID;
 const AUTHORITY = process.env.NEXT_PUBLIC_AZURE_AUTHORITY;
-const REDIRECT_URI = process.env.NEXT_PUBLIC_AZURE_REDIRECT_URI;
+const REDIRECT_URI = process.env.NEXT_PUBLIC_REDIRECT_URI || process.env.NEXT_PUBLIC_AZURE_REDIRECT_URI;
 const API_SCOPE = process.env.NEXT_PUBLIC_AZURE_API_SCOPE;
 const AZURE_CONFIGURED = !!(CLIENT_ID && AUTHORITY && REDIRECT_URI && API_SCOPE);
 

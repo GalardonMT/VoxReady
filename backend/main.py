@@ -34,7 +34,7 @@ app.add_middleware(
 
 # 2. Configuración desde variables de entorno
 STORAGE_CONN_STR = os.getenv("STORAGE_CONNECTION_STRING", "")
-CONTAINER_NAME = os.getenv("BLOB_CONTAINER_NAME", "recordings")
+CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
 SERVICE_BUS_CONN_STR = os.getenv("SERVICE_BUS_CONNECTION_STRING", "")
 QUEUE_NAME = os.getenv("SERVICE_BUS_QUEUE_NAME", "analysis-queue")
 JWKS_URL = os.getenv("JWKS_URL", "")

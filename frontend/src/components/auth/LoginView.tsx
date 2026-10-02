@@ -35,10 +35,13 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     setAzureLoading(true);
     try {
       await loginWithAzure();
-      // loginRedirect will navigate away — if we reach here it was a popup
+      // loginRedirect will navigate away — if we reach here it was a popup or finished
       if (onLoginSuccess) onLoginSuccess();
-    } catch {
-      setError(t.login.azureErr ?? 'Error al iniciar sesión.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[LoginView] Error logging in with Azure:', msg);
+      setError(msg || (t.login.azureErr ?? 'Error al iniciar sesión con Microsoft.'));
+    } finally {
       setAzureLoading(false);
     }
   };

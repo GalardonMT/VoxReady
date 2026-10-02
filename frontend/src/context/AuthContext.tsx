@@ -154,6 +154,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       console.warn('[Auth] loginRedirect failed or cancelled:', err);
       setLoading(false);
+      throw err;
     }
   };
 
