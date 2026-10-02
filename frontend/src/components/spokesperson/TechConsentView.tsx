@@ -294,7 +294,6 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
               />
               <span>{streamActive ? (d.camOk || 'Cámara activa') : 'Conectando'}</span>
             </div>
-            </div>
           </div>
 
           <div style={{ marginTop: '16px' }}>
