@@ -382,7 +382,8 @@ body {
   background: var(--soft);
 }
 
-.btn.disabled {
+.btn.disabled,
+.btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   pointer-events: none;

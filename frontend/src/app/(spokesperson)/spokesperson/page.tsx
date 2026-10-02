@@ -12,6 +12,7 @@ import { ProgressView } from '../../../components/spokesperson/ProgressView';
 import { LessonView } from '../../../components/spokesperson/LessonView';
 import { useAuth } from '../../../context/AuthContext';
 import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
+import type { SessionSetup } from '../../../services/sessionFlowService';
 
 export default function SpokespersonPage() {
   return (
@@ -27,8 +28,21 @@ function SpokespersonContent() {
 
   const [voceroScreen, setVoceroScreen] = useState<VoceroScreen>('u1');
   const [selectedLesson, setSelectedLesson] = useState<string>('Mensajes puente (Bridging)');
-  const [activeSessionId, setActiveSessionId] = useState<string>('session-e2e-final-002');
+  const [activeSessionId, setActiveSessionId] = useState<string>('session-crisis-001');
   const [activeScenarioId, setActiveScenarioId] = useState<string>('crisis-voceria-01');
+
+  const [selectedSession, setSelectedSession] = useState<{
+    setup: SessionSetup;
+    userId: string;
+    clientId: string | null;
+  } | null>(null);
+
+  const activeSession =
+    selectedSession &&
+    selectedSession.userId === user?.userId &&
+    selectedSession.clientId === user?.clientId
+      ? selectedSession.setup
+      : null;
 
   if (!user) return null; // guaranteed by ProtectedRoute
 
@@ -100,13 +114,44 @@ function SpokespersonContent() {
 
       <main className="canvas">
         {voceroScreen === 'u1' && <HomePracticeView onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u2' && <ScenarioCatalog onNavigate={handleVoceroNavigate} />}
-        {voceroScreen === 'u3' && <TechConsentView onNavigate={handleVoceroNavigate} />}
+        {voceroScreen === 'u2' && (
+          <ScenarioCatalog
+            key={`${user.userId}:${user.clientId}`}
+            onNavigate={handleVoceroNavigate}
+            onSelected={(setup) => {
+              setSelectedSession({ setup, userId: user.userId, clientId: user.clientId });
+              setActiveSessionId(setup.sessionId);
+              setActiveScenarioId(setup.scenarioId);
+              setVoceroScreen('u3');
+            }}
+          />
+        )}
+        {voceroScreen === 'u3' && (
+          <TechConsentView
+            setup={activeSession ?? undefined}
+            onNavigate={handleVoceroNavigate}
+            onCancel={() => {
+              setSelectedSession(null);
+              handleVoceroNavigate('u2');
+            }}
+            onBegin={() => {
+              if (activeSession) {
+                setSelectedSession({
+                  setup: { ...activeSession, status: 'consented' },
+                  userId: user.userId,
+                  clientId: user.clientId
+                });
+              }
+              setVoceroScreen('u4');
+            }}
+          />
+        )}
         {voceroScreen === 'u4' && (
           <LiveSessionView
             onNavigate={handleVoceroNavigate}
             sessionId={activeSessionId}
             scenarioId={activeScenarioId}
+            setup={activeSession ?? undefined}
             onSessionComplete={(sId) => setActiveSessionId(sId)}
           />
         )}

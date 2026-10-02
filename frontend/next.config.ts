@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
+import { loadEnvConfig } from "@next/env";
 import path from "path";
 import fs from "fs";
-import { loadEnvConfig } from "@next/env";
 
-// Automatically load environment variables from the project root .env if it exists
+// Cargar variables de entorno desde VoxReady/.env si existe
 const rootDir = path.resolve(process.cwd(), "..");
 if (fs.existsSync(path.join(rootDir, ".env"))) {
   loadEnvConfig(rootDir);

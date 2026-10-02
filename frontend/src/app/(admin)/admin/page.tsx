@@ -30,7 +30,6 @@ function AdminContent() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-
   const adminNavItems: { id: AdminScreen; label: string; icon: string }[] = [
     { id: 'a1', label: 'Panel del Cliente', icon: '📊' },
     { id: 'a2', label: 'Editor de Tema', icon: '✏️' },
@@ -58,7 +57,7 @@ function AdminContent() {
             padding: '3px 10px'
           }}
         >
-          🏢 {user.clientName || 'Visum Corp'}
+          🏢 {user.clientName || 'Cliente'}
         </div>
 
         <nav className="vocero-nav-tabs">
@@ -105,7 +104,6 @@ function AdminContent() {
         )}
         {adminScreen === 'a3' && <RetentionPolicyView />}
       </main>
-
     </div>
   );
 }

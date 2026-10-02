@@ -1,7 +1,7 @@
 /**
  * Service for Rubric and Labeling queue management (Master Configurator)
  */
-import { apiFetch } from './apiClient';
+import { apiFetch, isAccessError } from './apiClient';
 import { MasterRubric, LabelingCase } from '../types/api';
 import { INITIAL_MASTER_RUBRIC, INITIAL_LABELING_QUEUE } from '../mock/mockData';
 
@@ -12,7 +12,7 @@ export const rubricService = {
   async getMasterRubric(): Promise<MasterRubric> {
     try {
       return await apiFetch<MasterRubric>('/master/rubric/active');
-    } catch {
+    } catch (error) { if (isAccessError(error)) throw error;
       return INITIAL_MASTER_RUBRIC;
     }
   },
@@ -26,8 +26,8 @@ export const rubricService = {
         method: 'POST',
         body: JSON.stringify(rubric)
       });
-    } catch {
-      return rubric;
+    } catch (error) {
+      throw error;
     }
   },
 
@@ -37,7 +37,7 @@ export const rubricService = {
   async getLabelingCases(): Promise<LabelingCase[]> {
     try {
       return await apiFetch<LabelingCase[]>('/master/labeling-cases');
-    } catch {
+    } catch (error) { if (isAccessError(error)) throw error;
       return INITIAL_LABELING_QUEUE;
     }
   },
@@ -56,8 +56,8 @@ export const rubricService = {
         body: JSON.stringify({ expertScores: scores, expertComment: comment })
       });
       return true;
-    } catch {
-      return true;
+    } catch (error) {
+      throw error;
     }
   }
 };

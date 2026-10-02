@@ -1,85 +1,101 @@
-/**
- * Service for Practice Sessions, Audio/Video Upload and Analysis
- */
-import { apiFetch } from './apiClient';
+import { apiFetch, isAccessError } from './apiClient';
 import {
-  Scenario,
+  CreateSessionResponse,
+  RecordingUrlResponse,
   CoachReport,
   MultimodalAnalysisStep
 } from '../types/api';
-import {
-  INITIAL_SCENARIOS,
-  INITIAL_REPORT
-} from '../mock/mockData';
-
-export interface CreateSessionResponse {
-  sessionId: string;
-  status: string;
-  scenarioId: string;
-  createdAt: string;
-}
-
-export interface RecordingUrlResponse {
-  uploadUrl: string;
-  blobPath: string;
-  expiresAt?: string;
-  maxSizeBytes?: number;
-}
 
 export interface AzureReportResponse {
   session_id: string;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
+  status: string;
   message?: string;
   processed_at?: string;
   puntuacion_global?: {
     score_general?: number;
-    score_comunicacion_no_verbal?: number;
     score_comunicacion_verbal?: number;
+    score_comunicacion_no_verbal?: number;
     score_estrategia_crisis?: number;
   };
   metrics?: {
     vision?: {
       eye_contact_percentage?: number;
       average_posture_score?: number;
-      frames_analyzed?: number;
     };
     audio?: {
       wpm?: number;
       fillers_count?: number;
       silence_pauses?: number;
-      audio_duration_sec?: number;
     };
     judge?: {
-      key_message_adherence_score?: number;
-      crisis_control_score?: number;
-      bridging_detected?: boolean;
       strengths?: string[];
       weaknesses?: string[];
       executive_summary?: string;
+      key_message_adherence_score?: number;
+      bridging_detected?: boolean;
     };
   };
 }
 
+const INITIAL_REPORT: CoachReport = {
+  sessionId: 'default',
+  scenarioName: 'Incidente Corporativo y Vocería de Crisis',
+  date: new Date().toLocaleDateString(),
+  globalScore: 84,
+  goodAspects: [
+    'Excelente velocidad de habla y dicción (134 ppm)',
+    'Postura erguida y contacto visual constante con la cámara (88%)',
+    'Mensaje puente utilizado correctamente en la pregunta 3'
+  ],
+  improveAspects: [
+    'Se detectaron 4 muletillas al inicio de las respuestas',
+    'La entonación cayó levemente hacia el final de la sesión',
+    'Mayor firmeza al abordar la compensación inmediata a usuarios'
+  ],
+  crossSignalQuote: '“En el segundo 42, tu tono de voz mostró seguridad mientras tu postura corporal reforzó el compromiso de la marca.”',
+  areas: [
+    {
+      name: 'Imagen / no verbal',
+      channel: 'MediaPipe Vision',
+      score: 86,
+      criteria: 'Contacto visual: 88%, Estabilidad: 92%'
+    },
+    {
+      name: 'Voz / prosodia',
+      channel: 'Acústica Parakeet',
+      score: 82,
+      criteria: 'Velocidad: 134 ppm, Muletillas: 4, Pausas: 3'
+    },
+    {
+      name: 'Contenido y discurso',
+      channel: 'Llama 3.2 90B Juez',
+      score: 85,
+      criteria: 'Apego a mensajes clave institucionales'
+    },
+    {
+      name: 'Estrategia de crisis',
+      channel: 'Fusión Multimodal',
+      score: 83,
+      criteria: 'Manejo de presión y técnica de bridging'
+    }
+  ]
+};
+
+const DEFAULT_ANALYSIS_STEPS: MultimodalAnalysisStep[] = [
+  { id: 'content', label: 'Contenido y coherencia de discurso', status: 'done' },
+  { id: 'voice', label: 'Tono de voz y modulación acústica', status: 'done' },
+  { id: 'image', label: 'Expresión visual y contacto visual', status: 'done' },
+  { id: 'fusion', label: 'Fusión multimodal e índice de empatía', status: 'done' }
+];
+
 export const sessionService = {
   /**
-   * Obtiene el catálogo de escenarios
+   * Crea una nueva sesión en el backend
    */
-  async getScenarios(): Promise<Scenario[]> {
-    try {
-      return await apiFetch<Scenario[]>('/scenarios');
-    } catch {
-      // Fallback a datos mock si el backend no está disponible
-      return INITIAL_SCENARIOS;
-    }
-  },
-
-  /**
-   * Crea una nueva sesión de práctica
-   */
-  async createSession(scenarioId: string): Promise<CreateSessionResponse> {
+  async createSession(scenarioId: string = 'crisis-voceria-01'): Promise<CreateSessionResponse> {
     const defaultSessId = `session-${scenarioId}-${Date.now()}`;
     try {
-      const res = await apiFetch<any>('/api/sessions', {
+      const res = await apiFetch<{ session_id?: string; status?: string }>('/api/sessions', {
         method: 'POST',
         body: JSON.stringify({ scenario_id: scenarioId, tenant_id: 'tenant-voxready-dev' })
       });
@@ -112,8 +128,8 @@ export const sessionService = {
         })
       });
       return true;
-    } catch {
-      return true;
+    } catch (error) {
+      throw error;
     }
   },
 
@@ -186,9 +202,30 @@ export const sessionService = {
         })
       });
       return true;
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn('Finish notification warning:', err);
       return true;
+    }
+  },
+
+  /**
+   * Consulta el progreso del análisis multimodal
+   */
+  async getAnalysisProgress(sessionId: string): Promise<MultimodalAnalysisStep[]> {
+    try {
+      const res = await apiFetch<{ status?: string }>(`/api/sessions/${sessionId}/report`);
+      if (res && res.status === 'completed') {
+        return DEFAULT_ANALYSIS_STEPS;
+      }
+      return [
+        { id: 'content', label: 'Contenido y coherencia de discurso', status: 'done' },
+        { id: 'voice', label: 'Tono de voz y modulación acústica', status: 'done' },
+        { id: 'image', label: 'Expresión visual y contacto visual', status: 'running' },
+        { id: 'fusion', label: 'Fusión multimodal e índice de empatía', status: 'pending' }
+      ];
+    } catch (error) {
+      if (isAccessError(error)) throw error;
+      return DEFAULT_ANALYSIS_STEPS;
     }
   },
 

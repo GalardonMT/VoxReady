@@ -4,7 +4,6 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { UserSession } from '../types/api';
 import { TEST_USERS } from '../mock/mockData';
 import {
-  msalInstance,
   loginRequest,
   loginRedirectRequest,
   isAzureConfigured,
@@ -31,21 +30,24 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 // ---------------------------------------------------------------------------
 function MsalAuthProvider({ children }: { children: React.ReactNode }) {
   const { instance, accounts, inProgress } = useMsal();
-  const [user, setUser] = useState<UserSession | null>(null);
+  const [user, setUser] = useState<UserSession | null>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('voxready_user');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {
+          /* ignore corrupt data */
+        }
+      }
+    }
+    return null;
+  });
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Restore from localStorage on first render (fast paint while MSAL resolves)
+  // Safety timer: ensure loading doesn't hang if MSAL startup or network hangs
   useEffect(() => {
-    const saved = localStorage.getItem('voxready_user');
-    if (saved) {
-      try {
-        setUser(JSON.parse(saved));
-      } catch {
-        /* ignore corrupt data */
-      }
-    }
-    // Safety timer: ensure loading doesn't hang if MSAL startup or network hangs
     const timer = setTimeout(() => {
       setLoading(false);
     }, 2500);
@@ -138,7 +140,10 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
   }, [accounts, inProgress, instance]);
 
   useEffect(() => {
-    resolveAzureUser();
+    const handle = setTimeout(() => {
+      resolveAzureUser();
+    }, 0);
+    return () => clearTimeout(handle);
   }, [resolveAzureUser]);
 
   const loginWithAzure = async () => {
@@ -202,18 +207,19 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
 // Fallback provider when MSAL IS NOT available (no Azure config)
 // ---------------------------------------------------------------------------
 function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<UserSession | null>(null);
-
-  useEffect(() => {
-    const saved = localStorage.getItem('voxready_user');
-    if (saved) {
-      try {
-        setUser(JSON.parse(saved));
-      } catch {
-        setUser(null);
+  const [user, setUser] = useState<UserSession | null>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('voxready_user');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {
+          /* ignore corrupt data */
+        }
       }
     }
-  }, []);
+    return null;
+  });
 
   const loginAs = (u: UserSession) => {
     setUser(u);

@@ -1,21 +1,31 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
+import { sessionFlowService, type SessionSetup } from '../../services/sessionFlowService';
+import { ApiError } from '../../services/apiClient';
 
 interface TechConsentViewProps {
-  onNavigate: (screen: VoceroScreen) => void;
+  onNavigate?: (screen: VoceroScreen) => void;
+  setup?: SessionSetup;
+  onBegin?: () => void;
+  onCancel?: () => void;
 }
 
-export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) => {
+export const TechConsentView: React.FC<TechConsentViewProps> = ({
+  onNavigate,
+  setup,
+  onBegin,
+  onCancel
+}) => {
   const { t } = useI18n();
   const d = t.L.u3;
 
   const [chk1, setChk1] = useState(false);
   const [chk2, setChk2] = useState(false);
-  const videoRef = React.useRef<HTMLVideoElement | null>(null);
-  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [streamActive, setStreamActive] = useState(false);
 
   // Lista y selección de dispositivos de entrada
@@ -49,23 +59,29 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
   const LIGHT_MIN_THRESHOLD = 30; // Mínimo 30% para no estar demasiado oscuro
   const LIGHT_MAX_THRESHOLD = 90; // Máximo 90% para no estar sobreexpuesto
 
+  // Estado del flujo de consentimiento del backend
+  const defaultPolicy = { version: '1.0', keep: 'full_recording' as const, termDays: 30 };
+  const [policy, setPolicy] = useState(setup?.retentionPolicy || defaultPolicy);
+  const [submitting, setSubmitting] = useState(false);
+  const [consentError, setConsentError] = useState('');
+
   // Función para listar cámaras y micrófonos con etiquetas
   const enumerateUserDevices = async () => {
     try {
       if (!navigator.mediaDevices?.enumerateDevices) return;
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const vDevs = devices.filter((d) => d.kind === 'videoinput');
-      const aDevs = devices.filter((d) => d.kind === 'audioinput');
+      const vDevs = devices.filter((dev) => dev.kind === 'videoinput');
+      const aDevs = devices.filter((dev) => dev.kind === 'audioinput');
       setVideoDevices(vDevs);
       setAudioDevices(aDevs);
 
       // Si no hay seleccionado o el seleccionado ya no existe, tomar el primero
       setSelectedVideoId((prev) => {
-        if (prev && vDevs.some((d) => d.deviceId === prev)) return prev;
+        if (prev && vDevs.some((dev) => dev.deviceId === prev)) return prev;
         return vDevs[0]?.deviceId || '';
       });
       setSelectedAudioId((prev) => {
-        if (prev && aDevs.some((d) => d.deviceId === prev)) return prev;
+        if (prev && aDevs.some((dev) => dev.deviceId === prev)) return prev;
         return aDevs[0]?.deviceId || '';
       });
     } catch (e) {
@@ -74,7 +90,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
   };
 
   // Re-iniciar stream cada vez que cambie selectedVideoId o selectedAudioId
-  React.useEffect(() => {
+  useEffect(() => {
     let isCancelled = false;
     let stream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
@@ -249,7 +265,45 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
   }, [selectedVideoId, selectedAudioId]);
 
   const isTechnicalReady = streamActive && micPassed && lightPassed;
-  const isEnabled = chk1 && chk2 && isTechnicalReady;
+  const isEnabled = chk1 && chk2 && isTechnicalReady && !submitting;
+
+  const handleBegin = async () => {
+    if (!isEnabled) return;
+    setSubmitting(true);
+    setConsentError('');
+    try {
+      if (setup?.sessionId) {
+        await sessionFlowService.grantConsent(setup.sessionId, policy.version);
+      }
+      if (onBegin) {
+        onBegin();
+      } else if (onNavigate) {
+        onNavigate('u4');
+      }
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.problem?.title === 'policy_version_changed') {
+        try {
+          if (setup?.sessionId) {
+            const updated = await sessionFlowService.getSession(setup.sessionId);
+            setPolicy(updated.retentionPolicy);
+            setChk1(false);
+            setChk2(false);
+          }
+        } catch {}
+      }
+      setConsentError(cause instanceof Error ? cause.message : 'No se pudo registrar el consentimiento.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCancel = () => {
+    if (onCancel) {
+      onCancel();
+    } else if (onNavigate) {
+      onNavigate('u2');
+    }
+  };
 
   return (
     <div className="canvas-content">
@@ -568,7 +622,14 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
               color: 'var(--ink)'
             }}
           >
-            {d.legal}
+            <p style={{ margin: '0 0 10px' }}>
+              Se grabarán voz e imagen para evaluar tu práctica de vocería. Dar permisos al navegador habilita los dispositivos; el consentimiento se registra formalmente en el sistema.
+            </p>
+            <p style={{ margin: '0', color: 'var(--muted)', fontSize: '12px' }}>
+              Política de retención aplicable: <strong>versión {policy.version}</strong>. {policy.keep === 'full_recording'
+                ? `Grabación conservada durante ${policy.termDays ?? 30} días.`
+                : 'Solo se conservan métricas y transcripción sin video permanente.'}
+            </p>
           </div>
 
           <div style={{ marginTop: '14px' }}>
@@ -594,7 +655,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
                   cursor: 'pointer'
                 }}
               />
-              <span>{d.chk1}</span>
+              <span>Consiento la grabación de mi voz e imagen y su tratamiento para esta sesión conforme a la política indicada.</span>
             </label>
 
             <label
@@ -618,9 +679,15 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
                   cursor: 'pointer'
                 }}
               />
-              <span>{d.chk2}</span>
+              <span>Entiendo que puedo solicitar el borrado de mis grabaciones en cualquier momento.</span>
             </label>
           </div>
+
+          {consentError && (
+            <p role="alert" style={{ color: '#ef4444', fontSize: '12px', marginTop: '10px', fontWeight: 500 }}>
+              {consentError}
+            </p>
+          )}
 
           <div
             style={{
@@ -633,24 +700,25 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
             <button
               type="button"
               className={`btn pri ${!isEnabled ? 'disabled' : ''}`}
-              onClick={() => {
-                if (isEnabled) onNavigate('u4');
-              }}
+              onClick={handleBegin}
+              disabled={!isEnabled}
             >
-              {d.beginBtn} →
+              {submitting ? 'Registrando consentimiento…' : `${d.beginBtn} →`}
             </button>
             <button
               type="button"
               className="btn ghost"
-              onClick={() => onNavigate('u2')}
+              onClick={handleCancel}
             >
               {d.cancel}
             </button>
           </div>
 
-          <div className="legend" style={{ marginTop: '8px' }}>
-            {d.sesLang}
-          </div>
+          {!isEnabled && !submitting && (
+            <div className="legend" style={{ marginTop: '10px', fontSize: '11px', color: 'var(--muted)' }}>
+              Para comenzar necesitas cámara activa, hablar al micrófono hasta superar el umbral, iluminación adecuada y ambas casillas marcadas.
+            </div>
+          )}
         </div>
       </div>
     </div>

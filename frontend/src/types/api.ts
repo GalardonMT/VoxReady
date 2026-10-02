@@ -5,7 +5,7 @@ export interface UserSession {
   email: string;
   displayName: string;
   role: Role;
-  clientId: string;
+  clientId: string | null;
   clientName: string;
   clientLogo?: string;
   initials: string;
@@ -56,6 +56,20 @@ export interface MultimodalAnalysisStep {
   status: 'done' | 'running' | 'pending';
 }
 
+export interface CreateSessionResponse {
+  sessionId: string;
+  status: string;
+  scenarioId: string;
+  createdAt: string;
+}
+
+export interface RecordingUrlResponse {
+  uploadUrl: string;
+  blobPath: string;
+  expiresAt: string;
+  maxSizeBytes: number;
+}
+
 export interface AreaScore {
   name: string;
   channel: string;
@@ -73,7 +87,7 @@ export interface CoachReport {
   improveAspects: string[];
   crossSignalQuote: string;
   areas: AreaScore[];
-  metrics?: any;
+  metrics?: Record<string, unknown>;
 }
 
 export interface ProgressTrend {

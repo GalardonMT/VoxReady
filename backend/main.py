@@ -89,13 +89,22 @@ def verify_token(authorization: str = Header(None)):
 
 # 4. Esquemas de petición
 class CreateSessionRequest(BaseModel):
-    scenario_id: str
-    tenant_id: str
+    scenarioId: str | None = None
+    scenario_id: str | None = None
+    language: str = "es"
+    tenant_id: str | None = "tenant-voxready-dev"
+
+class ConsentRequest(BaseModel):
+    acceptRecording: bool | None = None
+    acknowledgeDeletion: bool | None = None
+    acceptAudioVideoRecording: bool | None = None
+    acceptAiEvaluation: bool | None = None
+    policyVersion: str | None = "1.0"
 
 class FinishSessionRequest(BaseModel):
     video_blob_name: str
-    scenario_id: str
-    tenant_id: str
+    scenario_id: str = "crisis-voceria-01"
+    tenant_id: str = "tenant-voxready-dev"
 
 # 5. Endpoints
 @app.get("/health")
@@ -127,12 +136,124 @@ def get_current_user_profile(user: dict = Depends(verify_token)):
         "preferredLanguage": user.get("preferredLanguage", "es"),
     }
 
+@app.get("/scenarios")
+@app.get("/v1/scenarios")
+def list_scenarios(category: str = "", q: str = "", page: int = 1, pageSize: int = 20, user: dict = Depends(verify_token)):
+    items = [
+        {
+            "id": "crisis-voceria-01",
+            "title": "Retiro Masivo de Alimentos Infantiles",
+            "context": "Falla de calidad en la planta norte detectada durante control rutinario.",
+            "category": "health",
+            "audience": "Medios nacionales y familias afectadas",
+            "difficulty": "hard",
+            "estimatedMinutes": 15,
+            "questionCount": 8,
+            "languages": ["es"]
+        },
+        {
+            "id": "crisis-operativa-02",
+            "title": "Interrupción Crítica de Plataforma Transaccional",
+            "context": "Caída del sistema central afectando transacciones de clientes corporativos.",
+            "category": "operational",
+            "audience": "Clientes B2B e inversionistas",
+            "difficulty": "intermediate",
+            "estimatedMinutes": 10,
+            "questionCount": 6,
+            "languages": ["es"]
+        },
+        {
+            "id": "crisis-reputacional-03",
+            "title": "Filtración No Autorizada de Datos Internos",
+            "context": "Incidente de ciberseguridad con publicación parcial de registros confidenciales.",
+            "category": "reputational",
+            "audience": "Prensa especializada y reguladores",
+            "difficulty": "hard",
+            "estimatedMinutes": 12,
+            "questionCount": 7,
+            "languages": ["es"]
+        }
+    ]
+    if category:
+        items = [i for i in items if i["category"] == category]
+    if q:
+        items = [i for i in items if q.lower() in i["title"].lower() or q.lower() in i["context"].lower()]
+    return {
+        "items": items,
+        "page": page,
+        "pageSize": pageSize,
+        "total": len(items)
+    }
+
+@app.get("/scenarios/{scenario_id}")
+@app.get("/v1/scenarios/{scenario_id}")
+def get_scenario(scenario_id: str, user: dict = Depends(verify_token)):
+    return {
+        "id": scenario_id,
+        "title": "Retiro Masivo de Alimentos Infantiles",
+        "context": "Falla de calidad en la planta norte detectada durante control rutinario.",
+        "category": "health",
+        "audience": "Medios nacionales y familias afectadas",
+        "difficulty": "hard",
+        "estimatedMinutes": 15,
+        "questionCount": 8,
+        "languages": ["es"]
+    }
+
+@app.post("/sessions", status_code=201)
+@app.post("/v1/sessions", status_code=201)
 @app.post("/api/sessions")
 @app.post("/v1/api/sessions")
 def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_token)):
-    session_id = f"session-{payload.scenario_id}-{int(datetime.now(timezone.utc).timestamp())}"
-    return {"session_id": session_id, "status": "created", "scenario_id": payload.scenario_id}
+    sc_id = payload.scenarioId or payload.scenario_id or "crisis-voceria-01"
+    session_id = f"session-{sc_id}-{int(datetime.now(timezone.utc).timestamp())}"
+    return {
+        "sessionId": session_id,
+        "session_id": session_id,
+        "scenarioId": sc_id,
+        "scenario_id": sc_id,
+        "status": "created",
+        "questionCount": 8,
+    }
 
+@app.get("/sessions/{session_id}")
+@app.get("/v1/sessions/{session_id}")
+@app.get("/api/sessions/{session_id}")
+def get_session(session_id: str, user: dict = Depends(verify_token)):
+    return {
+        "sessionId": session_id,
+        "scenarioId": "crisis-voceria-01",
+        "status": "created",
+        "questions": [
+            {"id": "q1", "sequenceNo": 1, "text": "¿Cuál es la gravedad real de la falla detectada en el lote de producción?"},
+            {"id": "q2", "sequenceNo": 2, "text": "¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?"},
+            {"id": "q3", "sequenceNo": 3, "text": "¿Existe algún riesgo directo para la salud o integridad de los consumidores?"},
+            {"id": "q4", "sequenceNo": 4, "text": "¿Qué compensación inmediata recibirán los clientes perjudicados?"},
+            {"id": "q5", "sequenceNo": 5, "text": "¿Existen sanciones internas contra los responsables de la supervisión de calidad?"},
+            {"id": "q6", "sequenceNo": 6, "text": "¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?"},
+            {"id": "q7", "sequenceNo": 7, "text": "¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?"},
+            {"id": "q8", "sequenceNo": 8, "text": "Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?"}
+        ],
+        "retentionPolicy": {
+            "version": "1.0",
+            "keep": "full_recording",
+            "termDays": 30
+        }
+    }
+
+@app.post("/sessions/{session_id}/consent")
+@app.post("/v1/sessions/{session_id}/consent")
+@app.post("/api/sessions/{session_id}/consent")
+def grant_consent(session_id: str, payload: ConsentRequest, user: dict = Depends(verify_token)):
+    return {
+        "sessionId": session_id,
+        "status": "consented",
+        "consentId": f"consent-{session_id}-{int(datetime.now(timezone.utc).timestamp())}",
+        "consentedAt": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.post("/sessions/{session_id}/recording-url")
+@app.post("/v1/sessions/{session_id}/recording-url")
 @app.post("/api/sessions/{session_id}/upload-url")
 @app.post("/v1/api/sessions/{session_id}/upload-url")
 def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
@@ -155,10 +276,12 @@ def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
             expiry=datetime.now(timezone.utc) + timedelta(minutes=30)
         )
         upload_url = f"https://{account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}?{sas_token}"
-        return {"upload_url": upload_url, "blob_name": blob_name}
+        return {"upload_url": upload_url, "uploadUrl": upload_url, "blob_name": blob_name, "blobPath": blob_name}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generando SAS token: {str(e)}")
 
+@app.post("/sessions/{session_id}/finish")
+@app.post("/v1/sessions/{session_id}/finish")
 @app.post("/api/sessions/{session_id}/finish")
 @app.post("/v1/api/sessions/{session_id}/finish")
 def finish_session(session_id: str, payload: FinishSessionRequest, user: dict = Depends(verify_token)):

@@ -6,33 +6,69 @@
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   process.env.NEXT_PUBLIC_BACKEND_API_URL ||
-  'https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io';
+  'http://localhost:8000/v1';
+
+const TOKEN_KEY = 'voxready_access_token';
+let tokenProvider: (() => Promise<string | null>) | null = null;
+
+export function registerTokenProvider(provider: (() => Promise<string | null>) | null): void {
+  tokenProvider = provider;
+}
 
 export interface ProblemDetails {
   type?: string;
   title: string;
   status: number;
   detail?: string;
-  instance?: string;
   correlationId?: string;
   code?: string;
 }
 
 export class ApiError extends Error {
-  problem: ProblemDetails;
-
-  constructor(problem: ProblemDetails) {
-    super(problem.detail || problem.title || `API Error ${problem.status}`);
+  constructor(public problem: ProblemDetails) {
+    super(problem.detail || problem.title);
     this.name = 'ApiError';
-    this.problem = problem;
   }
+}
+
+export class NetworkError extends Error {
+  constructor() {
+    super('No se pudo conectar con la API. Comprueba tu conexión e inténtalo de nuevo.');
+    this.name = 'NetworkError';
+  }
+}
+
+export function isAccessError(error: unknown): boolean {
+  return error instanceof ApiError && (error.problem.status === 401 || error.problem.status === 403);
+}
+
+export function getAccessToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem('voxready_token');
+}
+
+export function setAccessToken(token: string): void {
+  sessionStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem('voxready_token', token);
+}
+
+export function clearAccessToken(): void {
+  sessionStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem('voxready_token');
 }
 
 async function getAuthToken(): Promise<string | null> {
   if (typeof window === 'undefined') return null;
 
-  // 1. Check localStorage (set by AuthContext after login)
-  const token = localStorage.getItem('voxready_token');
+  if (tokenProvider) {
+    try {
+      const customToken = await tokenProvider();
+      if (customToken) return customToken;
+    } catch {}
+  }
+
+  // 1. Check storage (set by AuthContext after login)
+  const token = getAccessToken();
   if (token) return token;
 
   // 2. Try MSAL silent token renewal (if configured and user is signed in)
@@ -46,24 +82,22 @@ async function getAuthToken(): Promise<string | null> {
           account: accounts[0],
         });
         if (response.accessToken) {
-          localStorage.setItem('voxready_token', response.accessToken);
+          setAccessToken(response.accessToken);
           return response.accessToken;
         }
       }
     }
   } catch (err: unknown) {
-    // Clear stale token so subsequent calls don't use an expired one
-    localStorage.removeItem('voxready_token');
+    clearAccessToken();
 
-    // If the error requires user interaction (expired refresh token, MFA, etc.)
-    // redirect to the Microsoft login page
+    // If the error requires user interaction, redirect to Microsoft login
     if (err && typeof err === 'object' && 'name' in err &&
         (err as { name: string }).name === 'InteractionRequiredAuthError') {
       try {
         const { msalInstance, loginRedirectRequest } = await import('./authConfig');
         await msalInstance.acquireTokenRedirect(loginRedirectRequest);
       } catch {
-        // redirect will navigate away; ignore errors here
+        // redirect will navigate away
       }
     }
   }
@@ -83,7 +117,7 @@ async function getAuthToken(): Promise<string | null> {
       if (res.ok) {
         const data = await res.json();
         if (data.accessToken) {
-          localStorage.setItem('voxready_token', data.accessToken);
+          setAccessToken(data.accessToken);
           return data.accessToken;
         }
       }
@@ -114,18 +148,22 @@ export async function apiFetch<T>(
     headers['Authorization'] = `Bearer ${effectiveToken}`;
   }
 
-  // Generar correlation-id para trazabilidad
+  // Correlation ID para trazabilidad
   if (!headers['x-correlation-id']) {
     headers['x-correlation-id'] = `client-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers
+    });
+  } catch {
+    throw new NetworkError();
+  }
 
   if (!response.ok) {
-
     let problem: ProblemDetails;
     try {
       problem = await response.json();
@@ -136,10 +174,13 @@ export async function apiFetch<T>(
         detail: `HTTP status ${response.status} en ${endpoint}`
       };
     }
-    throw new ApiError(problem);
+    if (response.status === 401) {
+      clearAccessToken();
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('voxready:session-expired'));
+    }
+    throw new ApiError({ ...problem, status: response.status });
   }
 
-  // Manejar respuestas sin contenido (204 No Content)
   if (response.status === 204) {
     return {} as T;
   }

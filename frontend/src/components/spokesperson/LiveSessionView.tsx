@@ -4,11 +4,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService } from '../../services/sessionService';
+import type { SessionSetup } from '../../services/sessionFlowService';
 
 interface LiveSessionViewProps {
   onNavigate: (screen: VoceroScreen) => void;
   sessionId?: string;
   scenarioId?: string;
+  setup?: SessionSetup;
   onSessionComplete?: (sessionId: string) => void;
 }
 
@@ -16,17 +18,34 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   onNavigate,
   sessionId,
   scenarioId = 'crisis-voceria-01',
+  setup,
   onSessionComplete
 }) => {
   const { t } = useI18n();
   const d = t.L.u4;
 
   const [generatedSessionId] = useState(() => `session-crisis-${Date.now()}`);
-  const activeSessionId = sessionId || generatedSessionId;
+  const activeSessionId = sessionId || setup?.sessionId || generatedSessionId;
+  const activeScenarioId = scenarioId || setup?.scenarioId || 'crisis-voceria-01';
+
+  const defaultQuestions = [
+    '¿Cuál es la gravedad real de la falla detectada en el lote de producción?',
+    '¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?',
+    d.qEx,
+    '¿Qué compensación inmediata recibirán los clientes perjudicados?',
+    '¿Existen sanciones internas contra los responsables de la supervisión de calidad?',
+    '¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?',
+    '¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?',
+    'Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?'
+  ];
+
+  const questions = (setup?.questions && setup.questions.length > 0)
+    ? setup.questions.map((q) => q.text)
+    : defaultQuestions;
 
   const [isPaused, setIsPaused] = useState(false);
-  const [questionIndex, setQuestionIndex] = useState(3);
-  const totalQuestions = 8;
+  const [questionIndex, setQuestionIndex] = useState(1);
+  const totalQuestions = questions.length;
 
   // Estados de captura de video y subida
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -41,18 +60,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
 
-  const questions = [
-    '¿Cuál es la gravedad real de la falla detectada en el lote de producción?',
-    '¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?',
-    d.qEx,
-    '¿Qué compensación inmediata recibirán los clientes perjudicados?',
-    '¿Existen sanciones internas contra los responsables de la supervisión de calidad?',
-    '¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?',
-    '¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?',
-    'Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?'
-  ];
-
-  const currentQuestion = questions[questionIndex - 1] || d.qEx;
+  const currentQuestion = questions[questionIndex - 1] || questions[0] || d.qEx;
 
   // Iniciar cámara y grabación automática al entrar
   useEffect(() => {
@@ -258,7 +266,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       await sessionService.finishSession(
         activeSessionId,
         blobPath,
-        scenarioId,
+        activeScenarioId,
         'tenant-voxready-dev'
       );
 
