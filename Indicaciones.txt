@@ -1,181 +1,326 @@
-# AGENT DIRECTIVE: Extracción Automatizada de Variables por Azure CLI y Sincronización de Entornos (.env)
+# PLAYBOOK DE EJECUCIÓN Y VERIFICACIÓN AUTOMATIZADA: ANTIMIGRATION & RE-DEPLOY (VOXREADY)
 
-## 1. Contexto Operacional y Parámetros Base
-
-Este procedimiento instruye al agente de automatización a extraer dinámicamente mediante Azure CLI (`az`) todos los identificadores, secretos, URLs y cadenas de conexión aprovisionados en el grupo `rg-voxready-dev` (región `westus`) para generar o sustituir de forma atómica los archivos de entorno locales:
-
-* `voxready-backend/.env`
-* `voxready-worker/.env`
-* `voxready-frontend/.env.local`
-
-### Parámetros de Infraestructura Objetivo
-
-* **Resource Group:** `rg-voxready-dev`
-* **Key Vault:** `kv-voxready-st`
-* **Storage Account:** `stavoxreadyst` (Contenedor: `recordings`)
-* **Service Bus Namespace:** `sb-voxready-st` (Cola: `analysis-queue`)
-* **SQL Server:** `sql-voxready-st` (BD: `sqldb-voxready`)
-* **Container Apps:** `ca-vision-service`, `ca-backend-api`
+Este documento contiene la secuencia estricta de comandos, compilaciones y verificaciones para desplegar la suite de microservicios de VoxReady en la región `westus` bajo la suscripción `Azure for Students` e integrar la capa de identidad con Microsoft Entra External ID (CIAM).
 
 ---
 
-## 2. Matriz de Extracción CLI
-
-| Variable destino | Archivo (.env) | Origen / Comando Azure CLI |
-| --- | --- | --- |
-| `SQL_CONNECTION_STRING` | Backend, Worker | `az keyvault secret show --vault-name kv-voxready-st --name "SQL-CONNECTION-STRING" --query "value" -o tsv` |
-| `STORAGE_CONNECTION_STRING` | Backend, Worker | `az storage account show-connection-string --name stavoxreadyst --resource-group rg-voxready-dev --query "connectionString" -o tsv` |
-| `SERVICE_BUS_CONNECTION_STRING` | Backend, Worker | `az servicebus namespace authorization-rule keys list --resource-group rg-voxready-dev --namespace-name sb-voxready-st --name RootManageSharedAccessKey --query "primaryConnectionString" -o tsv` |
-| `VISION_SERVICE_URL` | Worker | `https://$(az containerapp show --name ca-vision-service --resource-group rg-voxready-dev --query "properties.configuration.ingress.fqdn" -o tsv)` |
-| `NVIDIA_API_KEY` | Worker | `az keyvault secret show --vault-name kv-voxready-st --name "NVIDIA-API-KEY" --query "value" -o tsv` |
-| `NEXT_PUBLIC_API_URL` | Frontend | `https://$(az containerapp show --name ca-backend-api --resource-group rg-voxready-dev --query "properties.configuration.ingress.fqdn" -o tsv)/v1` |
-| `NEXT_PUBLIC_AZURE_TENANT_ID` | Frontend | `az account show --query "tenantId" -o tsv` |
-| `NEXT_PUBLIC_AZURE_CLIENT_ID` | Frontend | Extraído de Entra ID o recuperado desde `kv-voxready-st` (secreto `ENTRA-CLIENT-ID`) |
-
----
-
-## 3. Script de Automatización: `sync-env.sh`
-
-El agente debe ejecutar este script desde la raíz del repositorio (`voxready/`). El script consulta los servicios en Azure, valida que los valores no sean nulos y sobrescribe los archivos `.env` respectivos.
+### PARÁMETROS GLOBALES DE ENTORNO
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
+export SUBSCRIPTION_NAME="Azure for Students"
+export REGION="westus"
+export RG_NAME="rg-voxready-dev"
+export KV_NAME="kv-voxready-st"
+export ACR_NAME="crvoxreadyst"
+export STORAGE_NAME="stavoxreadyst"
+export SB_NAME="sb-voxready-st"
+export SQL_SERVER_NAME="sql-voxready-st"
+export SQL_DB_NAME="sqldb-voxready"
+export ENVIRONMENT_NAME="cae-voxready-dev"
+export CIAM_TENANT_ID="7f50eae1-4ea8-45eb-9ff7-02f82b2781a5"
+export BACKEND_CLIENT_ID="5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
+export APP_ID_URI="https://voxreadydev.ciamlogin.com/9872ab39-adc2-4e0b-9fc5-8de0268350fe"
 
-echo "==> [1/4] Verificando contexto de suscripción..."
-CURRENT_SUB=$(az account show --query "name" -o tsv)
-echo "Suscripción activa: $CURRENT_SUB"
+```
 
-RG_NAME="rg-voxready-dev"
-KV_NAME="kv-voxready-st"
-STORAGE_NAME="stavoxreadyst"
-SB_NAME="sb-voxready-st"
+---
 
-echo "==> [2/4] Consultando Azure CLI y Azure Key Vault..."
+### FASE 0: PRE-FLIGHT CHECKS Y AUTENTICACIÓN
 
-# 1. Cadenas de conexión compartidas
-echo "Consultando conexión a Storage..."
-STORAGE_CONN=$(az storage account show-connection-string \
-  --name "$STORAGE_NAME" \
-  --resource-group "$RG_NAME" \
-  --query "connectionString" -o tsv)
+```bash
+# 1. Asegurar suscripción activa
+az account set --subscription "$SUBSCRIPTION_NAME"
 
-echo "Consultando conexión a Service Bus..."
-SB_CONN=$(az servicebus namespace authorization-rule keys list \
-  --resource-group "$RG_NAME" \
-  --namespace-name "$SB_NAME" \
-  --name RootManageSharedAccessKey \
-  --query "primaryConnectionString" -o tsv)
-
-echo "Consultando conexión a Azure SQL desde Key Vault..."
-SQL_CONN=$(az keyvault secret show \
-  --vault-name "$KV_NAME" \
-  --name "SQL-CONNECTION-STRING" \
-  --query "value" -o tsv || echo "")
-
-# 2. Secretos y credenciales de IA
-echo "Consultando NVIDIA API Key desde Key Vault..."
-NVIDIA_KEY=$(az keyvault secret show \
-  --vault-name "$KV_NAME" \
-  --name "NVIDIA-API-KEY" \
-  --query "value" -o tsv || echo "")
-
-# 3. FQDNs de Azure Container Apps
-echo "Consultando FQDN de ca-vision-service..."
-VISION_FQDN=$(az containerapp show \
-  --name ca-vision-service \
-  --resource-group "$RG_NAME" \
-  --query "properties.configuration.ingress.fqdn" -o tsv || echo "")
-
-echo "Consultando FQDN de ca-backend-api..."
-BACKEND_FQDN=$(az containerapp show \
-  --name ca-backend-api \
-  --resource-group "$RG_NAME" \
-  --query "properties.configuration.ingress.fqdn" -o tsv || echo "")
-
-# 4. Parámetros de Tenant y Auth
-TENANT_ID=$(az account show --query "tenantId" -o tsv)
-
-# Intentar extraer Client ID de Entra ID registrado para VoxReady (o consultar Key Vault)
-CLIENT_APP_ID=$(az ad app list --display-name "voxready" --query "[0].appId" -o tsv 2>/dev/null || echo "")
-if [ -z "$CLIENT_APP_ID" ]; then
-  CLIENT_APP_ID=$(az keyvault secret show --vault-name "$KV_NAME" --name "ENTRA-CLIENT-ID" --query "value" -o tsv 2>/dev/null || echo "PENDIENTE_DE_CONFIGURAR")
+# Verificación de contexto
+ACTIVE_SUB=$(az account show --query "name" -o tsv)
+if [ "$ACTIVE_SUB" != "$SUBSCRIPTION_NAME" ]; then
+  echo "Error: Suscripción activa no coincide con $SUBSCRIPTION_NAME" >&2
+  exit 1
 fi
 
-echo "==> [3/4] Generando archivos .env..."
+# 2. Login en Docker contra el nuevo ACR
+ACR_PASS=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+echo "$ACR_PASS" | docker login "$ACR_NAME.azurecr.io" -u "$ACR_NAME" --password-stdin
 
-# -------------------------------------------------------------
-# A. voxready-backend/.env
-# -------------------------------------------------------------
-mkdir -p voxready-backend
+# 3. Validar existencia de secretos críticos en Key Vault
+for SECRET in "SQL-CONNECTION-STRING" "STORAGE-CONNECTION-STRING" "SERVICE-BUS-CONNECTION-STRING" "NVIDIA-API-KEY"; do
+  EXISTS=$(az keyvault secret list --vault-name "$KV_NAME" --query "[?name=='$SECRET'].name" -o tsv)
+  if [ -z "$EXISTS" ]; then
+    echo "Falta el secreto $SECRET en $KV_NAME" >&2
+    exit 1
+  fi
+done
+
+```
+
+---
+
+### FASE 1: COMPILACIÓN LOCAL Y DESPLIEGUE DE MICROSERVICIOS
+
+#### 1.1 Microservicio de Visión (`ca-vision-service`)
+
+*Especificación:* Escalado estricto a 0 réplicas, Ingress interno en puerto 8000, 0.5 CPU, 1.0 GiB.
+
+```bash
+cd voxready-vision
+docker build --platform linux/amd64 -t "$ACR_NAME.azurecr.io/vision-service:v1" .
+docker push "$ACR_NAME.azurecr.io/vision-service:v1"
+cd ..
+
+az containerapp create \
+  --name ca-vision-service \
+  --resource-group "$RG_NAME" \
+  --environment "$ENVIRONMENT_NAME" \
+  --image "$ACR_NAME.azurecr.io/vision-service:v1" \
+  --registry-server "$ACR_NAME.azurecr.io" \
+  --registry-username "$ACR_NAME" \
+  --registry-password "$ACR_PASS" \
+  --target-port 8000 \
+  --ingress internal \
+  --cpu 0.5 \
+  --memory 1.0Gi \
+  --min-replicas 0 \
+  --max-replicas 2
+
+# Guardar URL interna en Key Vault
+VISION_FQDN=$(az containerapp show --name ca-vision-service --resource-group "$RG_NAME" --query "properties.configuration.ingress.fqdn" -o tsv)
+az keyvault secret set --vault-name "$KV_NAME" --name "VISION-SERVICE-URL" --value "https://$VISION_FQDN"
+
+```
+
+#### 1.2 Microservicio API Backend (`ca-backend-api`)
+
+*Especificación:* Ingress externo en puerto 8000, validación de JWT, resolución de credenciales desde Key Vault.
+
+```bash
+cd voxready-backend
+docker build --platform linux/amd64 -t "$ACR_NAME.azurecr.io/backend-api:v1" .
+docker push "$ACR_NAME.azurecr.io/backend-api:v1"
+cd ..
+
+SQL_CONN=$(az keyvault secret show --vault-name "$KV_NAME" --name "SQL-CONNECTION-STRING" --query "value" -o tsv)
+STORAGE_CONN=$(az keyvault secret show --vault-name "$KV_NAME" --name "STORAGE-CONNECTION-STRING" --query "value" -o tsv)
+SB_CONN=$(az keyvault secret show --vault-name "$KV_NAME" --name "SERVICE-BUS-CONNECTION-STRING" --query "value" -o tsv)
+
+az containerapp create \
+  --name ca-backend-api \
+  --resource-group "$RG_NAME" \
+  --environment "$ENVIRONMENT_NAME" \
+  --image "$ACR_NAME.azurecr.io/backend-api:v1" \
+  --registry-server "$ACR_NAME.azurecr.io" \
+  --registry-username "$ACR_NAME" \
+  --registry-password "$ACR_PASS" \
+  --target-port 8000 \
+  --ingress external \
+  --cpu 0.5 \
+  --memory 1.0Gi \
+  --min-replicas 0 \
+  --max-replicas 2 \
+  --secrets \
+    sql-conn="$SQL_CONN" \
+    storage-conn="$STORAGE_CONN" \
+    sb-conn="$SB_CONN" \
+  --env-vars \
+    SQL_CONNECTION_STRING=secretref:sql-conn \
+    STORAGE_CONNECTION_STRING=secretref:storage-conn \
+    SERVICE_BUS_CONNECTION_STRING=secretref:sb-conn \
+    SERVICE_BUS_QUEUE_NAME="analysis-queue" \
+    STORAGE_CONTAINER_NAME="recordings"
+
+BACKEND_FQDN=$(az containerapp show --name ca-backend-api --resource-group "$RG_NAME" --query "properties.configuration.ingress.fqdn" -o tsv)
+az keyvault secret set --vault-name "$KV_NAME" --name "BACKEND-API-URL" --value "https://$BACKEND_FQDN"
+
+```
+
+#### 1.3 Microservicio Worker de Análisis (`ca-analysis-worker`)
+
+*Especificación:* Sin Ingress, KEDA trigger contra Service Bus (`analysis-queue`), FFmpeg, Parakeet y Llama 3.2 90B.
+
+```bash
+cd voxready-worker
+docker build --platform linux/amd64 -t "$ACR_NAME.azurecr.io/analysis-worker:v1" .
+docker push "$ACR_NAME.azurecr.io/analysis-worker:v1"
+cd ..
+
+NVIDIA_KEY=$(az keyvault secret show --vault-name "$KV_NAME" --name "NVIDIA-API-KEY" --query "value" -o tsv)
+VISION_URL=$(az keyvault secret show --vault-name "$KV_NAME" --name "VISION-SERVICE-URL" --query "value" -o tsv)
+
+az containerapp create \
+  --name ca-analysis-worker \
+  --resource-group "$RG_NAME" \
+  --environment "$ENVIRONMENT_NAME" \
+  --image "$ACR_NAME.azurecr.io/analysis-worker:v1" \
+  --registry-server "$ACR_NAME.azurecr.io" \
+  --registry-username "$ACR_NAME" \
+  --registry-password "$ACR_PASS" \
+  --cpu 1.0 \
+  --memory 2.0Gi \
+  --min-replicas 0 \
+  --max-replicas 2 \
+  --secrets \
+    sb-conn="$SB_CONN" \
+    storage-conn="$STORAGE_CONN" \
+    sql-conn="$SQL_CONN" \
+    nvidia-key="$NVIDIA_KEY" \
+  --env-vars \
+    SERVICE_BUS_CONNECTION_STRING=secretref:sb-conn \
+    STORAGE_CONNECTION_STRING=secretref:storage-conn \
+    SQL_CONNECTION_STRING=secretref:sql-conn \
+    NVIDIA_API_KEY=secretref:nvidia-key \
+    NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1" \
+    LLM_MODEL_NAME="meta/llama-3.2-90b-vision-instruct" \
+    VISION_SERVICE_URL="$VISION_URL" \
+    SERVICE_BUS_QUEUE_NAME="analysis-queue" \
+    STORAGE_CONTAINER_NAME="recordings" \
+  --scale-rule-name servicebus-queue-rule \
+  --scale-rule-type azure-servicebus \
+  --scale-rule-metadata queueName=analysis-queue messageCount=1 \
+  --scale-rule-auth connection=sb-conn
+
+```
+
+---
+
+### FASE 2: CONFIGURACIÓN DE CORS EN INGRESS
+
+Habilitar el acceso cruzado desde entornos locales y clientes web hacia la API:
+
+```bash
+az containerapp ingress cors update \
+  --name ca-backend-api \
+  --resource-group "$RG_NAME" \
+  --allowed-origins "http://localhost:3000" "https://*.azurestaticapps.net" "https://*.vercel.app" \
+  --allowed-methods "GET" "POST" "PUT" "DELETE" "OPTIONS" \
+  --allowed-headers "*" \
+  --allow-credentials true
+
+```
+
+---
+
+### FASE 3: SINCRONIZACIÓN AUTOMÁTICA DE ARCHIVOS `.ENV`
+
+Ejecutar el pipeline de reemplazo para los entornos locales:
+
+```bash
+mkdir -p voxready-backend voxready-worker voxready-frontend
+
+# Backend .env
 cat <<EOF > voxready-backend/.env
-# Generado automáticamente por CLI Sync
 SQL_CONNECTION_STRING="${SQL_CONN}"
 STORAGE_CONNECTION_STRING="${STORAGE_CONN}"
 STORAGE_CONTAINER_NAME="recordings"
 SERVICE_BUS_CONNECTION_STRING="${SB_CONN}"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
 EOF
-echo "✔ voxready-backend/.env generado exitosamente."
 
-# -------------------------------------------------------------
-# B. voxready-worker/.env
-# -------------------------------------------------------------
-mkdir -p voxready-worker
+# Worker .env
 cat <<EOF > voxready-worker/.env
-# Generado automáticamente por CLI Sync
 SQL_CONNECTION_STRING="${SQL_CONN}"
 STORAGE_CONNECTION_STRING="${STORAGE_CONN}"
 STORAGE_CONTAINER_NAME="recordings"
 SERVICE_BUS_CONNECTION_STRING="${SB_CONN}"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
-
-# Pipeline de Visión y Modelos Externos
 VISION_SERVICE_URL="https://${VISION_FQDN}"
 NVIDIA_API_KEY="${NVIDIA_KEY}"
 NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1"
 LLM_MODEL_NAME="meta/llama-3.2-90b-vision-instruct"
 EOF
-echo "✔ voxready-worker/.env generado exitosamente."
 
-# -------------------------------------------------------------
-# C. voxready-frontend/.env.local
-# -------------------------------------------------------------
-mkdir -p voxready-frontend
+# Frontend .env.local
 cat <<EOF > voxready-frontend/.env.local
-# Generado automáticamente por CLI Sync
 NEXT_PUBLIC_API_URL="https://${BACKEND_FQDN}/v1"
-NEXT_PUBLIC_AZURE_CLIENT_ID="${CLIENT_APP_ID}"
-NEXT_PUBLIC_AZURE_TENANT_ID="${TENANT_ID}"
+NEXT_PUBLIC_AZURE_CLIENT_ID="e219fd4b-3686-45dd-9656-b582d1fb0698"
+NEXT_PUBLIC_AZURE_TENANT_ID="${CIAM_TENANT_ID}"
 NEXT_PUBLIC_REDIRECT_URI="http://localhost:3000"
+NEXT_PUBLIC_AZURE_SCOPES="${APP_ID_URI}/access_as_user"
 EOF
-echo "✔ voxready-frontend/.env.local generado exitosamente."
-
-echo "==> [4/4] Sincronización completada."
 
 ```
 
 ---
 
-## 4. Instrucciones de Ejecución para Antigravity
+### FASE 4: MATRIZ DE VERIFICACIONES POST-DEPLOY (SMOKE TESTS)
 
-1. **Permisos de Ejecución:**
-Guardar el contenido en `scripts/sync-env.sh` y otorgar permisos de ejecución:
+Antigravity debe ejecutar la siguiente batería de comprobaciones lógicas:
+
+#### Verificación 1: Salud de la API y Documentación OpenAPI
+
 ```bash
-chmod +x scripts/sync-env.sh
-./scripts/sync-env.sh
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$BACKEND_FQDN/docs")
+if [ "$HTTP_STATUS" -ne 200 ]; then
+  echo "Fallo de salud en Backend API: Código HTTP $HTTP_STATUS" >&2
+  exit 1
+fi
+echo "✔ Backend API respondiendo HTTP 200 OK en Swagger."
 
 ```
 
+#### Verificación 2: Persistencia y Consulta DDL en Azure SQL
 
-2. **Orden de Dependencia Obligatorio:**
-* Las Container Apps (`ca-vision-service` y `ca-backend-api`) deben haber sido aprovisionadas previamente para que `az containerapp show` retorne los FQDNs válidos de `westus`.
-* Si las Container Apps aún no se han desplegado, el script insertará temporalmente cadenas vacías en `VISION_SERVICE_URL` y `NEXT_PUBLIC_API_URL`, requiriendo una reejecución tras el despliegue del Paso 4.
+Consultar si el usuario seed y la rúbrica existen en la base de datos `sqldb-voxready`:
 
-
-3. **Validación de Resultados:**
-Comprobar que ningún archivo contenga valores vacíos en las variables críticas:
 ```bash
-grep -E "ConnectionString|NEXT_PUBLIC_API_URL|VISION_SERVICE_URL" voxready-*/*env*
+python -c "
+import pyodbc, os
+conn_str = '''$SQL_CONN'''
+conn = pyodbc.connect(conn_str)
+cursor = conn.cursor()
+cursor.execute('SELECT COUNT(*) FROM rubric_version WHERE status = \'published\';')
+count = cursor.fetchone()[0]
+assert count >= 1, 'Rúbrica no inicializada'
+print('✔ Base de datos verificada con ' + str(count) + ' versión(es) de rúbrica activa(s).')
+"
+
+```
+
+#### Verificación 3: Validación del Endpoint OIDC de CIAM
+
+Verificar la resolución del Discovery Document de Microsoft Entra External ID:
+
+```bash
+OIDC_ISSUER=$(curl -s "https://voxreadydev.ciamlogin.com/$CIAM_TENANT_ID/v2.0/.well-known/openid-configuration" | jq -r '.issuer')
+if [[ "$OIDC_ISSUER" != *"$CIAM_TENANT_ID"* ]]; then
+  echo "Fallo de resolución OIDC en CIAM" >&2
+  exit 1
+fi
+echo "✔ Endpoint CIAM OIDC operativo: $OIDC_ISSUER"
+
+```
+
+#### Verificación 4: Estado de Réplicas en Reposo (Zero-Idle Cost)
+
+Comprobar que los tres servicios admitan escalado a cero y no incurran en consumo continuo de vCPU:
+
+```bash
+for APP in ca-vision-service ca-backend-api ca-analysis-worker; do
+  MIN_REP=$(az containerapp show --name "$APP" --resource-group "$RG_NAME" --query "properties.template.scale.minReplicas" -o tsv)
+  if [ "$MIN_REP" -ne 0 ]; then
+    echo "Advertencia: $APP tiene minReplicas en $MIN_REP (debería ser 0)" >&2
+  else
+    echo "✔ $APP configurado para escalar a 0 réplicas."
+  fi
+done
+
+```
+
+#### Verificación 5: Ciclo de Emisión SAS (Blob Direct-to-Storage)
+
+Probar la emisión del token de carga temporal sin transferir binarios por la API:
+
+```bash
+TEST_SAS=$(az storage container generate-sas \
+  --account-name "$STORAGE_NAME" \
+  --name "recordings" \
+  --permissions w \
+  --expiry $(date -u -d "30 minutes" '+%Y-%m-%dT%H:%MZ') \
+  --auth-mode key \
+  -o tsv)
+
+if [ -z "$TEST_SAS" ]; then
+  echo "Fallo al generar URL SAS en $STORAGE_NAME" >&2
+  exit 1
+fi
+echo "✔ Mecanismo SAS Storage validado correctamente."
 
 ```
