@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,12 +10,13 @@ from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPerm
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
 import jwt
 from jwt import PyJWKClient
+import pyodbc
 
 # Cargar variables de entorno locales si existen
 try:
     from dotenv import load_dotenv
-    load_dotenv()
-    load_dotenv("../.env")
+    load_dotenv(override=True)
+    load_dotenv("../.env", override=False)
 except ImportError:
     pass
 
@@ -37,6 +39,7 @@ STORAGE_CONN_STR = os.getenv("STORAGE_CONNECTION_STRING", "")
 CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
 SERVICE_BUS_CONN_STR = os.getenv("SERVICE_BUS_CONNECTION_STRING", "")
 QUEUE_NAME = os.getenv("SERVICE_BUS_QUEUE_NAME", "analysis-queue")
+SQL_CONN_STR = os.getenv("SQL_CONNECTION_STRING") or os.getenv("DATABASE_URL", "")
 JWKS_URL = os.getenv("JWKS_URL", "")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "")
@@ -52,7 +55,12 @@ def _get_jwks_client() -> PyJWKClient | None:
     return _jwks_client
 
 def verify_token(authorization: str = Header(None)):
-    if DEV_AUTH:
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1]
+
+    # 1. Si no hay token o es token explícito de dev local:
+    if (not token or token.startswith("dev-")) and DEV_AUTH:
         return {
             "sub": "dev-user-001",
             "oid": "dev-user-001",
@@ -60,32 +68,49 @@ def verify_token(authorization: str = Header(None)):
             "email": "dev@voxready.io",
             "role": "spokesperson",
         }
-    
-    if not authorization or not authorization.startswith("Bearer "):
+
+    if not token:
         raise HTTPException(status_code=401, detail="Token no provisto o inválido")
-    
-    token = authorization.split(" ")[1]
+
+    # 2. Si viene un token real JWT (ej. de Microsoft Entra CIAM):
     try:
         client = _get_jwks_client()
-        if not client:
-            raise HTTPException(status_code=500, detail="JWKS_URL no configurada en el servidor")
+        if client:
+            try:
+                signing_key = client.get_signing_key_from_jwt(token)
+                allowed_audiences = [a for a in [
+                    JWT_AUDIENCE,
+                    "e219fd4b-3686-45dd-9656-b582d1fb0698",
+                    "5dd1bf8d-c0de-4f67-8131-df42e93dcf29",
+                    "api://5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
+                ] if a]
+                payload = jwt.decode(
+                    token,
+                    signing_key.key,
+                    algorithms=["RS256"],
+                    audience=allowed_audiences if allowed_audiences else None,
+                    options={
+                        "verify_aud": bool(allowed_audiences),
+                        "verify_iss": False,
+                    },
+                )
+                return payload
+            except Exception as e_jwks:
+                logger.warning(f"Validación con firma JWKS falló ({e_jwks}).")
+                if not DEV_AUTH:
+                    raise e_jwks
 
-        signing_key = client.get_signing_key_from_jwt(token)
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=JWT_AUDIENCE if JWT_AUDIENCE else None,
-            issuer=JWT_ISSUER if JWT_ISSUER else None,
-            options={
-                "verify_aud": bool(JWT_AUDIENCE),
-                "verify_iss": bool(JWT_ISSUER),
-            },
-        )
-        return payload
+        # Si DEV_AUTH está activo y falló JWKS, o en desarrollo local:
+        # decodificamos el payload de Microsoft para extraer los datos reales del usuario
+        if DEV_AUTH:
+            payload = jwt.decode(token, options={"verify_signature": False})
+            return payload
+
+        raise HTTPException(status_code=401, detail="Error validando token con Microsoft")
     except Exception as e:
         logger.error(f"JWT Verification failed: {e}")
         raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
+
 
 # 4. Esquemas de petición
 class CreateSessionRequest(BaseModel):
@@ -106,7 +131,144 @@ class FinishSessionRequest(BaseModel):
     scenario_id: str = "crisis-voceria-01"
     tenant_id: str = "tenant-voxready-dev"
 
-# 5. Endpoints
+# 5. Servicios de persistencia de usuarios (Azure SQL)
+def _normalize_sql_conn_str(conn_str: str) -> str:
+    """Normaliza la cadena de conexión para el driver ODBC Driver 18 en Azure SQL."""
+    if "DRIVER=" not in conn_str.upper():
+        conn_str = f"DRIVER={{ODBC Driver 18 for SQL Server}};{conn_str}"
+    if "Encrypt=" not in conn_str and "ENCRYPT=" not in conn_str:
+        conn_str += ";Encrypt=yes;TrustServerCertificate=no;Connection Timeout=15;"
+    return conn_str
+
+def _safe_uuid(val: str | None) -> str | None:
+    if not val:
+        return None
+    try:
+        return str(uuid.UUID(str(val)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+def sync_or_get_user(
+    user_id: str,
+    email: str,
+    display_name: str,
+    client_id: str | None,
+    token_role: str | None
+) -> dict:
+    """
+    Sincroniza el usuario autenticado con la base de datos Azure SQL (tabla app_user).
+    - Si existe, devuelve su perfil con el rol asignado en base de datos.
+    - Si no existe, lo registra automáticamente con rol 'spokesperson'.
+    - Permite cambiar roles directamente en Azure SQL y ver el cambio reflejado.
+    - Es resiliente: ante caídas de BD o cold-starts, no interrumpe el acceso.
+    """
+    if not SQL_CONN_STR:
+        return {}
+
+    user_uuid = _safe_uuid(user_id)
+    clean_email = email.strip() if email else ""
+
+    try:
+        conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+        with pyodbc.connect(conn_str, timeout=10) as conn:
+            cursor = conn.cursor()
+
+            # 1. Asegurar tabla app_user si no existiese
+            try:
+                cursor.execute("""
+                    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'app_user')
+                    BEGIN
+                        CREATE TABLE app_user (
+                            id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+                            client_id UNIQUEIDENTIFIER NULL,
+                            email NVARCHAR(256) NULL,
+                            display_name NVARCHAR(150) NULL,
+                            role NVARCHAR(50) DEFAULT 'spokesperson',
+                            preferred_language CHAR(2) DEFAULT 'es',
+                            created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
+                            updated_at DATETIME2 DEFAULT SYSUTCDATETIME(),
+                            is_deleted BIT DEFAULT 0,
+                            deleted_at DATETIME2 NULL
+                        );
+                        CREATE INDEX idx_app_user_email ON app_user(email);
+                    END
+                """)
+                conn.commit()
+            except Exception as e_tbl:
+                logger.debug(f"Verificación de tabla app_user: {e_tbl}")
+
+            # 2. Buscar si el usuario ya existe en app_user (por UUID o por email)
+            row = None
+            cols = []
+            if user_uuid:
+                cursor.execute(
+                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
+                    (user_uuid,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    cols = [c[0].lower() for c in cursor.description]
+
+            if not row and clean_email:
+                cursor.execute(
+                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
+                    (clean_email,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    cols = [c[0].lower() for c in cursor.description]
+
+            # 3. Si ya existe, retornar sus datos de la base de datos (con su rol asignado)
+            if row:
+                user_data = dict(zip(cols, row))
+                logger.info(f"Usuario '{clean_email}' resuelto desde Azure SQL con rol: '{user_data.get('role')}'.")
+                return user_data
+
+            # 4. Auto-provisioning: Registrar usuario nuevo en app_user
+            resolved_id = user_uuid or str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id or clean_email or "default-user"))
+
+            # Asociar al cliente activo si existe
+            db_client_id = None
+            try:
+                cursor.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
+                c_row = cursor.fetchone()
+                if not c_row:
+                    cursor.execute("SELECT TOP 1 id FROM client")
+                    c_row = cursor.fetchone()
+                if c_row:
+                    db_client_id = c_row[0]
+            except Exception:
+                pass
+
+            if not db_client_id:
+                db_client_id = _safe_uuid(client_id)
+
+            initial_role = token_role if token_role and token_role != "None" else "spokesperson"
+
+            cursor.execute(
+                """
+                INSERT INTO app_user (id, client_id, email, display_name, role, preferred_language, is_deleted)
+                VALUES (?, ?, ?, ?, ?, 'es', 0)
+                """,
+                (resolved_id, db_client_id, clean_email, display_name or "Vocero", initial_role)
+            )
+            conn.commit()
+            logger.info(f"Usuario '{clean_email}' auto-registrado en Azure SQL (app_user) con rol: '{initial_role}'.")
+
+            return {
+                "id": resolved_id,
+                "client_id": db_client_id,
+                "email": clean_email,
+                "display_name": display_name,
+                "role": initial_role,
+                "preferred_language": "es"
+            }
+
+    except Exception as e:
+        logger.warning(f"No se pudo sincronizar usuario en Azure SQL: {e}. Continuando con datos del token.")
+        return {}
+
+# 6. Endpoints
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "service": "backend-api"}
@@ -118,22 +280,43 @@ def dev_token():
 @app.get("/me")
 @app.get("/v1/me")
 def get_current_user_profile(user: dict = Depends(verify_token)):
-    """Obtiene el perfil del usuario autenticado con Microsoft Entra CIAM."""
+    """Obtiene el perfil del usuario autenticado y sincroniza roles con Azure SQL."""
     user_id = user.get("oid") or user.get("sub", "")
-    email = user.get("email") or user.get("preferred_username") or user.get("upn", "")
+    email = (
+        user.get("email")
+        or user.get("preferred_username")
+        or user.get("upn")
+        or user.get("unique_name", "")
+    )
     if not email and isinstance(user.get("emails"), list) and user["emails"]:
         email = user["emails"][0]
-    display_name = user.get("name") or (email.split("@")[0] if email else "Vocero")
-    role = user.get("role") or user.get("extension_role") or "spokesperson"
+    display_name = (
+        user.get("name")
+        or (f"{user.get('given_name', '')} {user.get('family_name', '')}".strip())
+        or (email.split("@")[0] if email else "Vocero")
+    )
+    token_role = user.get("role") or user.get("extension_role") or "spokesperson"
     client_id = user.get("clientId") or user.get("client_id") or user.get("tid")
+
+    # Sincronización con Azure SQL (auto-provisioning y lectura de roles en base de datos)
+    db_user = sync_or_get_user(
+        user_id=str(user_id),
+        email=email or "",
+        display_name=display_name,
+        client_id=str(client_id) if client_id else None,
+        token_role=token_role,
+    )
+
+    role = db_user.get("role") or token_role or "spokesperson"
+    resolved_client_id = db_user.get("client_id") or (str(client_id) if client_id else "client-default")
 
     return {
         "userId": str(user_id),
         "email": email,
-        "displayName": display_name,
+        "displayName": db_user.get("display_name") or display_name,
         "role": role,
-        "clientId": str(client_id) if client_id else None,
-        "preferredLanguage": user.get("preferredLanguage", "es"),
+        "clientId": str(resolved_client_id) if resolved_client_id else None,
+        "preferredLanguage": db_user.get("preferred_language") or user.get("preferredLanguage", "es"),
     }
 
 @app.get("/scenarios")
