@@ -59,23 +59,32 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
     async function initMedia() {
       try {
+        let savedCameraId = '';
+        let savedMicId = '';
+        try {
+          savedCameraId = localStorage.getItem('voxready_selected_camera') || '';
+          savedMicId = localStorage.getItem('voxready_selected_mic') || '';
+        } catch {}
+
         let stream: MediaStream;
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               width: { ideal: 1280 },
               height: { ideal: 720 },
-              frameRate: { ideal: 30 }
+              frameRate: { ideal: 30 },
+              ...(savedCameraId ? { deviceId: { exact: savedCameraId } } : {})
             },
             audio: {
               echoCancellation: true,
               noiseSuppression: false, // Evita voz robotica y cortes por supresion agresiva
               autoGainControl: false,  // Evita saturacion al limite maximo (-32768 / +32767)
-              channelCount: 1
+              channelCount: 1,
+              ...(savedMicId ? { deviceId: { exact: savedMicId } } : {})
             }
           });
         } catch {
-          // Fallback seguro a configuracion estandar
+          // Fallback seguro si el deviceId guardado no responde o se desconectó
           stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
             audio: true
