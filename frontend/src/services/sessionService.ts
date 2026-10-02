@@ -132,13 +132,9 @@ export const sessionService = {
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         maxSizeBytes: 524288000
       };
-    } catch {
-      return {
-        uploadUrl: `/api/sessions/${sessionId}/upload-url`,
-        blobPath: `recordings/${sessionId}.webm`,
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        maxSizeBytes: 524288000
-      };
+    } catch (err: any) {
+      console.error('Error al solicitar URL SAS de subida:', err);
+      throw new Error(`No se pudo obtener la URL de subida de Azure Blob: ${err?.message || err}`);
     }
   },
 
@@ -150,6 +146,9 @@ export const sessionService = {
     videoBlob: Blob,
     onProgress?: (percent: number) => void
   ): Promise<void> {
+    if (!uploadUrl || !uploadUrl.startsWith('http')) {
+      throw new Error(`URL de subida a Azure Blob Storage inválida: "${uploadUrl}"`);
+    }
     if (onProgress) onProgress(20);
     const res = await fetch(uploadUrl, {
       method: 'PUT',
