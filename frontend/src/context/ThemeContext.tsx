@@ -22,8 +22,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const savedTheme = localStorage.getItem('voxready_theme') as ThemeMode | null;
     const savedPalette = localStorage.getItem('voxready_palette') as Palette | null;
-    if (savedTheme) setThemeState(savedTheme);
-    if (savedPalette) setPaletteState(savedPalette);
+    const timer = window.setTimeout(() => {
+      if (savedTheme) setThemeState(savedTheme);
+      if (savedPalette) setPaletteState(savedPalette);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {

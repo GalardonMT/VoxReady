@@ -1,46 +1,43 @@
 import {
-  UserSession,
   Scenario,
   Microlesson,
   TopicConfig,
   RetentionSettings,
   MasterRubric,
   LabelingCase,
-  CoachReport
+  CoachReport,
+  UserSession
 } from '../types/api';
 
 export const TEST_USERS: UserSession[] = [
   {
     userId: 'usr-spokesperson-01',
-    email: 'ana@visum.com',
-    displayName: 'Ana Torres',
+    email: 'ana.torres@acme-corp.com',
+    displayName: 'Ana Torres (Vocero)',
     role: 'spokesperson',
-    clientId: 'tenant-visum',
-    clientName: 'Visum Corp',
-    clientLogo: '/Visum_logo.png',
+    clientId: 'acme-corp',
+    clientName: 'Acme Corporation',
     initials: 'AT',
     preferredLanguage: 'es'
   },
   {
-    userId: 'usr-admin-01',
-    email: 'carlos@visum.com',
-    displayName: 'Carlos Ruiz',
+    userId: 'usr-client-admin-01',
+    email: 'carlos.ruiz@acme-corp.com',
+    displayName: 'Carlos Ruiz (Admin Empresa)',
     role: 'client_admin',
-    clientId: 'tenant-visum',
-    clientName: 'Visum Corp',
-    clientLogo: '/Visum_logo.png',
+    clientId: 'acme-corp',
+    clientName: 'Acme Corporation',
     initials: 'CR',
     preferredLanguage: 'es'
   },
   {
     userId: 'usr-master-01',
-    email: 'marta@voxready.io',
-    displayName: 'Marta Vidal',
+    email: 'elena.diaz@voxready.ai',
+    displayName: 'Elena Díaz (Master VoxReady)',
     role: 'master_config',
-    clientId: 'tenant-voxready-central',
-    clientName: 'VoxReady Central / Visum',
-    clientLogo: '/VoxReady_logo.png',
-    initials: 'MV',
+    clientId: null,
+    clientName: 'VoxReady Platform',
+    initials: 'ED',
     preferredLanguage: 'es'
   }
 ];

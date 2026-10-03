@@ -16,6 +16,9 @@
 *.pfx
 secrets/
 Indicaciones/
+*ENV*.md
+*env*.md
+ENV´S.md
 
 # ------------------------------------------------------------------------------
 # 2. Node.js & Next.js (Frontend)

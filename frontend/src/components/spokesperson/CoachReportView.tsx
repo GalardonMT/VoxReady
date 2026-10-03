@@ -198,7 +198,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
         <button
           type="button"
           className="btn pri"
-          onClick={() => onNavigate('u3')}
+          onClick={() => onNavigate('u2')}
         >
           🔁 {d.redo}
         </button>

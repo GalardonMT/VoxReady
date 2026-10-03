@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
 import { UserSession } from '../../types/api';
+import { isAzureConfigured } from '../../services/authConfig';
 
 interface LoginViewProps {
   onLoginSuccess?: () => void;
@@ -11,11 +12,12 @@ interface LoginViewProps {
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const { t } = useI18n();
-  const { loginAs, loginWithEmail, testUsers } = useAuth();
+  const { loginAs, loginWithEmail, loginWithAzure, loading, authError, testUsers } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [azureLoading, setAzureLoading] = useState(false);
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -28,10 +30,45 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     }
   };
 
+  const handleAzureLogin = async () => {
+    setError('');
+    setAzureLoading(true);
+    try {
+      await loginWithAzure();
+      // loginRedirect will navigate away — if we reach here it was a popup or finished
+      if (onLoginSuccess) onLoginSuccess();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[LoginView] Error logging in with Azure:', msg);
+      setError(msg || (t.login.azureErr ?? 'Error al iniciar sesión con Microsoft.'));
+    } finally {
+      setAzureLoading(false);
+    }
+  };
+
   const handleSelectTestUser = (user: UserSession) => {
     loginAs(user);
     if (onLoginSuccess) onLoginSuccess();
   };
+
+  if (loading || azureLoading) {
+    return (
+      <div className="login-view">
+        <div className="login-card">
+          <div className="login-logo">
+            <div className="brandlogo-wrap">
+              <img
+                src="/VoxReady_logo.png"
+                alt="VoxReady"
+                style={{ height: '42px', width: 'auto', display: 'block' }}
+              />
+            </div>
+          </div>
+          <p className="login-loading">{t.login.loading ?? 'Autenticando…'}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="login-view">
@@ -49,6 +86,34 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         <h1 className="login-title">{t.login.title}</h1>
         <p className="login-sub">{t.login.sub}</p>
 
+        {/* ---- Primary: Azure / Microsoft login ---- */}
+        {isAzureConfigured && (
+          <>
+            <button
+              type="button"
+              className="login-btn login-btn-azure"
+              onClick={handleAzureLogin}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 23 23"
+                style={{ marginRight: '8px', flexShrink: 0 }}
+              >
+                <path fill="#f35325" d="M1 1h10v10H1z" />
+                <path fill="#81bc06" d="M12 1h10v10H12z" />
+                <path fill="#05a6f0" d="M1 12h10v10H1z" />
+                <path fill="#ffba08" d="M12 12h10v10H12z" />
+              </svg>
+              {t.login.azureBtn ?? 'Iniciar sesión con Microsoft'}
+            </button>
+
+            <div className="login-divider">{t.login.dividerOr ?? 'o'}</div>
+          </>
+        )}
+
+        {/* ---- Email / password credentials form ---- */}
         <form onSubmit={handleSubmit}>
           <div className="login-field">
             <label>{t.login.emailL}</label>
@@ -77,12 +142,13 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           <button type="submit" className="login-btn">
             {t.login.signIn}
           </button>
-
-          {error && <p className="login-err">{error}</p>}
         </form>
+
+        {(error || authError) && <p className="login-err">{error || authError}</p>}
 
         <div className="login-divider">{t.login.testL}</div>
 
+        {/* ---- Demo test users list ---- */}
         <div>
           {testUsers.map((user) => (
             <button

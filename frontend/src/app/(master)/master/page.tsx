@@ -1,26 +1,27 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MasterDashboard, MasterScreen } from '../../../components/master/MasterDashboard';
 import { RubricEditorView } from '../../../components/master/RubricEditorView';
 import { LabelingQueueView } from '../../../components/master/LabelingQueueView';
 import { useAuth } from '../../../context/AuthContext';
+import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
 
 export default function MasterPage() {
+  return (
+    <ProtectedRoute allowedRoles={['master_config']}>
+      <MasterContent />
+    </ProtectedRoute>
+  );
+}
+
+function MasterContent() {
   const router = useRouter();
   const { user, logout } = useAuth();
   const [masterScreen, setMasterScreen] = useState<MasterScreen>('m1');
 
-  useEffect(() => {
-    if (!user) {
-      router.push('/login');
-    }
-  }, [user, router]);
-
-  if (!user) {
-    return null;
-  }
+  if (!user) return null; // guaranteed by ProtectedRoute
 
   const handleMasterNavigate = (screen: MasterScreen) => {
     setMasterScreen(screen);

@@ -29,7 +29,8 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const savedLang = localStorage.getItem('voxready_lang') as Language | null;
     if (savedLang && (savedLang === 'es' || savedLang === 'en' || savedLang === 'pt')) {
-      setLangState(savedLang);
+      const timer = window.setTimeout(() => setLangState(savedLang), 0);
+      return () => window.clearTimeout(timer);
     }
   }, []);
 

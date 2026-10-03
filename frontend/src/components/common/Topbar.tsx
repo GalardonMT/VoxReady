@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import Image from 'next/image';
 import { useI18n, Language } from '../../context/I18nContext';
 import { useTheme, Palette } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
@@ -64,13 +63,7 @@ export const Topbar: React.FC = () => {
           </div>
         </div>
 
-        <div className="logo-slot" title="Cliente: Visum">
-          <img
-            src="/Visum_logo.png"
-            alt="Visum"
-            style={{ maxWidth: '98px', maxHeight: '28px', display: 'block' }}
-          />
-        </div>
+        {user?.clientName && <div className="logo-slot" title="Cliente">{user.clientName}</div>}
 
         {user && (
           <div className="userchip">
