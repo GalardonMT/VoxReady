@@ -295,5 +295,20 @@ export const sessionService = {
       console.warn('Error fetching raw coach report, falling back to mock:', e);
     }
     return INITIAL_REPORT;
+  },
+
+  /**
+   * Obtiene una URL SAS de lectura temporal para reproducir la grabación de la sesión
+   */
+  async getPlaybackUrl(sessionId: string): Promise<string> {
+    try {
+      const res = await apiFetch<{ playback_url: string; session_id: string; message?: string }>(
+        `/api/sessions/${sessionId}/recording-url`
+      );
+      return res.playback_url || '';
+    } catch (error) {
+      console.warn('Error obteniendo URL de reproducción:', error);
+      return '';
+    }
   }
 };

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService, AzureReportResponse } from '../../services/sessionService';
@@ -19,65 +19,90 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
   const { t } = useI18n();
   const d = t.L.u5;
 
-  const [pollCount, setPollCount] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
   const [step1Done, setStep1Done] = useState(true);
   const [step2Done, setStep2Done] = useState(false);
   const [step3Done, setStep3Done] = useState(false);
   const [step4Done, setStep4Done] = useState(false);
-  const [statusText, setStatusText] = useState('Conectando con la cola de inferencia...');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  const completedRef = useRef(false);
+  const pollCountRef = useRef(0);
+
+  // Formato mm:ss para el cronómetro
+  const formatTime = (totalSec: number): string => {
+    const m = Math.floor(totalSec / 60).toString().padStart(2, '0');
+    const s = (totalSec % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  // Cronómetro independiente: avanza cada segundo hasta que se completa el análisis
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!completedRef.current) {
+        setElapsedSeconds((prev) => prev + 1);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Polling al backend para verificar el estado real del análisis
+  const checkStatus = useCallback(async () => {
+    try {
+      const raw = await sessionService.getRawReport(sessionId);
+      pollCountRef.current += 1;
+
+      if (raw && (raw.status === 'completed' || raw.puntuacion_global)) {
+        setStep1Done(true);
+        setStep2Done(true);
+        setStep3Done(true);
+        setStep4Done(true);
+        setIsCompleted(true);
+        completedRef.current = true;
+        if (onReportReady) {
+          onReportReady(raw);
+        }
+        return true; // Señal para detener el polling
+      }
+
+      // Avance visual progresivo basado en intentos reales (sin forzar completado)
+      if (pollCountRef.current >= 2) setStep2Done(true);
+      if (pollCountRef.current >= 4) setStep3Done(true);
+      return false;
+    } catch {
+      pollCountRef.current += 1;
+      // En caso de error, solo avanzar pasos visuales — NUNCA forzar completado
+      if (pollCountRef.current >= 2) setStep2Done(true);
+      if (pollCountRef.current >= 4) setStep3Done(true);
+      return false;
+    }
+  }, [sessionId, onReportReady]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
     let cancelled = false;
 
-    async function checkStatus() {
-      try {
-        const raw = await sessionService.getRawReport(sessionId);
-        if (cancelled) return;
+    // Ejecutar polling cada 5 segundos
+    const interval = setInterval(async () => {
+      if (cancelled || completedRef.current) return;
+      const done = await checkStatus();
+      if (done && interval) clearInterval(interval);
+    }, 5000);
 
-        setPollCount((prev) => prev + 1);
-
-        if (raw && (raw.status === 'completed' || raw.puntuacion_global)) {
-          setStep1Done(true);
-          setStep2Done(true);
-          setStep3Done(true);
-          setStep4Done(true);
-          setIsCompleted(true);
-          setStatusText('¡Evaluación multimodal completada con éxito por NVIDIA & MediaPipe!');
-          if (onReportReady) {
-            onReportReady(raw);
-          }
-          if (interval) clearInterval(interval);
-          return;
-        }
-
-        // Simulación progresiva de pasos si está en procesamiento
-        if (pollCount >= 1) setStep2Done(true);
-        if (pollCount >= 2) setStep3Done(true);
-        setStatusText(`Procesando en Azure Container Apps (intento #${pollCount + 1})...`);
-      } catch (err) {
-        if (!cancelled) {
-          setPollCount((prev) => prev + 1);
-          // Si el backend no tiene la sesión aún, mostrar avance visual
-          if (pollCount >= 1) setStep2Done(true);
-          if (pollCount >= 2) setStep3Done(true);
-          if (pollCount >= 3) {
-            setStep4Done(true);
-            setIsCompleted(true);
-          }
-        }
-      }
-    }
-
+    // Primera verificación inmediata
     checkStatus();
-    interval = setInterval(checkStatus, 3500);
 
     return () => {
       cancelled = true;
-      if (interval) clearInterval(interval);
+      clearInterval(interval);
     };
-  }, [sessionId, pollCount]);
+  }, [checkStatus]);
+
+  // Estilo compartido para la etiqueta de estado (nunca se parte en dos líneas)
+  const statusLabelStyle: React.CSSProperties = {
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+    marginLeft: '12px'
+  };
 
   return (
     <div className="canvas-content">
@@ -121,7 +146,9 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
           {isCompleted ? 'Evaluación Multimodal Finalizada' : d.head}
         </h3>
         <p style={{ fontSize: '13.5px', color: 'var(--muted)', marginBottom: '8px' }}>
-          {statusText}
+          {isCompleted
+            ? `¡Evaluación completada en ${formatTime(elapsedSeconds)}!`
+            : `Generando evaluación en tiempo real... (${formatTime(elapsedSeconds)} transcurridos)`}
         </p>
         <div style={{ fontSize: '11.5px', color: 'var(--muted)', marginBottom: '24px' }}>
           Sesión: <code style={{ color: 'var(--accent2)' }}>{sessionId}</code>
@@ -138,7 +165,7 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
             border: '1px solid var(--line)'
           }}
         >
-          {/* Step 1: FFmpeg */}
+          {/* Paso 1: Subida de la grabación */}
           <div
             style={{
               display: 'flex',
@@ -148,11 +175,11 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
               marginBottom: '12px'
             }}
           >
-            <span>🎬 Separación FFmpeg (Audio PCM 16kHz & Frames)</span>
-            <span style={{ color: 'var(--success)', fontWeight: 700 }}>✓ Completado</span>
+            <span>☁️ Subida de la grabación</span>
+            <span style={{ color: 'var(--success)', fontWeight: 700, ...statusLabelStyle }}>✓ Completado</span>
           </div>
 
-          {/* Step 2: Audio/ASR */}
+          {/* Paso 2: Transcripción de la grabación */}
           <div
             style={{
               display: 'flex',
@@ -162,15 +189,15 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
               marginBottom: '12px'
             }}
           >
-            <span>🎙️ ASR Parakeet & Métricas Acústicas (WPM, Muletillas)</span>
+            <span>🎙️ Transcripción de la grabación</span>
             {step2Done ? (
-              <span style={{ color: 'var(--success)', fontWeight: 700 }}>✓ Completado</span>
+              <span style={{ color: 'var(--success)', fontWeight: 700, ...statusLabelStyle }}>✓ Completado</span>
             ) : (
-              <span style={{ color: 'var(--accent2)', fontWeight: 600 }}>Procesando...</span>
+              <span style={{ color: 'var(--accent2)', fontWeight: 600, ...statusLabelStyle }}>Procesando...</span>
             )}
           </div>
 
-          {/* Step 3: MediaPipe Vision */}
+          {/* Paso 3: Análisis de la grabación */}
           <div
             style={{
               display: 'flex',
@@ -180,17 +207,17 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
               marginBottom: '12px'
             }}
           >
-            <span>👁️ Análisis Visual MediaPipe (ca-vision-service)</span>
+            <span>📊 Análisis de la grabación</span>
             {step3Done ? (
-              <span style={{ color: 'var(--success)', fontWeight: 700 }}>✓ Completado</span>
+              <span style={{ color: 'var(--success)', fontWeight: 700, ...statusLabelStyle }}>✓ Completado</span>
             ) : step2Done ? (
-              <span style={{ color: 'var(--accent2)', fontWeight: 600 }}>Analizando frames...</span>
+              <span style={{ color: 'var(--accent2)', fontWeight: 600, ...statusLabelStyle }}>Analizando...</span>
             ) : (
-              <span style={{ color: 'var(--muted)' }}>En espera</span>
+              <span style={{ color: 'var(--muted)', ...statusLabelStyle }}>En espera</span>
             )}
           </div>
 
-          {/* Step 4: NVIDIA LLM Judge */}
+          {/* Paso 4: Análisis de la voz y reporte final */}
           <div
             style={{
               display: 'flex',
@@ -199,13 +226,13 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
               fontSize: '13px'
             }}
           >
-            <span>🧠 Juez de Crisis NVIDIA Llama 3.2 90B & Fusión</span>
+            <span>🧠 Análisis de la voz y reporte final</span>
             {step4Done ? (
-              <span style={{ color: 'var(--success)', fontWeight: 700 }}>✓ Listo</span>
+              <span style={{ color: 'var(--success)', fontWeight: 700, ...statusLabelStyle }}>✓ Listo</span>
             ) : step3Done ? (
-              <span style={{ color: 'var(--accent2)', fontWeight: 600 }}>Generando veredicto...</span>
+              <span style={{ color: 'var(--accent2)', fontWeight: 600, ...statusLabelStyle }}>Generando veredicto...</span>
             ) : (
-              <span style={{ color: 'var(--muted)' }}>En espera</span>
+              <span style={{ color: 'var(--muted)', ...statusLabelStyle }}>En espera</span>
             )}
           </div>
         </div>
@@ -214,16 +241,23 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
           <button
             type="button"
             className="btn pri"
+            disabled={!isCompleted}
             style={{
               padding: '12px 28px',
               fontSize: '14px',
               fontWeight: 600,
-              background: isCompleted ? '#10b981' : 'var(--accent)',
-              borderColor: isCompleted ? '#059669' : 'var(--accent)'
+              background: isCompleted ? '#10b981' : '#94a3b8',
+              borderColor: isCompleted ? '#059669' : '#94a3b8',
+              color: '#fff',
+              cursor: isCompleted ? 'pointer' : 'not-allowed',
+              opacity: isCompleted ? 1 : 0.8,
+              transition: 'all 0.3s ease'
             }}
-            onClick={() => onNavigate('u6')}
+            onClick={() => {
+              if (isCompleted) onNavigate('u6');
+            }}
           >
-            {isCompleted ? 'Ver Reporte de IA del Coach ➔' : d.viewReport}
+            {isCompleted ? 'Ver Reporte de IA del Coach ➔' : '⏳ Preparando informe... por favor espere'}
           </button>
         </div>
       </div>
