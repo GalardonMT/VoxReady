@@ -10,7 +10,7 @@ const tenantId = process.env.NEXT_PUBLIC_AZURE_TENANT_ID ?? '';
 const clientId = process.env.NEXT_PUBLIC_AZURE_CLIENT_ID ?? '';
 const redirectUri = process.env.NEXT_PUBLIC_REDIRECT_URI ?? process.env.NEXT_PUBLIC_AZURE_REDIRECT_URI ?? 'http://localhost:3000';
 const apiScope = process.env.NEXT_PUBLIC_AZURE_API_SCOPE ?? '';
-const authority = process.env.NEXT_PUBLIC_AZURE_AUTHORITY || (tenantId ? `https://voxreadydev.ciamlogin.com/${tenantId}` : '');
+const authority = process.env.NEXT_PUBLIC_AZURE_AUTHORITY || `https://login.microsoftonline.com/${tenantId}`;
 
 /**
  * Whether Azure auth is fully configured.

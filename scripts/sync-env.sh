@@ -52,12 +52,14 @@ BACKEND_FQDN=$(az containerapp show \
   --resource-group "$RG_NAME" \
   --query "properties.configuration.ingress.fqdn" -o tsv || echo "")
 
-# 4. Parámetros de Tenant y Auth (Microsoft Entra External ID - CIAM)
-CIAM_TENANT_ID="7f50eae1-4ea8-45eb-9ff7-02f82b2781a5"
-CIAM_SPA_CLIENT_ID="e219fd4b-3686-45dd-9656-b582d1fb0698"
-CIAM_API_CLIENT_ID="5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
-CIAM_AUTHORITY="https://voxreadydev.ciamlogin.com/${CIAM_TENANT_ID}"
-CIAM_API_SCOPE="api://${CIAM_API_CLIENT_ID}/access_as_user"
+# 4. Parámetros de Tenant y Auth
+TENANT_ID=$(az account show --query "tenantId" -o tsv)
+
+# Intentar extraer Client ID de Entra ID registrado para VoxReady (o consultar Key Vault)
+CLIENT_APP_ID=$(az ad app list --display-name "voxready" --query "[0].appId" -o tsv 2>/dev/null || echo "")
+if [ -z "$CLIENT_APP_ID" ]; then
+  CLIENT_APP_ID=$(az keyvault secret show --vault-name "$KV_NAME" --name "ENTRA-CLIENT-ID" --query "value" -o tsv 2>/dev/null || echo "5dd1bf8d-c0de-4f67-8131-df42e93dcf29")
+fi
 
 echo "==> [3/4] Generando archivos .env..."
 
@@ -73,13 +75,6 @@ STORAGE_CONNECTION_STRING="${STORAGE_CONN}"
 STORAGE_CONTAINER_NAME="recordings"
 SERVICE_BUS_CONNECTION_STRING="${SB_CONN}"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
-DEV_AUTH=true
-DEV_AUTH_SECRET="cambia-este-secreto-dev"
-DEV_TOKEN_TTL_HOURS=8
-CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
-JWKS_URL="https://voxreadydev.ciamlogin.com/${CIAM_TENANT_ID}/discovery/v2.0/keys"
-JWT_ISSUER="https://voxreadydev.ciamlogin.com/${CIAM_TENANT_ID}/v2.0"
-JWT_AUDIENCE="${CIAM_SPA_CLIENT_ID}"
 EOF
   echo "✔ $dir/.env generado exitosamente."
 done
@@ -101,8 +96,7 @@ SERVICE_BUS_QUEUE_NAME="analysis-queue"
 VISION_SERVICE_URL="https://${VISION_FQDN}"
 NVIDIA_API_KEY="${NVIDIA_KEY}"
 NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1"
-LLM_MODEL_NAME="meta/llama-3.2-11b-vision-instruct"
-LLM_TIMEOUT="120.0"
+LLM_MODEL_NAME="meta/llama-3.2-90b-vision-instruct"
 EOF
   echo "✔ $dir/.env generado exitosamente."
 done
@@ -115,13 +109,9 @@ for dir in "voxready-frontend" "frontend"; do
   cat <<EOF > "$dir/.env.local"
 # Generado automáticamente por CLI Sync
 NEXT_PUBLIC_API_URL="https://${BACKEND_FQDN}/v1"
-NEXT_PUBLIC_AUTH_MODE="azure"
-NEXT_PUBLIC_AZURE_CLIENT_ID="${CIAM_SPA_CLIENT_ID}"
-NEXT_PUBLIC_AZURE_TENANT_ID="${CIAM_TENANT_ID}"
-NEXT_PUBLIC_AZURE_AUTHORITY="${CIAM_AUTHORITY}"
-NEXT_PUBLIC_AZURE_REDIRECT_URI="http://localhost:3000"
-NEXT_PUBLIC_AZURE_API_SCOPE="${CIAM_API_SCOPE}"
-NEXT_PUBLIC_DEV_AUTH="true"
+NEXT_PUBLIC_AZURE_CLIENT_ID="${CLIENT_APP_ID}"
+NEXT_PUBLIC_AZURE_TENANT_ID="${TENANT_ID}"
+NEXT_PUBLIC_REDIRECT_URI="http://localhost:3000"
 EOF
   echo "✔ $dir/.env.local generado exitosamente."
 done
