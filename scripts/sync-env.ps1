@@ -29,21 +29,12 @@ $VISION_FQDN = (az containerapp show --name ca-vision-service --resource-group $
 Write-Host "Consultando FQDN de ca-backend-api..."
 $BACKEND_FQDN = (az containerapp show --name ca-backend-api --resource-group $RG_NAME --query "properties.configuration.ingress.fqdn" -o tsv).Trim()
 
-$TENANT_ID = (az account show --query "tenantId" -o tsv).Trim()
-
-$CLIENT_APP_ID = ""
-try {
-    $CLIENT_APP_ID = (az ad app list --display-name "voxready" --query "[0].appId" -o tsv 2>$null).Trim()
-} catch {}
-
-if (-not $CLIENT_APP_ID) {
-    try {
-        $CLIENT_APP_ID = (az keyvault secret show --vault-name $KV_NAME --name "ENTRA-CLIENT-ID" --query "value" -o tsv 2>$null).Trim()
-    } catch {}
-}
-if (-not $CLIENT_APP_ID) {
-    $CLIENT_APP_ID = "5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
-}
+# 4. Parametros de Tenant y Auth (Microsoft Entra External ID - CIAM)
+$CIAM_TENANT_ID = "7f50eae1-4ea8-45eb-9ff7-02f82b2781a5"
+$CIAM_SPA_CLIENT_ID = "e219fd4b-3686-45dd-9656-b582d1fb0698"
+$CIAM_API_CLIENT_ID = "5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
+$CIAM_AUTHORITY = "https://voxreadydev.ciamlogin.com/$CIAM_TENANT_ID"
+$CIAM_API_SCOPE = "api://$CIAM_API_CLIENT_ID/access_as_user"
 
 Write-Host "==> [3/4] Generando archivos .env..."
 
@@ -59,6 +50,12 @@ STORAGE_CONTAINER_NAME="recordings"
 SERVICE_BUS_CONNECTION_STRING="$SB_CONN"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
 DEV_AUTH=true
+DEV_AUTH_SECRET="cambia-este-secreto-dev"
+DEV_TOKEN_TTL_HOURS=8
+CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
+JWKS_URL="https://voxreadydev.ciamlogin.com/$CIAM_TENANT_ID/discovery/v2.0/keys"
+JWT_ISSUER="https://voxreadydev.ciamlogin.com/$CIAM_TENANT_ID/v2.0"
+JWT_AUDIENCE="$CIAM_SPA_CLIENT_ID"
 "@
 
 foreach ($dir in $backendDirs) {
@@ -100,9 +97,12 @@ $frontendDirs = @("voxready-frontend", "frontend")
 $frontendContent = @"
 # Generado automaticamente por CLI Sync
 NEXT_PUBLIC_API_URL="https://$BACKEND_FQDN/v1"
-NEXT_PUBLIC_AZURE_CLIENT_ID="$CLIENT_APP_ID"
-NEXT_PUBLIC_AZURE_TENANT_ID="$TENANT_ID"
-NEXT_PUBLIC_REDIRECT_URI="http://localhost:3000"
+NEXT_PUBLIC_AUTH_MODE="azure"
+NEXT_PUBLIC_AZURE_CLIENT_ID="$CIAM_SPA_CLIENT_ID"
+NEXT_PUBLIC_AZURE_TENANT_ID="$CIAM_TENANT_ID"
+NEXT_PUBLIC_AZURE_AUTHORITY="$CIAM_AUTHORITY"
+NEXT_PUBLIC_AZURE_REDIRECT_URI="http://localhost:3000"
+NEXT_PUBLIC_AZURE_API_SCOPE="$CIAM_API_SCOPE"
 NEXT_PUBLIC_DEV_AUTH="true"
 "@
 
