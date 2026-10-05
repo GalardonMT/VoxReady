@@ -486,6 +486,51 @@ def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generando SAS token: {str(e)}")
 
+@app.get("/sessions/{session_id}/recording-url")
+@app.get("/v1/sessions/{session_id}/recording-url")
+@app.get("/api/sessions/{session_id}/recording-url")
+@app.get("/v1/api/sessions/{session_id}/recording-url")
+def get_playback_sas_url(session_id: str, user: dict = Depends(verify_token)):
+    """Genera URL prefirmada temporal de LECTURA para reproducir la grabación desde el navegador"""
+    blob_name = f"recordings/{session_id}.webm"
+
+    if not STORAGE_CONN_STR:
+        return {
+            "playback_url": "",
+            "session_id": session_id,
+            "message": "Storage no configurado en desarrollo local"
+        }
+
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
+        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        blob_client = container_client.get_blob_client(blob_name)
+
+        if not blob_client.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"La grabación '{blob_name}' no existe en Azure Blob Storage."
+            )
+
+        account_name = blob_service_client.account_name
+        account_key = blob_service_client.credential.account_key
+
+        sas_token = generate_blob_sas(
+            account_name=account_name,
+            container_name=CONTAINER_NAME,
+            blob_name=blob_name,
+            account_key=account_key,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.now(timezone.utc) + timedelta(minutes=60)
+        )
+        playback_url = f"https://{account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}?{sas_token}"
+        return {"playback_url": playback_url, "session_id": session_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando URL de reproducción: {str(e)}")
+
+
 @app.post("/sessions/{session_id}/finish")
 @app.post("/v1/sessions/{session_id}/finish")
 @app.post("/api/sessions/{session_id}/finish")
