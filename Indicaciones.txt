@@ -1,6 +1,6 @@
-# PLAYBOOK DE EJECUCIÓN Y VERIFICACIÓN AUTOMATIZADA: ANTIMIGRATION & RE-DEPLOY (VOXREADY)
+# PLAYBOOK DE IMPLEMENTACIÓN: GENERADOR DE INFORME EJECUTIVO VISUM Y PERSISTENCIA MULTIMODAL
 
-Este documento contiene la secuencia estricta de comandos, compilaciones y verificaciones para desplegar la suite de microservicios de VoxReady en la región `westus` bajo la suscripción `Azure for Students` e integrar la capa de identidad con Microsoft Entra External ID (CIAM).
+Este playbook define las especificaciones técnicas, el código ejecutable y las pruebas de integración para desacoplar e incorporar la generación del informe narrativo estilo VISUM Consulting dentro del microservicio `ca-analysis-worker`, asegurando su persistencia en las tablas `report`, `area_score` y `analysis_pipeline_result` de Azure SQL.
 
 ---
 
@@ -8,319 +8,384 @@ Este documento contiene la secuencia estricta de comandos, compilaciones y verif
 
 ```bash
 export SUBSCRIPTION_NAME="Azure for Students"
-export REGION="westus"
 export RG_NAME="rg-voxready-dev"
 export KV_NAME="kv-voxready-st"
 export ACR_NAME="crvoxreadyst"
-export STORAGE_NAME="stavoxreadyst"
-export SB_NAME="sb-voxready-st"
-export SQL_SERVER_NAME="sql-voxready-st"
-export SQL_DB_NAME="sqldb-voxready"
-export ENVIRONMENT_NAME="cae-voxready-dev"
-export CIAM_TENANT_ID="7f50eae1-4ea8-45eb-9ff7-02f82b2781a5"
-export BACKEND_CLIENT_ID="5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
-export APP_ID_URI="https://voxreadydev.ciamlogin.com/9872ab39-adc2-4e0b-9fc5-8de0268350fe"
+export WORKER_APP_NAME="ca-analysis-worker"
 
 ```
 
 ---
 
-### FASE 0: PRE-FLIGHT CHECKS Y AUTENTICACIÓN
+### FASE 1: MÓDULO GENERADOR NARRATIVO (`core/narrative_generator.py`)
+
+Crear el componente encargado de la segunda llamada a la API de NVIDIA Build (`meta/llama-3.2-90b-vision-instruct`), parametrizado para emular la estructura de evaluación, el tono diplomático y las herramientas verbales del estándar VISUM.
+
+Crear el archivo `voxready-worker/core/narrative_generator.py`:
+
+```python
+import json
+import logging
+from typing import Dict, Any
+from openai import OpenAI
+
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT_VISUM = """Eres un consultor senior de comunicaciones estratégicas y media training de VISUM Consulting.
+Tu tarea es redactar el Informe Ejecutivo de Evaluación de Vocería a partir de los datos consolidados de una simulación de crisis.
+
+PRINCIPIOS DE REDACCIÓN Y METODOLOGÍA VISUM:
+1. Tono ejecutivo, riguroso, diplomático y pedagógico: "Comunicar bien no es un talento innato: es una disciplina que se entrena".
+2. Estructura balanceada: valida el piso sólido de competencias del vocero antes de señalar oportunidades de desarrollo avanzadas.
+3. Traduce métricas técnicas a impacto comunicacional:
+   - Contacto visual y postura -> Aplomo no verbal, compostura y seguridad ante el público.
+   - WPM, pausas y fonación -> Control emocional, ritmo pedagógico y claridad expositiva.
+   - Apego al mensaje y bridging -> Disciplina informativa y conducción estratégica.
+   - Señal cruzada -> Congruencia entre el discurso verbal y la corporalidad/gesto.
+4. Fórmulas prácticas obligatorias:
+   - Entrevista técnica -> Formulación pedagógica: "Para que todas las personas lo entiendan, este tema se compone de..."
+   - Interacción off the record -> Pregunta de preparación: "¿Qué debería comprender mejor este periodista después de conversar conmigo?"
+   - Crisis operacional -> Secuencia en 3 pasos: Reconocer el impacto -> Explicar certezas -> Acciones en curso.
+
+ESQUEMA JSON DE RESPUESTA REQUERIDO:
+Responde EXCLUSIVAMENTE un objeto JSON válido con la siguiente estructura:
+{
+  "sintesis_ejecutiva": {
+    "diagnostico_general": "Párrafo de 3 a 4 líneas que evalúe el desempeño global en la simulación.",
+    "fortaleza_principal": "Piso sólido de competencias demostrado.",
+    "foco_desarrollo": "Evolución requerida (de responder correctamente a conducir la conversación).",
+    "continuidad_recomendada": "Recomendación de entrenamiento continuo adaptada al escenario."
+  },
+  "desempeno_observado": {
+    "evaluacion_general": "Análisis contextualizado de la interacción, autocontrol y manejo de la presión.",
+    "fortalezas": [
+      "Fortaleza concreta 1",
+      "Fortaleza concreta 2",
+      "Fortaleza concreta 3"
+    ],
+    "oportunidades_desarrollo": [
+      "Oportunidad accionable 1",
+      "Oportunidad accionable 2",
+      "Oportunidad accionable 3"
+    ],
+    "formula_practica_recomendada": "Formulación verbal o secuencia aplicable al tipo de crisis practicado."
+  },
+  "hallazgos_transversales": [
+    {
+      "prioridad": "Pedagogía de la complejidad | Conducción estratégica | Empatía como primera señal | Delimitación institucional",
+      "descripcion": "Explicación de la brecha y su impacto estratégico en la audiencia."
+    }
+  ],
+  "recomendaciones_proximas_vocerias": [
+    "Regla de oro accionable 1",
+    "Regla de oro accionable 2",
+    "Regla de oro accionable 3",
+    "Regla de oro accionable 4"
+  ],
+  "consideracion_final": "Párrafo de cierre sobre la práctica y el perfeccionamiento de habilidades.",
+  "observacion_senal_cruzada": "Cita o momento exacto donde la corporalidad, la voz o el mensaje tuvieron sinergia o contradicción evidente."
+}
+"""
+
+def generate_visum_report(
+    client: OpenAI,
+    model_name: str,
+    scenario_info: Dict[str, Any],
+    consolidated_json: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Invoca a NVIDIA NIM en una llamada independiente para generar la narrativa VISUM.
+    """
+    prompt_payload = {
+        "escenario": {
+            "titulo": scenario_info.get("title"),
+            "contexto": scenario_info.get("context"),
+            "optica": scenario_info.get("optics"),
+            "mensajes_clave": scenario_info.get("key_messages", []),
+            "lineas_rojas": scenario_info.get("red_lines", [])
+        },
+        "metricas_consolidadas": {
+            "score_global": consolidated_json.get("score_global"),
+            "expresion_no_verbal": consolidated_json.get("evaluacion_areas", {}).get("expresion"),
+            "tono_de_voz": consolidated_json.get("evaluacion_areas", {}).get("tono_voz"),
+            "contenido_estrategico": consolidated_json.get("evaluacion_areas", {}).get("contenido"),
+            "empatia_congruencia": consolidated_json.get("evaluacion_areas", {}).get("empatia")
+        },
+        "transcripcion": consolidated_json.get("transcript", "")
+    }
+
+    user_message = f"Genera el informe ejecutivo VISUM para el siguiente desempeño evaluado:\n\n{json.dumps(prompt_payload, ensure_ascii=False, indent=2)}"
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_VISUM},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.5,
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        logger.error(f"Fallo en la generación del informe VISUM: {str(e)}")
+        raise
+
+```
+
+---
+
+### FASE 2: ORQUESTACIÓN Y PERSISTENCIA TRANSACCIONAL EN SQL
+
+Modificar la etapa de consolidación en el worker (`core/pipeline_orchestrator.py` o `main.py`) para encadenar la fusión matemática, la generación VISUM y el guardado en base de datos bajo una sola transacción ODBC.
+
+```python
+import uuid
+import json
+import pyodbc
+from core.narrative_generator import generate_visum_report
+
+def finalize_session_analysis(
+    db_conn: pyodbc.Connection,
+    nvidia_client,
+    model_name: str,
+    session_id: str,
+    job_id: str,
+    rubric_version_id: str,
+    scenario_metadata: dict,
+    consolidated_scores: dict
+):
+    """
+    1. Genera la narrativa ejecutiva mediante llamada independiente al LLM.
+    2. Persiste atomicamente en las tablas report, area_score, analysis_pipeline_result.
+    3. Actualiza los estados de analysis_job y session a 'completed'.
+    """
+    cursor = db_conn.cursor()
+
+    try:
+        # Paso 1: Generación de narrativa desacoplada (Llamada 2 a NVIDIA NIM)
+        visum_narrative = generate_visum_report(
+            client=nvidia_client,
+            model_name=model_name,
+            scenario_info=scenario_metadata,
+            consolidated_json=consolidated_scores
+        )
+
+        # Paso 2: Crear el registro de informe principal (report)
+        report_id = str(uuid.uuid4())
+        overall_score = int(round(consolidated_scores["score_global"]))
+        strengths_json = json.dumps(visum_narrative["desempeno_observado"]["fortalezas"], ensure_ascii=False)
+        improvements_json = json.dumps(visum_narrative["desempeno_observado"]["oportunidades_desarrollo"], ensure_ascii=False)
+        cross_signal_obs = visum_narrative.get("observacion_senal_cruzada", "")[:1000]
+
+        cursor.execute("""
+            INSERT INTO report (
+                id, session_id, analysis_job_id, rubric_version_id, overall_score,
+                narrative_strengths, narrative_improvements, cross_signal_observation,
+                version_no, is_current, generated_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME())
+        """, (
+            report_id, session_id, job_id, rubric_version_id, overall_score,
+            strengths_json, improvements_json, cross_signal_obs
+        ))
+
+        # Paso 3: Persistir los puntajes por área (area_score)
+        # Resuelve las FK dinámicas de rubric_area vinculadas a la versión de rúbrica activa
+        cursor.execute("""
+            SELECT id, area_key FROM rubric_area WHERE rubric_version_id = ?
+        """, rubric_version_id)
+        rubric_areas = {row.area_key: row.id for row in cursor.fetchall()}
+
+        scores_map = {
+            "expression": int(round(consolidated_scores["evaluacion_areas"]["expresion"]["score"])),
+            "voice": int(round(consolidated_scores["evaluacion_areas"]["tono_voz"]["score"])),
+            "coherence": int(round(consolidated_scores["evaluacion_areas"]["contenido"]["score"])),
+            "empathy": int(round(consolidated_scores["evaluacion_areas"]["empatia"]["score"]))
+        }
+
+        for area_key, area_val in scores_map.items():
+            rubric_area_id = rubric_areas.get(area_key)
+            if rubric_area_id:
+                cursor.execute("""
+                    INSERT INTO area_score (
+                        id, report_id, rubric_area_id, value, created_at, updated_at
+                    )
+                    VALUES (NEWID(), ?, ?, ?, SYSUTCDATETIME(), SYSUTCDATETIME())
+                """, (report_id, rubric_area_id, area_val))
+
+        # Paso 4: Guardar payload completo en analysis_pipeline_result (pipeline = 'fusion')
+        full_summary_payload = {
+            "scores": consolidated_scores,
+            "visum_report": visum_narrative
+        }
+        cursor.execute("""
+            INSERT INTO analysis_pipeline_result (
+                id, analysis_job_id, pipeline, status, summary_json, created_at, updated_at
+            )
+            VALUES (NEWID(), ?, 'fusion', 'done', ?, SYSUTCDATETIME(), SYSUTCDATETIME())
+        """, (job_id, json.dumps(full_summary_payload, ensure_ascii=False)))
+
+        # Paso 5: Cerrar máquina de estados en analysis_job y session
+        cursor.execute("""
+            UPDATE analysis_job
+            SET status = 'completed', completed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+            WHERE id = ?
+        """, job_id)
+
+        cursor.execute("""
+            UPDATE session
+            SET status = 'completed', updated_at = SYSUTCDATETIME()
+            WHERE id = ?
+        """, session_id)
+
+        db_conn.commit()
+        logger.info(f"Sesión {session_id} completada y persistida exitosamente con Report ID: {report_id}")
+
+    except Exception as ex:
+        db_conn.rollback()
+        logger.error(f"Error persistiendo informe para sesión {session_id}: {str(ex)}")
+        cursor.execute("""
+            UPDATE analysis_job
+            SET status = 'failed', failure_reason = ?, updated_at = SYSUTCDATETIME()
+            WHERE id = ?
+        """, (str(ex)[:500], job_id))
+        db_conn.commit()
+        raise
+    finally:
+        cursor.close()
+
+```
+
+---
+
+### FASE 3: COMPILACIÓN Y ACTUALIZACIÓN EN AZURE CONTAINER APPS
+
+Empaquetar la nueva lógica del worker y actualizar la instancia en `westus`:
 
 ```bash
-# 1. Asegurar suscripción activa
+# 1. Autenticación en ACR
 az account set --subscription "$SUBSCRIPTION_NAME"
-
-# Verificación de contexto
-ACTIVE_SUB=$(az account show --query "name" -o tsv)
-if [ "$ACTIVE_SUB" != "$SUBSCRIPTION_NAME" ]; then
-  echo "Error: Suscripción activa no coincide con $SUBSCRIPTION_NAME" >&2
-  exit 1
-fi
-
-# 2. Login en Docker contra el nuevo ACR
 ACR_PASS=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
 echo "$ACR_PASS" | docker login "$ACR_NAME.azurecr.io" -u "$ACR_NAME" --password-stdin
 
-# 3. Validar existencia de secretos críticos en Key Vault
-for SECRET in "SQL-CONNECTION-STRING" "STORAGE-CONNECTION-STRING" "SERVICE-BUS-CONNECTION-STRING" "NVIDIA-API-KEY"; do
-  EXISTS=$(az keyvault secret list --vault-name "$KV_NAME" --query "[?name=='$SECRET'].name" -o tsv)
-  if [ -z "$EXISTS" ]; then
-    echo "Falta el secreto $SECRET en $KV_NAME" >&2
-    exit 1
-  fi
-done
-
-```
-
----
-
-### FASE 1: COMPILACIÓN LOCAL Y DESPLIEGUE DE MICROSERVICIOS
-
-#### 1.1 Microservicio de Visión (`ca-vision-service`)
-
-*Especificación:* Escalado estricto a 0 réplicas, Ingress interno en puerto 8000, 0.5 CPU, 1.0 GiB.
-
-```bash
-cd voxready-vision
-docker build --platform linux/amd64 -t "$ACR_NAME.azurecr.io/vision-service:v1" .
-docker push "$ACR_NAME.azurecr.io/vision-service:v1"
-cd ..
-
-az containerapp create \
-  --name ca-vision-service \
-  --resource-group "$RG_NAME" \
-  --environment "$ENVIRONMENT_NAME" \
-  --image "$ACR_NAME.azurecr.io/vision-service:v1" \
-  --registry-server "$ACR_NAME.azurecr.io" \
-  --registry-username "$ACR_NAME" \
-  --registry-password "$ACR_PASS" \
-  --target-port 8000 \
-  --ingress internal \
-  --cpu 0.5 \
-  --memory 1.0Gi \
-  --min-replicas 0 \
-  --max-replicas 2
-
-# Guardar URL interna en Key Vault
-VISION_FQDN=$(az containerapp show --name ca-vision-service --resource-group "$RG_NAME" --query "properties.configuration.ingress.fqdn" -o tsv)
-az keyvault secret set --vault-name "$KV_NAME" --name "VISION-SERVICE-URL" --value "https://$VISION_FQDN"
-
-```
-
-#### 1.2 Microservicio API Backend (`ca-backend-api`)
-
-*Especificación:* Ingress externo en puerto 8000, validación de JWT, resolución de credenciales desde Key Vault.
-
-```bash
-cd voxready-backend
-docker build --platform linux/amd64 -t "$ACR_NAME.azurecr.io/backend-api:v1" .
-docker push "$ACR_NAME.azurecr.io/backend-api:v1"
-cd ..
-
-SQL_CONN=$(az keyvault secret show --vault-name "$KV_NAME" --name "SQL-CONNECTION-STRING" --query "value" -o tsv)
-STORAGE_CONN=$(az keyvault secret show --vault-name "$KV_NAME" --name "STORAGE-CONNECTION-STRING" --query "value" -o tsv)
-SB_CONN=$(az keyvault secret show --vault-name "$KV_NAME" --name "SERVICE-BUS-CONNECTION-STRING" --query "value" -o tsv)
-
-az containerapp create \
-  --name ca-backend-api \
-  --resource-group "$RG_NAME" \
-  --environment "$ENVIRONMENT_NAME" \
-  --image "$ACR_NAME.azurecr.io/backend-api:v1" \
-  --registry-server "$ACR_NAME.azurecr.io" \
-  --registry-username "$ACR_NAME" \
-  --registry-password "$ACR_PASS" \
-  --target-port 8000 \
-  --ingress external \
-  --cpu 0.5 \
-  --memory 1.0Gi \
-  --min-replicas 0 \
-  --max-replicas 2 \
-  --secrets \
-    sql-conn="$SQL_CONN" \
-    storage-conn="$STORAGE_CONN" \
-    sb-conn="$SB_CONN" \
-  --env-vars \
-    SQL_CONNECTION_STRING=secretref:sql-conn \
-    STORAGE_CONNECTION_STRING=secretref:storage-conn \
-    SERVICE_BUS_CONNECTION_STRING=secretref:sb-conn \
-    SERVICE_BUS_QUEUE_NAME="analysis-queue" \
-    STORAGE_CONTAINER_NAME="recordings"
-
-BACKEND_FQDN=$(az containerapp show --name ca-backend-api --resource-group "$RG_NAME" --query "properties.configuration.ingress.fqdn" -o tsv)
-az keyvault secret set --vault-name "$KV_NAME" --name "BACKEND-API-URL" --value "https://$BACKEND_FQDN"
-
-```
-
-#### 1.3 Microservicio Worker de Análisis (`ca-analysis-worker`)
-
-*Especificación:* Sin Ingress, KEDA trigger contra Service Bus (`analysis-queue`), FFmpeg, Parakeet y Llama 3.2 90B.
-
-```bash
+# 2. Build y Push de la imagen del Worker
 cd voxready-worker
-docker build --platform linux/amd64 -t "$ACR_NAME.azurecr.io/analysis-worker:v1" .
-docker push "$ACR_NAME.azurecr.io/analysis-worker:v1"
+docker build --platform linux/amd64 -t "$ACR_NAME.azurecr.io/analysis-worker:v2" .
+docker push "$ACR_NAME.azurecr.io/analysis-worker:v2"
 cd ..
 
-NVIDIA_KEY=$(az keyvault secret show --vault-name "$KV_NAME" --name "NVIDIA-API-KEY" --query "value" -o tsv)
-VISION_URL=$(az keyvault secret show --vault-name "$KV_NAME" --name "VISION-SERVICE-URL" --query "value" -o tsv)
-
-az containerapp create \
-  --name ca-analysis-worker \
+# 3. Actualizar Container App del Worker
+az containerapp update \
+  --name "$WORKER_APP_NAME" \
   --resource-group "$RG_NAME" \
-  --environment "$ENVIRONMENT_NAME" \
-  --image "$ACR_NAME.azurecr.io/analysis-worker:v1" \
-  --registry-server "$ACR_NAME.azurecr.io" \
-  --registry-username "$ACR_NAME" \
-  --registry-password "$ACR_PASS" \
-  --cpu 1.0 \
-  --memory 2.0Gi \
-  --min-replicas 0 \
-  --max-replicas 2 \
-  --secrets \
-    sb-conn="$SB_CONN" \
-    storage-conn="$STORAGE_CONN" \
-    sql-conn="$SQL_CONN" \
-    nvidia-key="$NVIDIA_KEY" \
-  --env-vars \
-    SERVICE_BUS_CONNECTION_STRING=secretref:sb-conn \
-    STORAGE_CONNECTION_STRING=secretref:storage-conn \
-    SQL_CONNECTION_STRING=secretref:sql-conn \
-    NVIDIA_API_KEY=secretref:nvidia-key \
-    NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1" \
-    LLM_MODEL_NAME="meta/llama-3.2-90b-vision-instruct" \
-    VISION_SERVICE_URL="$VISION_URL" \
-    SERVICE_BUS_QUEUE_NAME="analysis-queue" \
-    STORAGE_CONTAINER_NAME="recordings" \
-  --scale-rule-name servicebus-queue-rule \
-  --scale-rule-type azure-servicebus \
-  --scale-rule-metadata queueName=analysis-queue messageCount=1 \
-  --scale-rule-auth connection=sb-conn
+  --image "$ACR_NAME.azurecr.io/analysis-worker:v2"
 
 ```
 
 ---
 
-### FASE 2: CONFIGURACIÓN DE CORS EN INGRESS
+### FASE 4: SCRIPT DE VERIFICACIÓN END-TO-END (SMOKE TEST)
 
-Habilitar el acceso cruzado desde entornos locales y clientes web hacia la API:
-
-```bash
-az containerapp ingress cors update \
-  --name ca-backend-api \
-  --resource-group "$RG_NAME" \
-  --allowed-origins "http://localhost:3000" "https://*.azurestaticapps.net" "https://*.vercel.app" \
-  --allowed-methods "GET" "POST" "PUT" "DELETE" "OPTIONS" \
-  --allowed-headers "*" \
-  --allow-credentials true
-
-```
-
----
-
-### FASE 3: SINCRONIZACIÓN AUTOMÁTICA DE ARCHIVOS `.ENV`
-
-Ejecutar el pipeline de reemplazo para los entornos locales:
-
-```bash
-mkdir -p voxready-backend voxready-worker voxready-frontend
-
-# Backend .env
-cat <<EOF > voxready-backend/.env
-SQL_CONNECTION_STRING="${SQL_CONN}"
-STORAGE_CONNECTION_STRING="${STORAGE_CONN}"
-STORAGE_CONTAINER_NAME="recordings"
-SERVICE_BUS_CONNECTION_STRING="${SB_CONN}"
-SERVICE_BUS_QUEUE_NAME="analysis-queue"
-EOF
-
-# Worker .env
-cat <<EOF > voxready-worker/.env
-SQL_CONNECTION_STRING="${SQL_CONN}"
-STORAGE_CONNECTION_STRING="${STORAGE_CONN}"
-STORAGE_CONTAINER_NAME="recordings"
-SERVICE_BUS_CONNECTION_STRING="${SB_CONN}"
-SERVICE_BUS_QUEUE_NAME="analysis-queue"
-VISION_SERVICE_URL="https://${VISION_FQDN}"
-NVIDIA_API_KEY="${NVIDIA_KEY}"
-NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1"
-LLM_MODEL_NAME="meta/llama-3.2-90b-vision-instruct"
-EOF
-
-# Frontend .env.local
-cat <<EOF > voxready-frontend/.env.local
-NEXT_PUBLIC_API_URL="https://${BACKEND_FQDN}/v1"
-NEXT_PUBLIC_AZURE_CLIENT_ID="e219fd4b-3686-45dd-9656-b582d1fb0698"
-NEXT_PUBLIC_AZURE_TENANT_ID="${CIAM_TENANT_ID}"
-NEXT_PUBLIC_REDIRECT_URI="http://localhost:3000"
-NEXT_PUBLIC_AZURE_SCOPES="${APP_ID_URI}/access_as_user"
-EOF
-
-```
-
----
-
-### FASE 4: MATRIZ DE VERIFICACIONES POST-DEPLOY (SMOKE TESTS)
-
-Antigravity debe ejecutar la siguiente batería de comprobaciones lógicas:
-
-#### Verificación 1: Salud de la API y Documentación OpenAPI
-
-```bash
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$BACKEND_FQDN/docs")
-if [ "$HTTP_STATUS" -ne 200 ]; then
-  echo "Fallo de salud en Backend API: Código HTTP $HTTP_STATUS" >&2
-  exit 1
-fi
-echo "✔ Backend API respondiendo HTTP 200 OK en Swagger."
-
-```
-
-#### Verificación 2: Persistencia y Consulta DDL en Azure SQL
-
-Consultar si el usuario seed y la rúbrica existen en la base de datos `sqldb-voxready`:
+Ejecutar un test sintético para simular la finalización de una sesión y validar que la estructura de VISUM y los registros en Azure SQL cumplan estrictamente con los contratos:
 
 ```bash
 python -c "
-import pyodbc, os
-conn_str = '''$SQL_CONN'''
+import pyodbc, os, json, uuid
+from openai import OpenAI
+from core.narrative_generator import generate_visum_report
+
+# Obtener cadena de conexión desde entorno local
+conn_str = os.environ.get('SQL_CONNECTION_STRING')
+nvidia_key = os.environ.get('NVIDIA_API_KEY')
 conn = pyodbc.connect(conn_str)
 cursor = conn.cursor()
-cursor.execute('SELECT COUNT(*) FROM rubric_version WHERE status = \'published\';')
-count = cursor.fetchone()[0]
-assert count >= 1, 'Rúbrica no inicializada'
-print('✔ Base de datos verificada con ' + str(count) + ' versión(es) de rúbrica activa(s).')
+
+# 1. Obtener escenario y versión de rúbrica activa
+cursor.execute('SELECT TOP 1 id, title, context FROM scenario WHERE status = \'active\'')
+scen = cursor.fetchone()
+cursor.execute('SELECT TOP 1 id FROM rubric_version WHERE status = \'published\'')
+rubric = cursor.fetchone()
+
+assert scen and rubric, 'Faltan datos de escenario o rúbrica en la base de datos'
+
+# 2. Simular consolidado de entrada
+mock_consolidated = {
+    'score_global': 78.5,
+    'transcript': 'En primer lugar, lamentamos profundamente el impacto que esta interrupción ha generado en las familias. Estamos trabajando sin descanso con los equipos técnicos para restablecer la continuidad del suministro en las próximas horas.',
+    'evaluacion_areas': {
+        'expresion': {'score': 82.0, 'contacto_visual_pct': 85.0},
+        'tono_voz': {'score': 74.0, 'wpm': 135, 'muletillas_pct': 1.2},
+        'contenido': {'score': 80.0, 'pertinencia': 4, 'mensajes_clave': 4},
+        'empatia': {'score': 78.0, 'congruencia_no_verbal': 0.88}
+    }
+}
+
+client = OpenAI(base_url='https://integrate.api.nvidia.com/v1', api_key=nvidia_key)
+report = generate_visum_report(
+    client=client,
+    model_name='meta/llama-3.2-90b-vision-instruct',
+    scenario_info={'title': scen.title, 'context': scen.context, 'optics': 'empathetic', 'key_messages': ['Seguridad primero']},
+    consolidated_json=mock_consolidated
+)
+
+# 3. Asserts de estructura VISUM
+assert 'sintesis_ejecutiva' in report, 'Falta sintesis_ejecutiva'
+assert 'desempeno_observado' in report, 'Falta desempeno_observado'
+assert len(report['desempeno_observado']['fortalezas']) >= 1, 'Fortalezas vacías'
+assert len(report['desempeno_observado']['oportunidades_desarrollo']) >= 1, 'Oportunidades vacías'
+assert 'formula_practica_recomendada' in report['desempeno_observado'], 'Falta fórmula práctica'
+
+print('✔ Generación narrativa VISUM validada correctamente.')
+print('Diagnóstico:', report['sintesis_ejecutiva']['diagnostico_general'])
+print('Fórmula recomendada:', report['desempeno_observado']['formula_practica_recomendada'])
+conn.close()
 "
 
 ```
 
-#### Verificación 3: Validación del Endpoint OIDC de CIAM
+---
 
-Verificar la resolución del Discovery Document de Microsoft Entra External ID:
+### FASE 5: COMPROBACIÓN DEL ENDPOINT EN EL BACKEND (`GET /report`)
+
+Una vez persistido el informe en Azure SQL, verificar que `ca-backend-api` exponga la información requerida por la especificación REST de VoxReady:
 
 ```bash
-OIDC_ISSUER=$(curl -s "https://voxreadydev.ciamlogin.com/$CIAM_TENANT_ID/v2.0/.well-known/openid-configuration" | jq -r '.issuer')
-if [[ "$OIDC_ISSUER" != *"$CIAM_TENANT_ID"* ]]; then
-  echo "Fallo de resolución OIDC en CIAM" >&2
-  exit 1
-fi
-echo "✔ Endpoint CIAM OIDC operativo: $OIDC_ISSUER"
+# Consultar el endpoint del informe para la sesión procesada
+SESSION_TEST_ID="<ID_DE_SESION_PROCESADA>"
+BACKEND_URL=$(az keyvault secret show --vault-name "$KV_NAME" --name "BACKEND-API-URL" --query "value" -o tsv)
+
+curl -s -X GET "$BACKEND_URL/v1/sessions/$SESSION_TEST_ID/report" \
+  -H "Authorization: Bearer <TOKEN_JWT_DEL_VOCERO>" | jq '.'
 
 ```
 
-#### Verificación 4: Estado de Réplicas en Reposo (Zero-Idle Cost)
+La respuesta debe entregar el objeto normalizado:
 
-Comprobar que los tres servicios admitan escalado a cero y no incurran en consumo continuo de vCPU:
-
-```bash
-for APP in ca-vision-service ca-backend-api ca-analysis-worker; do
-  MIN_REP=$(az containerapp show --name "$APP" --resource-group "$RG_NAME" --query "properties.template.scale.minReplicas" -o tsv)
-  if [ "$MIN_REP" -ne 0 ]; then
-    echo "Advertencia: $APP tiene minReplicas en $MIN_REP (debería ser 0)" >&2
-  else
-    echo "✔ $APP configurado para escalar a 0 réplicas."
-  fi
-done
-
-```
-
-#### Verificación 5: Ciclo de Emisión SAS (Blob Direct-to-Storage)
-
-Probar la emisión del token de carga temporal sin transferir binarios por la API:
-
-```bash
-TEST_SAS=$(az storage container generate-sas \
-  --account-name "$STORAGE_NAME" \
-  --name "recordings" \
-  --permissions w \
-  --expiry $(date -u -d "30 minutes" '+%Y-%m-%dT%H:%MZ') \
-  --auth-mode key \
-  -o tsv)
-
-if [ -z "$TEST_SAS" ]; then
-  echo "Fallo al generar URL SAS en $STORAGE_NAME" >&2
-  exit 1
-fi
-echo "✔ Mecanismo SAS Storage validado correctamente."
+```json
+{
+  "sessionId": "c7d2...",
+  "overallScore": 79,
+  "narrative": {
+    "strengths": [
+      "Buen control emocional y trato cordial con el entrevistador.",
+      "Comunicación no verbal coherente con el formato remoto."
+    ],
+    "improvements": [
+      "Incorporar la empatía con los afectados como primera señal antes de explicaciones técnicas.",
+      "Anticipar la necesidad pedagógica de la audiencia estructurando el tema en componentes simples."
+    ],
+    "crossSignal": "Mantuvo contacto visual firme al declarar el compromiso institucional sin desvíos de mirada."
+  },
+  "areaScores": [
+    { "area": "expression", "value": 82 },
+    { "area": "voice", "value": 74 },
+    { "area": "coherence", "value": 80 },
+    { "area": "empathy", "value": 78 }
+  ],
+  "recordingUrl": "https://stavoxreadyst.blob.core.windows.net/recordings/...",
+  "scenarioTitle": "Contingencia Operacional en Planta Norte",
+  "generatedAt": "2026-10-05T21:15:00Z"
+}
 
 ```
