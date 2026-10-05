@@ -87,7 +87,7 @@ export const HomePracticeView: React.FC<HomePracticeViewProps> = ({ onNavigate }
               <button
                 type="button"
                 className="btn pri"
-                onClick={() => onNavigate('u3')}
+                onClick={() => onNavigate('u2')}
               >
                 🎙️ {t.practice}
               </button>
@@ -108,7 +108,7 @@ export const HomePracticeView: React.FC<HomePracticeViewProps> = ({ onNavigate }
               <button
                 type="button"
                 className="btn nav"
-                onClick={() => onNavigate('u3')}
+                onClick={() => onNavigate('u2')}
               >
                 🎙️ {t.practice}
               </button>

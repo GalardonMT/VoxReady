@@ -3,6 +3,7 @@ import './globals.css';
 import { ThemeProvider } from '../context/ThemeContext';
 import { I18nProvider } from '../context/I18nContext';
 import { AuthProvider } from '../context/AuthContext';
+import { MsalWrapper } from '../components/auth/MsalWrapper';
 
 export const metadata: Metadata = {
   title: 'VoxReady — Plataforma de Entrenamiento en Vocería de Crisis',
@@ -22,9 +23,11 @@ export default function RootLayout({
       <body>
         <ThemeProvider>
           <I18nProvider>
-            <AuthProvider>
-              {children}
-            </AuthProvider>
+            <MsalWrapper>
+              <AuthProvider>
+                {children}
+              </AuthProvider>
+            </MsalWrapper>
           </I18nProvider>
         </ThemeProvider>
       </body>

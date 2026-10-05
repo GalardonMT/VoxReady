@@ -1,0 +1,51 @@
+# Use from the repository root: docker compose -f docker-compose.azure.yml up --build
+# Compose reads the existing root .env for interpolation. No demo database or users.
+services:
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${SQL_CONNECTION_STRING:-${DATABASE_URL:?Set SQL_CONNECTION_STRING in the root .env}}
+      SQL_CONNECTION_STRING: ${SQL_CONNECTION_STRING:-${DATABASE_URL:?Set SQL_CONNECTION_STRING in the root .env}}
+      ENVIRONMENT: production
+      DEV_AUTH: "false"
+      JWKS_URL: ${JWKS_URL:?Set JWKS_URL in the root .env}
+      JWT_ISSUER: ${JWT_ISSUER:?Set JWT_ISSUER in the root .env}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:?Set JWT_AUDIENCE in the root .env}
+      AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Set NEXT_PUBLIC_AZURE_TENANT_ID in the root .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      UPLOAD_SIGNING_SECRET: ${UPLOAD_SIGNING_SECRET:?Set UPLOAD_SIGNING_SECRET in the root .env}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?Set WEBHOOK_SECRET in the root .env}
+      STORAGE_DIR: /data/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage:/data/storage
+
+  client:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_AUTH_MODE: azure
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL in the root .env}
+        NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Set NEXT_PUBLIC_AZURE_TENANT_ID in the root .env}
+        NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:?Set NEXT_PUBLIC_AZURE_CLIENT_ID in the root .env}
+        NEXT_PUBLIC_AZURE_AUTHORITY: ${NEXT_PUBLIC_AZURE_AUTHORITY:?Set NEXT_PUBLIC_AZURE_AUTHORITY in the root .env}
+        NEXT_PUBLIC_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
+        NEXT_PUBLIC_AZURE_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
+        NEXT_PUBLIC_AZURE_API_SCOPE: ${NEXT_PUBLIC_AZURE_API_SCOPE:?Set NEXT_PUBLIC_AZURE_API_SCOPE in the root .env}
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_AUTH_MODE: azure
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL in the root .env}
+      NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Set NEXT_PUBLIC_AZURE_TENANT_ID in the root .env}
+      NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:?Set NEXT_PUBLIC_AZURE_CLIENT_ID in the root .env}
+      NEXT_PUBLIC_AZURE_AUTHORITY: ${NEXT_PUBLIC_AZURE_AUTHORITY:?Set NEXT_PUBLIC_AZURE_AUTHORITY in the root .env}
+      NEXT_PUBLIC_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
+      NEXT_PUBLIC_AZURE_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
+      NEXT_PUBLIC_AZURE_API_SCOPE: ${NEXT_PUBLIC_AZURE_API_SCOPE:?Set NEXT_PUBLIC_AZURE_API_SCOPE in the root .env}
+    ports:
+      - "3000:3000"
+
+volumes:
+  storage:

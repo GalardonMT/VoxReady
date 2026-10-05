@@ -1,0 +1,884 @@
+VoxReady
+Especificación de la API REST
+Documentación de endpoints, parámetros, respuestas y errores
+Plataforma cloud: Microsoft Azure
+Versión 1.0  ·  25 de junio de 2026
+Rol: Backend Developer  ·  Documento interno
+Tabla de contenidos
+1. Introducción y alcance
+Este documento describe la API REST de VoxReady, la plataforma de entrenamiento de vocería que evalúa el desempeño multimodal (voz, imagen y contenido) de un portavoz ante entrevistas simuladas. La especificación cubre los tres roles del producto y está pensada para desplegarse sobre Microsoft Azure.
+La API se organiza por dominios funcionales que reflejan los flujos del producto: identidad, flujo del vocero (escenarios, sesiones, análisis, informes y progreso), administración del cliente (temas, retención y privacidad) y configuración maestra (rúbrica y cola de etiquetado).
+Roles del sistema:
+Vocero (spokesperson): practica escenarios, recibe informes y gestiona su progreso.
+Admin del cliente (client_admin): gestiona temas, usuarios, uso y política de retención de su organización.
+Configurador maestro (master_config): mantiene la rúbrica global y la cola de revisión; es el equipo central de VoxReady.
+2. Arquitectura en Azure
+La API se expone tras Azure API Management y se ejecuta sobre servicios gestionados de Azure. El siguiente cuadro resume el mapeo entre responsabilidades y servicios.
+3. Convenciones generales
+URL base: https://api.voxready.io  (todos los recursos cuelgan del prefijo de versión /v1).
+Versionado: por ruta (/v1). Los cambios incompatibles incrementan la versión mayor.
+Formato: JSON en peticiones y respuestas. Cabecera Content-Type: application/json.
+Codificación de fechas: ISO 8601 en UTC (p. ej. 2026-06-25T14:30:00Z).
+Identificadores: UUID v4 en formato string.
+Idiomas: parámetro/atributo language con valores es, en, pt.
+Paginación: parámetros page y pageSize; la respuesta incluye total.
+Idempotencia: en operaciones POST sensibles se admite la cabecera Idempotency-Key.
+Correlación: cada respuesta incluye la cabecera x-correlation-id para trazabilidad.
+4. Autenticación y autorización
+La autenticación se realiza con Azure AD B2C mediante OAuth 2.0 / OpenID Connect. El cliente obtiene un token de acceso (JWT) del proveedor de identidad y lo envía en cada solicitud:
+Authorization: Bearer <access_token>
+El token incluye el rol del usuario en un claim (por ejemplo extension_role) y un conjunto de scopes que API Management valida antes de enrutar. Cada endpoint declara el rol y el scope requeridos en su descripción.
+Reglas de autorización principales:
+El vocero solo accede a sus propios recursos (sesiones, progreso, grabaciones).
+El admin del cliente solo opera sobre el clientId de su token (aislamiento por tenant).
+El configurador maestro accede a recursos transversales (rúbrica, cola de etiquetado, métricas globales).
+Un token válido pero con rol/scope insuficiente produce 403 forbidden; un token ausente o inválido produce 401 unauthorized.
+5. Modelo de errores
+Todas las respuestas de error usan el formato Problem Details (RFC 7807) con Content-Type application/problem+json. La estructura común es:
+{
+  "type": "https://api.voxready.io/errors/invalid_request",
+  "title": "invalid_request",
+  "status": 400,
+  "detail": "El campo 'scenarioId' es obligatorio.",
+  "correlationId": "b1f4-...",
+  "errors": [ { "field": "scenarioId", "message": "requerido" } ]
+}
+Códigos de estado HTTP utilizados de forma transversal:
+6. Endpoints — Identidad
+GET  /v1/me
+Devuelve el perfil del usuario autenticado, su rol y el cliente (tenant) al que pertenece. Se usa para inicializar la app tras el login en Azure AD B2C.
+Rol requerido: Cualquiera autenticado    Scope: openid
+Parámetros de entrada: ninguno (solo encabezados de autenticación).
+Respuesta 200 OK
+Ejemplo de respuesta
+{
+  "userId": "3f1c...",
+  "email": "vocero@cliente.com",
+  "displayName": "María Pérez",
+  "role": "spokesperson",
+  "clientId": "a91b...",
+  "preferredLanguage": "es"
+}
+Mensajes de error
+7. Endpoints — Vocero
+GET  /v1/scenarios
+Lista los escenarios (temas) habilitados para el público interno del vocero. Soporta filtro por categoría y búsqueda de texto, con paginación.
+Rol requerido: Vocero    Scope: scenarios.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/scenarios/{scenarioId}
+Obtiene el detalle de un escenario, incluyendo su contexto, óptica institucional, número de preguntas y duración estimada.
+Rol requerido: Vocero    Scope: scenarios.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+POST  /v1/sessions
+Crea una sesión de práctica a partir de un escenario. Genera el conjunto de preguntas del entrevistador IA y deja la sesión en estado 'created', a la espera del consentimiento y la comprobación técnica.
+Rol requerido: Vocero    Scope: sessions.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{ "scenarioId": "c7d2...", "language": "es" }
+Respuesta 201 Created
+Mensajes de error
+Nota: El cuerpo de las preguntas no se entrega de antemano; se transmiten durante la sesión en vivo para preservar el realismo.
+POST  /v1/sessions/{sessionId}/consent
+Registra el consentimiento biométrico del vocero (grabación de voz e imagen) según la política de retención del cliente. Es obligatorio antes de iniciar la grabación (UK GDPR).
+Rol requerido: Vocero    Scope: sessions.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{
+  "acceptRecording": true,
+  "acknowledgeDeletion": true,
+  "policyVersion": "ret-2026-01"
+}
+Respuesta 200 OK
+Mensajes de error
+POST  /v1/sessions/{sessionId}/recording-url
+Solicita una URL de carga (SAS de escritura sobre Azure Blob Storage) para subir la grabación de la sesión. La URL es de un solo uso y caduca.
+Rol requerido: Vocero    Scope: sessions.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{ "contentType": "video/webm", "durationSeconds": 312 }
+Respuesta 200 OK
+Mensajes de error
+Nota: El cliente sube el archivo directamente a Blob Storage con la SAS; el backend nunca recibe el binario, lo que reduce carga y costo de egreso.
+POST  /v1/sessions/{sessionId}/finish
+Marca la grabación como completa y encola el análisis multimodal asíncrono (voz, imagen, contenido y fusión de empatía) en Azure Service Bus. Devuelve el identificador del trabajo de análisis.
+Rol requerido: Vocero    Scope: sessions.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{ "blobPath": "rec/2026/06/sess-c7d2.webm" }
+Respuesta 202 Accepted
+Mensajes de error
+Nota: Análisis asíncrono: usar GET /analysis para sondear (polling) o suscribirse al webhook session.analysis.completed.
+GET  /v1/sessions/{sessionId}/analysis
+Consulta el estado del análisis multimodal de una sesión. Permite mostrar la pantalla 'Analizando…' con el progreso de cada pipeline.
+Rol requerido: Vocero    Scope: sessions.read
+Parámetros de entrada
+Respuesta 200 OK
+Ejemplo de respuesta
+{
+  "analysisId": "9a01...",
+  "status": "running",
+  "progress": { "content": "done", "voice": "done",
+                "image": "pending", "fusion": "pending" },
+  "reportReady": false,
+  "failureReason": null
+}
+Mensajes de error
+GET  /v1/sessions/{sessionId}/report
+Devuelve el informe tipo coach de la sesión: evaluación global, narrativa accionable (lo que hiciste bien / qué mejorar), observación de señal cruzada y puntajes por área.
+Rol requerido: Vocero    Scope: sessions.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/me/progress
+Devuelve la evolución de las cuatro áreas de evaluación a lo largo de las últimas sesiones, junto con el valor actual y la variación, para alimentar el gráfico de tendencia y la tabla de avance.
+Rol requerido: Vocero    Scope: progress.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/me/recommendations
+Lista recomendaciones accionables generadas a partir del análisis del vocero (p. ej. contacto visual, muletillas, mensaje puente), cada una vinculada a una microlección.
+Rol requerido: Vocero    Scope: progress.read
+Parámetros de entrada: ninguno (solo encabezados de autenticación).
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/microlessons
+Lista las microlecciones disponibles (teoría breve + ejemplo). No se evalúan; preparan al vocero entre prácticas.
+Rol requerido: Vocero    Scope: lessons.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+POST  /v1/me/schedule
+Agenda la próxima sesión de práctica del vocero en una fecha elegida en el calendario.
+Rol requerido: Vocero    Scope: schedule.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{ "date": "2026-07-02", "scenarioId": "c7d2..." }
+Respuesta 201 Created
+Mensajes de error
+POST  /v1/me/deletion-requests
+Crea una solicitud de borrado de las grabaciones del propio vocero, conforme al derecho de supresión de datos biométricos (UK GDPR). La procesa el admin del cliente.
+Rol requerido: Vocero    Scope: privacy.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{ "sessionId": "c7d2...", "reason": "Ya no necesito esta grabación" }
+Respuesta 201 Created
+Mensajes de error
+8. Endpoints — Admin del cliente
+GET  /v1/clients/{clientId}/dashboard
+Métricas de uso del cliente: temas activos, número de voceros, sesiones del mes y puntuación global media. No expone cómo se evalúa.
+Rol requerido: Admin del cliente    Scope: client.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/topics
+Lista los temas configurados por el cliente, con su público interno, idiomas y política de retención.
+Rol requerido: Admin del cliente    Scope: topics.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+POST  /v1/topics
+Crea un nuevo tema (paquete autocontenido): contexto, mensajes clave, líneas rojas, óptica institucional y público interno. No toca la rúbrica de evaluación.
+Rol requerido: Admin del cliente    Scope: topics.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{
+  "name": "Retiro de producto",
+  "context": "Defecto detectado en lote X...",
+  "optics": "empathetic",
+  "audience": "leadership",
+  "languages": ["es","en"],
+  "keyMessages": ["La seguridad del cliente es prioridad", "..."],
+  "redLines": ["No admitir culpa antes de la investigación"]
+}
+Respuesta 201 Created
+Mensajes de error
+PUT  /v1/topics/{topicId}
+Actualiza un tema existente. Acepta los mismos campos que la creación; sustituye por completo el recurso.
+Rol requerido: Admin del cliente    Scope: topics.write
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+DELETE  /v1/topics/{topicId}
+Elimina (archiva) un tema. Los temas con sesiones asociadas se marcan como inactivos en lugar de borrarse físicamente.
+Rol requerido: Admin del cliente    Scope: topics.write
+Parámetros de entrada
+Respuesta 204 No Content
+Mensajes de error
+GET  /v1/clients/{clientId}/retention-policy
+Devuelve la política de retención vigente para los datos biométricos del cliente.
+Rol requerido: Admin del cliente    Scope: retention.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+PUT  /v1/clients/{clientId}/retention-policy
+Define la política de retención: qué se conserva tras cada sesión y el plazo de conservación. Al expirar, un job por cliente borra/anonimiza las grabaciones.
+Rol requerido: Admin del cliente    Scope: retention.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{ "keep": "full_recording", "termDays": 90 }
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/deletion-requests
+Lista las solicitudes de borrado pendientes de los voceros del cliente.
+Rol requerido: Admin del cliente    Scope: privacy.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+POST  /v1/deletion-requests/{requestId}/process
+Procesa una solicitud de borrado: dispara la eliminación/anonimización de la grabación en Blob Storage y marca la solicitud como atendida.
+Rol requerido: Admin del cliente    Scope: privacy.write
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+9. Endpoints — Configurador maestro
+GET  /v1/master/dashboard
+Salud del estándar global: clientes activos, sesiones de la semana, casos en cola de revisión y acuerdo IA-humano (métrica de calidad del producto).
+Rol requerido: Configurador maestro    Scope: master.read
+Parámetros de entrada: ninguno (solo encabezados de autenticación).
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/master/rubric
+Devuelve la versión vigente de la rúbrica/patrón maestro: áreas de evaluación, canal, criterios, peso y descriptores por nivel. Es transversal a todos los clientes.
+Rol requerido: Configurador maestro    Scope: rubric.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+PUT  /v1/master/rubric
+Guarda un borrador de la rúbrica. La suma de pesos de las áreas debe ser 100%.
+Rol requerido: Configurador maestro    Scope: rubric.write
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+POST  /v1/master/rubric/publish
+Publica una versión de la rúbrica y la deja vigente para todos los clientes. Permite re-evaluar grabaciones antiguas con el nuevo estándar.
+Rol requerido: Configurador maestro    Scope: rubric.publish
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{ "version": "v0.5-draft", "reevaluate": false }
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/master/labeling/queue
+Lista los casos en cola de etiquetado/segunda opinión: baja confianza, puntaje límite o muestreo aleatorio.
+Rol requerido: Configurador maestro    Scope: labeling.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+GET  /v1/master/labeling/cases/{caseId}
+Detalle de un caso de revisión: grabación, propuesta de puntajes de la IA por área y metadatos para la segunda opinión.
+Rol requerido: Configurador maestro    Scope: labeling.read
+Parámetros de entrada
+Respuesta 200 OK
+Mensajes de error
+POST  /v1/master/labeling/cases/{caseId}/resolve
+Confirma o corrige los puntajes de un caso. Cada corrección calibra los modelos y genera datos de entrenamiento (un flujo, dos propósitos).
+Rol requerido: Configurador maestro    Scope: labeling.write
+Parámetros de entrada
+Ejemplo de cuerpo (request)
+{
+  "scores": [
+    { "area": "expression", "value": 72 },
+    { "area": "empathy", "value": 61 }
+  ],
+  "comment": "Empatía subestimada: hubo reconocimiento verbal."
+}
+Respuesta 200 OK
+Mensajes de error
+10. Webhooks / eventos
+VoxReady publica eventos mediante Azure Event Grid para notificar el fin del análisis sin necesidad de polling. El cliente registra un endpoint HTTPS que recibe un POST con el evento.
+session.analysis.completed
+Se emite cuando el análisis multimodal de una sesión finaliza y el informe queda disponible.
+{
+  "eventType": "session.analysis.completed",
+  "sessionId": "c7d2...",
+  "analysisId": "9a01...",
+  "status": "completed",
+  "reportReady": true,
+  "occurredAt": "2026-06-25T14:31:07Z"
+}
+El receptor debe responder 2xx en menos de 30 segundos; Event Grid reintdenta con backoff si falla. La autenticidad se valida con la clave de validación de Event Grid o un encabezado de firma compartido.
+session.analysis.failed
+Se emite si algún pipeline falla de forma irrecuperable. Incluye failureReason. El vocero puede reintentar la sesión.
+11. Apéndice — Objetos de datos comunes
+Scenario
+Topic
+AreaScore
+AreaSeries (progreso)
+RubricArea
+Recommendation
+DeletionRequest
+--- TABLE 1 ---
+Servicio Azure | Responsabilidad en VoxReady
+Azure API Management | Puerta de entrada única: enrutamiento, límites de tasa (rate limiting), validación de JWT y versionado de la API.
+Azure AD B2C (Entra External ID) | Identidad y emisión de tokens OAuth2/OIDC; gestión de roles por claim.
+Azure App Service / Functions | Hospedaje de la API y de los workers de análisis (procesamiento por evento).
+Azure Service Bus | Cola de trabajos del análisis multimodal asíncrono.
+Azure Blob Storage | Almacenamiento de grabaciones (carga/lectura mediante SAS de un solo uso).
+Azure SQL / Cosmos DB | Persistencia de escenarios, sesiones, informes, temas y rúbrica.
+Azure AI Speech / Video Indexer / Azure OpenAI | Pipelines de voz, imagen y contenido, y fusión de empatía.
+Azure Event Grid | Publicación de webhooks (p. ej. session.analysis.completed).
+Azure Key Vault | Custodia de secretos, claves de firma y cadenas de conexión.
+--- TABLE 2 ---
+HTTP | Significado | Uso típico
+200 | OK | Solicitud satisfactoria con cuerpo de respuesta.
+201 | Created | Recurso creado (sesión, tema, cita, solicitud).
+202 | Accepted | Trabajo aceptado y encolado (análisis asíncrono).
+204 | No Content | Operación satisfactoria sin cuerpo (p. ej. DELETE).
+400 | Bad Request | Validación de entrada fallida.
+401 | Unauthorized | Token ausente, inválido o expirado.
+403 | Forbidden | Rol o scope insuficiente.
+404 | Not Found | Recurso inexistente o no visible para el usuario.
+409 | Conflict | Estado incompatible (p. ej. informe no listo, ya procesado).
+429 | Too Many Requests | Límite de tasa superado (API Management).
+500 | Internal Server Error | Error no controlado del servidor.
+--- TABLE 3 ---
+Campo | Tipo | Descripción
+userId | string (uuid) | Identificador único del usuario (oid del token B2C).
+email | string | Correo del usuario.
+displayName | string | Nombre para mostrar.
+role | enum | spokesperson | client_admin | master_config.
+clientId | string (uuid) | Cliente/organización al que pertenece.
+preferredLanguage | enum | es | en | pt.
+--- TABLE 4 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 5 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+category | query | enum | No | Filtra por categoría: health | reputational | operational.
+audience | query | string | No | Público interno (p. ej. leadership, frontline).
+q | query | string | No | Búsqueda de texto en título/descripción.
+page | query | integer | No | Página (por defecto 1).
+pageSize | query | integer | No | Tamaño de página (1–100, por defecto 20).
+--- TABLE 6 ---
+Campo | Tipo | Descripción
+items | array<Scenario> | Lista de escenarios (ver objeto Scenario en el apéndice).
+page | integer | Página actual.
+pageSize | integer | Tamaño de página.
+total | integer | Total de escenarios disponibles.
+--- TABLE 7 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | invalid_query | Parámetros de filtro o paginación inválidos.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 8 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+scenarioId | path | string (uuid) | Sí | Identificador del escenario.
+--- TABLE 9 ---
+Campo | Tipo | Descripción
+id | string (uuid) | Identificador del escenario.
+title | string | Título del escenario.
+context | string | Descripción/contexto de la crisis.
+category | enum | health | reputational | operational.
+audience | string | Público interno objetivo.
+difficulty | enum | basic | intermediate | hard.
+estimatedMinutes | integer | Duración estimada en minutos.
+questionCount | integer | Número de preguntas de la entrevista.
+languages | array<string> | Idiomas disponibles (es, en, pt).
+--- TABLE 10 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | scenario_not_found | El escenario no existe o no está habilitado para el usuario.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 11 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+scenarioId | body | string (uuid) | Sí | Escenario sobre el que se practicará.
+language | body | enum | No | Idioma de la sesión (es | en | pt). Por defecto el del usuario.
+--- TABLE 12 ---
+Campo | Tipo | Descripción
+sessionId | string (uuid) | Identificador de la sesión creada.
+status | enum | created.
+scenarioId | string (uuid) | Escenario asociado.
+questionCount | integer | Número de preguntas que se formularán.
+createdAt | string (ISO 8601) | Fecha/hora de creación (UTC).
+--- TABLE 13 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | invalid_request | Falta scenarioId o idioma no soportado.
+404 | scenario_not_found | El escenario indicado no existe o no está disponible.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 14 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+sessionId | path | string (uuid) | Sí | Sesión sobre la que se consiente.
+acceptRecording | body | boolean | Sí | Acepta la grabación y el tratamiento biométrico.
+acknowledgeDeletion | body | boolean | Sí | Reconoce el derecho a solicitar el borrado.
+policyVersion | body | string | Sí | Versión de la política de retención mostrada al usuario.
+--- TABLE 15 ---
+Campo | Tipo | Descripción
+sessionId | string (uuid) | Sesión afectada.
+status | enum | consented.
+consentId | string (uuid) | Registro de consentimiento (auditable).
+consentedAt | string (ISO 8601) | Marca de tiempo del consentimiento (UTC).
+--- TABLE 16 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | consent_incomplete | No se aceptaron ambas casillas obligatorias.
+404 | session_not_found | La sesión no existe o no pertenece al usuario.
+409 | invalid_state | La sesión no está en estado 'created'.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 17 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+sessionId | path | string (uuid) | Sí | Sesión a la que se asocia la grabación.
+contentType | body | string | Sí | MIME del archivo (p. ej. video/webm, video/mp4).
+durationSeconds | body | integer | No | Duración aproximada de la grabación.
+--- TABLE 18 ---
+Campo | Tipo | Descripción
+uploadUrl | string (uri) | URL SAS de escritura para Blob Storage.
+blobPath | string | Ruta del blob donde se almacenará la grabación.
+expiresAt | string (ISO 8601) | Caducidad de la URL SAS (UTC).
+maxSizeBytes | integer | Tamaño máximo permitido para el archivo.
+--- TABLE 19 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | invalid_content_type | MIME no soportado.
+404 | session_not_found | La sesión no existe o no pertenece al usuario.
+409 | consent_required | No se puede grabar sin consentimiento previo.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 20 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+sessionId | path | string (uuid) | Sí | Sesión a finalizar.
+blobPath | body | string | Sí | Ruta del blob subido (devuelta por /recording-url).
+--- TABLE 21 ---
+Campo | Tipo | Descripción
+sessionId | string (uuid) | Sesión afectada.
+status | enum | analyzing.
+analysisId | string (uuid) | Identificador del trabajo de análisis.
+estimatedSeconds | integer | Estimación de tiempo de procesamiento.
+--- TABLE 22 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | blob_missing | El blob indicado no existe o no se terminó de subir.
+404 | session_not_found | La sesión no existe o no pertenece al usuario.
+409 | invalid_state | La sesión no está lista para analizar (falta consentimiento o grabación).
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 23 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+sessionId | path | string (uuid) | Sí | Sesión consultada.
+--- TABLE 24 ---
+Campo | Tipo | Descripción
+analysisId | string (uuid) | Identificador del trabajo.
+status | enum | queued | running | completed | failed.
+progress | object | Estado por pipeline: content, voice, image, fusion (cada uno pending|done).
+reportReady | boolean | Indica si el informe ya está disponible.
+failureReason | string|null | Motivo del fallo si status = failed.
+--- TABLE 25 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | session_not_found | La sesión no existe o no pertenece al usuario.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 26 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+sessionId | path | string (uuid) | Sí | Sesión cuyo informe se solicita.
+--- TABLE 27 ---
+Campo | Tipo | Descripción
+sessionId | string (uuid) | Sesión asociada.
+overallScore | integer (0–100) | Puntuación global.
+narrative | object | { strengths: string[], improvements: string[], crossSignal: string }.
+areaScores | array<AreaScore> | Puntaje por área (expression, voice, coherence, empathy).
+recordingUrl | string (uri)|null | URL SAS de lectura de la grabación (si la retención lo permite).
+scenarioTitle | string | Título del escenario.
+generatedAt | string (ISO 8601) | Fecha de generación del informe (UTC).
+--- TABLE 28 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | session_not_found | La sesión no existe o no pertenece al usuario.
+409 | report_not_ready | El análisis aún no finaliza; reintentar más tarde.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 29 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+lastN | query | integer | No | Número de sesiones a incluir (por defecto 5, máx. 20).
+--- TABLE 30 ---
+Campo | Tipo | Descripción
+series | array<AreaSeries> | Por área: nombre, color, valores históricos, actual y delta.
+sessionsCompleted | integer | Total de sesiones completadas.
+latestOverall | integer | Última puntuación global.
+weakestArea | string | Área con menor puntaje actual.
+--- TABLE 31 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 32 ---
+Campo | Tipo | Descripción
+items | array<Recommendation> | { id, title, detail, microlessonId }.
+--- TABLE 33 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 34 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+topic | query | string | No | Filtra por tema (bridging, hostile-questions, body-language…).
+--- TABLE 35 ---
+Campo | Tipo | Descripción
+items | array<Microlesson> | { id, title, durationMinutes, topic }.
+--- TABLE 36 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 37 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+date | body | string (ISO 8601 date) | Sí | Fecha de la próxima sesión (AAAA-MM-DD).
+scenarioId | body | string (uuid) | No | Escenario sugerido a practicar.
+--- TABLE 38 ---
+Campo | Tipo | Descripción
+scheduleId | string (uuid) | Identificador de la cita.
+date | string (ISO 8601 date) | Fecha agendada.
+status | enum | scheduled.
+--- TABLE 39 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | invalid_date | Fecha en el pasado o con formato inválido.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 40 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+sessionId | body | string (uuid) | No | Sesión concreta; si se omite, aplica a todas.
+reason | body | string | No | Motivo opcional de la solicitud.
+--- TABLE 41 ---
+Campo | Tipo | Descripción
+requestId | string (uuid) | Identificador de la solicitud.
+status | enum | pending.
+requestedAt | string (ISO 8601) | Fecha de la solicitud (UTC).
+--- TABLE 42 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | session_not_found | La sesión indicada no existe o no pertenece al usuario.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 43 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+clientId | path | string (uuid) | Sí | Cliente consultado (debe coincidir con el del token).
+period | query | enum | No | month | quarter | year (por defecto month).
+--- TABLE 44 ---
+Campo | Tipo | Descripción
+activeTopics | integer | Temas configurados activos.
+spokespeople | integer | Voceros registrados.
+sessions | integer | Sesiones en el período.
+averageOverall | integer | Puntuación global media.
+--- TABLE 45 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | client_not_found | El cliente no existe.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 46 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+page | query | integer | No | Página (por defecto 1).
+pageSize | query | integer | No | Tamaño de página (por defecto 20).
+--- TABLE 47 ---
+Campo | Tipo | Descripción
+items | array<Topic> | Lista de temas (ver objeto Topic).
+total | integer | Total de temas.
+--- TABLE 48 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 49 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+name | body | string | Sí | Nombre del tema.
+context | body | string | Sí | Contexto del escenario.
+optics | body | enum | Sí | empathetic | formal | technical.
+audience | body | string | Sí | Público interno (leadership, frontline, technical).
+languages | body | array<string> | Sí | Idiomas habilitados (es, en, pt).
+keyMessages | body | array<string> | Sí | Mensajes clave a sostener.
+redLines | body | array<string> | No | Líneas rojas (nunca decir).
+--- TABLE 50 ---
+Campo | Tipo | Descripción
+id | string (uuid) | Identificador del tema creado.
+name | string | Nombre del tema.
+createdAt | string (ISO 8601) | Fecha de creación (UTC).
+--- TABLE 51 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | validation_error | Faltan campos obligatorios o valores inválidos.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 52 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+topicId | path | string (uuid) | Sí | Tema a actualizar.
+(cuerpo) | body | Topic | Sí | Objeto Topic completo (mismos campos que POST /topics).
+--- TABLE 53 ---
+Campo | Tipo | Descripción
+id | string (uuid) | Identificador del tema.
+updatedAt | string (ISO 8601) | Fecha de actualización (UTC).
+--- TABLE 54 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | validation_error | Campos inválidos.
+404 | topic_not_found | El tema no existe para este cliente.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 55 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+topicId | path | string (uuid) | Sí | Tema a eliminar.
+--- TABLE 56 ---
+Campo | Tipo | Descripción
+(sin cuerpo) | — | Respuesta vacía si la operación tiene éxito.
+--- TABLE 57 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | topic_not_found | El tema no existe para este cliente.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 58 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+clientId | path | string (uuid) | Sí | Cliente consultado.
+--- TABLE 59 ---
+Campo | Tipo | Descripción
+keep | enum | full_recording | metrics_only.
+termDays | integer|null | Plazo de conservación en días (null si metrics_only).
+version | string | Versión de la política.
+updatedAt | string (ISO 8601) | Última actualización (UTC).
+--- TABLE 60 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | client_not_found | El cliente no existe.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 61 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+clientId | path | string (uuid) | Sí | Cliente afectado.
+keep | body | enum | Sí | full_recording | metrics_only.
+termDays | body | integer | Condicional | Plazo en días (30/90/180/personalizado). Requerido si keep=full_recording.
+--- TABLE 62 ---
+Campo | Tipo | Descripción
+keep | enum | Valor aplicado.
+termDays | integer|null | Plazo aplicado.
+version | string | Nueva versión de la política.
+--- TABLE 63 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | invalid_policy | termDays ausente cuando keep=full_recording, o valor fuera de rango.
+404 | client_not_found | El cliente no existe.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 64 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+status | query | enum | No | pending | processed (por defecto pending).
+--- TABLE 65 ---
+Campo | Tipo | Descripción
+items | array<DeletionRequest> | { requestId, userRef, sessionId, requestedAt, status }.
+total | integer | Total de solicitudes.
+--- TABLE 66 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 67 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+requestId | path | string (uuid) | Sí | Solicitud a procesar.
+--- TABLE 68 ---
+Campo | Tipo | Descripción
+requestId | string (uuid) | Solicitud afectada.
+status | enum | processed.
+processedAt | string (ISO 8601) | Fecha de procesamiento (UTC).
+--- TABLE 69 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | request_not_found | La solicitud no existe.
+409 | already_processed | La solicitud ya fue atendida.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 70 ---
+Campo | Tipo | Descripción
+activeClients | integer | Clientes activos.
+sessionsThisWeek | integer | Sesiones de la semana.
+reviewQueueSize | integer | Casos en cola de etiquetado.
+aiHumanAgreement | number (0–1) | Concordancia IA vs. etiquetado experto.
+scoreDistribution | array<Bucket> | Histograma de puntajes globales.
+--- TABLE 71 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 72 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+version | query | string | No | Versión concreta; por defecto la vigente.
+--- TABLE 73 ---
+Campo | Tipo | Descripción
+version | string | Versión de la rúbrica.
+status | enum | draft | published.
+areas | array<RubricArea> | { name, channel, criteria, weight, descriptors }.
+languages | array<string> | Idiomas con ajuste de rúbrica de voz.
+--- TABLE 74 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | version_not_found | La versión solicitada no existe.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 75 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+areas | body | array<RubricArea> | Sí | Áreas con sus pesos y descriptores.
+languages | body | array<string> | No | Idiomas habilitados.
+--- TABLE 76 ---
+Campo | Tipo | Descripción
+version | string | Versión del borrador.
+status | enum | draft.
+updatedAt | string (ISO 8601) | Fecha de guardado (UTC).
+--- TABLE 77 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | weights_sum_invalid | La suma de los pesos de las áreas no es 100%.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 78 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+version | body | string | Sí | Versión del borrador a publicar.
+reevaluate | body | boolean | No | Si true, encola la re-evaluación de sesiones previas.
+--- TABLE 79 ---
+Campo | Tipo | Descripción
+version | string | Versión publicada (vigente).
+status | enum | published.
+publishedAt | string (ISO 8601) | Fecha de publicación (UTC).
+--- TABLE 80 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | version_not_found | La versión no existe.
+409 | already_published | La versión ya estaba publicada.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 81 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+reason | query | enum | No | low_confidence | borderline | random.
+page | query | integer | No | Página.
+--- TABLE 82 ---
+Campo | Tipo | Descripción
+items | array<LabelingCase> | { caseId, sessionRef, reason, aiProposal }.
+total | integer | Total de casos en cola.
+--- TABLE 83 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 84 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+caseId | path | string (uuid) | Sí | Caso consultado.
+--- TABLE 85 ---
+Campo | Tipo | Descripción
+caseId | string (uuid) | Identificador del caso.
+recordingUrl | string (uri) | URL SAS de lectura de la grabación.
+aiProposal | array<AreaScore> | Puntajes propuestos por la IA.
+reason | enum | low_confidence | borderline | random.
+--- TABLE 86 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+404 | case_not_found | El caso no existe.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 87 ---
+Nombre | Ubicación | Tipo | Req. | Descripción
+caseId | path | string (uuid) | Sí | Caso a resolver.
+scores | body | array<AreaScore> | Sí | Puntajes confirmados/corregidos por área.
+comment | body | string | No | Comentario del experto.
+--- TABLE 88 ---
+Campo | Tipo | Descripción
+caseId | string (uuid) | Caso resuelto.
+status | enum | resolved.
+resolvedAt | string (ISO 8601) | Fecha de resolución (UTC).
+--- TABLE 89 ---
+HTTP | Código | Cuándo se produce
+401 | unauthorized | Token ausente, inválido o expirado.
+403 | forbidden | El rol/scope del token no autoriza esta operación.
+400 | invalid_scores | Área desconocida o valor fuera de 0–100.
+404 | case_not_found | El caso no existe.
+409 | already_resolved | El caso ya fue resuelto.
+429 | rate_limited | Se superó el límite de solicitudes (Azure API Management).
+500 | internal_error | Error no controlado del servidor.
+--- TABLE 90 ---
+Campo | Tipo | Descripción
+id | string (uuid) | Identificador.
+title | string | Título.
+context | string | Contexto de la crisis.
+category | enum | health | reputational | operational.
+audience | string | Público interno.
+difficulty | enum | basic | intermediate | hard.
+estimatedMinutes | integer | Duración estimada.
+questionCount | integer | Número de preguntas.
+languages | array<string> | Idiomas disponibles.
+--- TABLE 91 ---
+Campo | Tipo | Descripción
+id | string (uuid) | Identificador.
+name | string | Nombre del tema.
+context | string | Contexto del escenario.
+optics | enum | empathetic | formal | technical.
+audience | string | Público interno.
+languages | array<string> | Idiomas habilitados.
+keyMessages | array<string> | Mensajes clave a sostener.
+redLines | array<string> | Líneas rojas (nunca decir).
+retentionDays | integer|null | Retención heredada de la política del cliente.
+--- TABLE 92 ---
+Campo | Tipo | Descripción
+area | enum | expression | voice | coherence | empathy.
+value | integer (0–100) | Puntaje del área.
+--- TABLE 93 ---
+Campo | Tipo | Descripción
+area | enum | expression | voice | coherence | empathy.
+label | string | Nombre legible del área.
+color | string (hex) | Color para el gráfico.
+values | array<integer> | Valores históricos por sesión.
+current | integer | Valor actual (última sesión).
+delta | integer | Variación respecto a la primera sesión del rango.
+--- TABLE 94 ---
+Campo | Tipo | Descripción
+name | string | Nombre del área.
+channel | string | Canal: imagen/no verbal, voz/prosodia, contenido, señal cruzada.
+criteria | string | Criterios evaluados.
+weight | integer (0–100) | Peso porcentual (la suma de áreas debe ser 100).
+descriptors | object | Descriptores por nivel: high | medium | low.
+--- TABLE 95 ---
+Campo | Tipo | Descripción
+id | string (uuid) | Identificador.
+title | string | Título de la recomendación.
+detail | string | Explicación accionable.
+microlessonId | string (uuid)|null | Microlección vinculada.
+--- TABLE 96 ---
+Campo | Tipo | Descripción
+requestId | string (uuid) | Identificador.
+userRef | string | Referencia anonimizada del vocero.
+sessionId | string (uuid)|null | Sesión concreta o null (todas).
+status | enum | pending | processed.
+requestedAt | string (ISO 8601) | Fecha de solicitud (UTC).

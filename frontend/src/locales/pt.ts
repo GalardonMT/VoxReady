@@ -13,7 +13,12 @@ export const pt = {
     signIn: "Entrar",
     err: "E-mail não reconhecido. Use um dos usuários de teste.",
     testL: "Usuários de teste para demonstração",
-    logout: "Sair"
+    logout: "Sair",
+    azureBtn: "Entrar com a Microsoft",
+    loading: "Autenticando…",
+    azureErr: "Erro ao entrar. Tente novamente.",
+    azureSub: "Entre com sua conta corporativa da Microsoft.",
+    dividerOr: "ou"
   },
   roles: {
     spokesperson: "Usuário final (porta-voz)",

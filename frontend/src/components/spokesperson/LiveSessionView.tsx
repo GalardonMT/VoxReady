@@ -4,11 +4,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService } from '../../services/sessionService';
+import type { SessionSetup } from '../../services/sessionFlowService';
 
 interface LiveSessionViewProps {
   onNavigate: (screen: VoceroScreen) => void;
   sessionId?: string;
   scenarioId?: string;
+  setup?: SessionSetup;
   onSessionComplete?: (sessionId: string) => void;
 }
 
@@ -16,16 +18,34 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   onNavigate,
   sessionId,
   scenarioId = 'crisis-voceria-01',
+  setup,
   onSessionComplete
 }) => {
   const { t } = useI18n();
   const d = t.L.u4;
 
-  const activeSessionId = sessionId || `session-crisis-${Date.now()}`;
+  const [generatedSessionId] = useState(() => `session-crisis-${Date.now()}`);
+  const activeSessionId = sessionId || setup?.sessionId || generatedSessionId;
+  const activeScenarioId = scenarioId || setup?.scenarioId || 'crisis-voceria-01';
+
+  const defaultQuestions = [
+    '¿Cuál es la gravedad real de la falla detectada en el lote de producción?',
+    '¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?',
+    d.qEx,
+    '¿Qué compensación inmediata recibirán los clientes perjudicados?',
+    '¿Existen sanciones internas contra los responsables de la supervisión de calidad?',
+    '¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?',
+    '¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?',
+    'Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?'
+  ];
+
+  const questions = (setup?.questions && setup.questions.length > 0)
+    ? setup.questions.map((q) => q.text)
+    : defaultQuestions;
 
   const [isPaused, setIsPaused] = useState(false);
-  const [questionIndex, setQuestionIndex] = useState(3);
-  const totalQuestions = 8;
+  const [questionIndex, setQuestionIndex] = useState(1);
+  const totalQuestions = questions.length;
 
   // Estados de captura de video y subida
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -40,46 +60,49 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
 
-  const questions = [
-    '¿Cuál es la gravedad real de la falla detectada en el lote de producción?',
-    '¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?',
-    d.qEx,
-    '¿Qué compensación inmediata recibirán los clientes perjudicados?',
-    '¿Existen sanciones internas contra los responsables de la supervisión de calidad?',
-    '¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?',
-    '¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?',
-    'Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?'
-  ];
-
-  const currentQuestion = questions[questionIndex - 1] || d.qEx;
+  const currentQuestion = questions[questionIndex - 1] || questions[0] || d.qEx;
 
   // Iniciar cámara y grabación automática al entrar
   useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
+    let isCancelled = false;
 
     async function initMedia() {
       try {
+        let savedCameraId = '';
+        let savedMicId = '';
+        try {
+          savedCameraId = localStorage.getItem('voxready_selected_camera') || '';
+          savedMicId = localStorage.getItem('voxready_selected_mic') || '';
+        } catch {}
+
         let stream: MediaStream;
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               width: { ideal: 1280 },
               height: { ideal: 720 },
-              frameRate: { ideal: 30 }
+              frameRate: { ideal: 30 },
+              ...(savedCameraId ? { deviceId: { exact: savedCameraId } } : {})
             },
             audio: {
               echoCancellation: true,
               noiseSuppression: false, // Evita voz robotica y cortes por supresion agresiva
               autoGainControl: false,  // Evita saturacion al limite maximo (-32768 / +32767)
-              channelCount: 1
+              channelCount: 1,
+              ...(savedMicId ? { deviceId: { exact: savedMicId } } : {})
             }
           });
         } catch {
-          // Fallback seguro a configuracion estandar
+          // Fallback seguro si el deviceId guardado no responde o se desconectó
           stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
             audio: true
           });
+        }
+
+        if (isCancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
         }
 
         streamRef.current = stream;
@@ -110,25 +133,20 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           }
         };
 
-        // INICIAR EN FLUJO CONTINUO (SIN timeslice para eliminar los 1.374 saltos temporales rotos)
+        // INICIAR EN FLUJO CONTINUO (SIN timeslice para eliminar saltos temporales)
         recorder.start();
         mediaRecorderRef.current = recorder;
-
-        timer = setInterval(() => {
-          if (!isPaused) {
-            setRecordingSeconds((prev) => prev + 1);
-          }
-        }, 1000);
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
         console.warn('Error al iniciar cámara/micrófono:', err);
-        setErrorMessage(`Dispositivo de video no disponible: ${err.message}. Modo simulación activado.`);
+        setErrorMessage(`Dispositivo de video no disponible: ${message}. Modo simulación activado.`);
       }
     }
 
     initMedia();
 
     return () => {
-      if (timer) clearInterval(timer);
+      isCancelled = true;
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
           mediaRecorderRef.current.stop();
@@ -136,16 +154,48 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
     };
   }, []);
 
+  // Temporizador de grabación reactivo al estado de grabación y pausa
+  useEffect(() => {
+    if (!streamActive || isPaused) return;
+
+    const timer = setInterval(() => {
+      setRecordingSeconds((prev) => prev + 1);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [streamActive, isPaused]);
+
+  // Sincronizar estado del MediaRecorder con pausa/reanudación
+  useEffect(() => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+
+    if (isPaused && recorder.state === 'recording') {
+      try {
+        recorder.pause();
+      } catch (e) {
+        console.warn('Advertencia al pausar MediaRecorder:', e);
+      }
+    } else if (!isPaused && recorder.state === 'paused') {
+      try {
+        recorder.resume();
+      } catch (e) {
+        console.warn('Advertencia al reanudar MediaRecorder:', e);
+      }
+    }
+  }, [isPaused]);
+
   const handleNextQuestion = () => {
     if (questionIndex < totalQuestions) {
       setQuestionIndex((prev) => prev + 1);
-    } else {
-      handleFinishSession();
     }
+    // No hacer nada en la última pregunta — la sesión solo termina
+    // cuando el usuario presiona explícitamente "Finalizar grabación"
   };
 
   const handleFinishSession = async () => {
@@ -216,7 +266,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       await sessionService.finishSession(
         activeSessionId,
         blobPath,
-        scenarioId,
+        activeScenarioId,
         'tenant-voxready-dev'
       );
 
@@ -228,9 +278,10 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       setTimeout(() => {
         onNavigate('u5');
       }, 1000);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
       console.error('Error al subir grabación a Azure:', err);
-      setErrorMessage(`Fallo en el pipeline de subida: ${err.message}. Pasando a análisis.`);
+      setErrorMessage(`Fallo en el pipeline de subida: ${message}. Pasando a análisis.`);
       setTimeout(() => {
         if (onSessionComplete) onSessionComplete(activeSessionId);
         onNavigate('u5');
@@ -446,9 +497,10 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           type="button"
           className="btn ghost"
           onClick={handleNextQuestion}
-          title="Simular siguiente pregunta"
+          disabled={questionIndex >= totalQuestions}
+          title={questionIndex >= totalQuestions ? 'Última pregunta alcanzada' : 'Simular siguiente pregunta'}
         >
-          Siguiente pregunta ➔
+          {questionIndex >= totalQuestions ? 'Última pregunta ✓' : 'Siguiente pregunta ➔'}
         </button>
 
         <div className="meter col" style={{ maxWidth: '240px' }}>

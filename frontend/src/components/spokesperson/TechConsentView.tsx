@@ -1,50 +1,418 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
+import { sessionFlowService, type SessionSetup } from '../../services/sessionFlowService';
+import { ApiError } from '../../services/apiClient';
 
 interface TechConsentViewProps {
-  onNavigate: (screen: VoceroScreen) => void;
+  onNavigate?: (screen: VoceroScreen) => void;
+  setup?: SessionSetup;
+  onBegin?: () => void;
+  onCancel?: () => void;
 }
 
-export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) => {
+export const TechConsentView: React.FC<TechConsentViewProps> = ({
+  onNavigate,
+  setup,
+  onBegin,
+  onCancel
+}) => {
   const { t } = useI18n();
   const d = t.L.u3;
 
   const [chk1, setChk1] = useState(false);
   const [chk2, setChk2] = useState(false);
-  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [streamActive, setStreamActive] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
-  React.useEffect(() => {
+  // Lista y selección de dispositivos de entrada
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedVideoId, setSelectedVideoId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return localStorage.getItem('voxready_selected_camera') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [selectedAudioId, setSelectedAudioId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return localStorage.getItem('voxready_selected_mic') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  // Estados de micrófono en tiempo real
+  const [audioLevel, setAudioLevel] = useState(0); // 0 a 100
+  const [micPassed, setMicPassed] = useState(false);
+  const MIC_THRESHOLD = 20; // Umbral mínimo de audio requerido (20%) para asegurar que se habló claro
+
+  // Estados de iluminación en tiempo real
+  const [lightLevel, setLightLevel] = useState(0); // 0 a 100
+  const [lightPassed, setLightPassed] = useState(false);
+  const LIGHT_MIN_THRESHOLD = 30; // Mínimo 30% para no estar demasiado oscuro
+  const LIGHT_MAX_THRESHOLD = 90; // Máximo 90% para no estar sobreexpuesto
+
+  // Estado del flujo de consentimiento del backend
+  const defaultPolicy = { version: '1.0', keep: 'full_recording' as const, termDays: 30 };
+  const [policy, setPolicy] = useState(setup?.retentionPolicy || defaultPolicy);
+  const [submitting, setSubmitting] = useState(false);
+  const [consentError, setConsentError] = useState('');
+
+  // Función para listar cámaras y micrófonos con etiquetas
+  const enumerateUserDevices = async () => {
+    try {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const vDevs = devices.filter((dev) => dev.kind === 'videoinput');
+      const aDevs = devices.filter((dev) => dev.kind === 'audioinput');
+      setVideoDevices(vDevs);
+      setAudioDevices(aDevs);
+
+      // Si no hay seleccionado o el seleccionado ya no existe, tomar el primero
+      setSelectedVideoId((prev) => {
+        if (prev && vDevs.some((dev) => dev.deviceId === prev)) return prev;
+        return vDevs[0]?.deviceId || '';
+      });
+      setSelectedAudioId((prev) => {
+        if (prev && aDevs.some((dev) => dev.deviceId === prev)) return prev;
+        return aDevs[0]?.deviceId || '';
+      });
+    } catch (e) {
+      console.warn('Error listando dispositivos:', e);
+    }
+  };
+
+  // Re-iniciar stream cada vez que cambie selectedVideoId o selectedAudioId
+  useEffect(() => {
+    let isCancelled = false;
     let stream: MediaStream | null = null;
-    async function setupCamera() {
+    let audioStream: MediaStream | null = null;
+    let videoStream: MediaStream | null = null;
+    let audioContext: AudioContext | null = null;
+    let analyser: AnalyserNode | null = null;
+    let animationFrameId: number;
+    let lightIntervalId: NodeJS.Timeout;
+    let prevFrameData: Uint8ClampedArray | null = null;
+    let staticCount = 0;
+    let dynamicFrames = 0;
+
+    async function setupDevices() {
+      setCameraActive(false);
+      setCameraError(null);
+      setLightLevel(0);
+      setLightPassed(false);
+
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: true
-        });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+        const videoConstraints: MediaTrackConstraints = {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          ...(selectedVideoId ? { deviceId: { exact: selectedVideoId } } : {})
+        };
+
+        const audioConstraints: MediaTrackConstraints = {
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: false,
+          ...(selectedAudioId ? { deviceId: { exact: selectedAudioId } } : {})
+        };
+
+        // 1. Obtener stream de audio de forma desacoplada
+        try {
+          audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: false
+          });
+        } catch (err) {
+          console.warn('Error accediendo al micrófono:', err);
         }
-        setStreamActive(true);
+
+        // 2. Obtener stream de video de forma desacoplada
+        try {
+          videoStream = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: false
+          });
+        } catch (err) {
+          console.warn('Error accediendo a la cámara:', err);
+          setCameraError('Cámara no disponible o permiso no concedido');
+        }
+
+        if (isCancelled) {
+          audioStream?.getTracks().forEach((track) => track.stop());
+          videoStream?.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        const combinedTracks: MediaStreamTrack[] = [
+          ...(videoStream ? videoStream.getVideoTracks() : []),
+          ...(audioStream ? audioStream.getAudioTracks() : [])
+        ];
+        stream = new MediaStream(combinedTracks);
+
+        // Configuración y validación del stream de video
+        const vTracks = videoStream ? videoStream.getVideoTracks() : [];
+        if (vTracks.length > 0 && vTracks[0].readyState === 'live' && !vTracks[0].muted) {
+          const vTrack = vTracks[0];
+          setStreamActive(true);
+
+          if (videoRef.current) {
+            videoRef.current.srcObject = videoStream;
+            videoRef.current.onloadedmetadata = () => {
+              if (isCancelled) return;
+              videoRef.current?.play().catch((err) => {
+                console.warn('Error al reproducir video:', err);
+                setCameraActive(false);
+              });
+            };
+          }
+
+          vTrack.onmute = () => {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+          };
+          vTrack.onunmute = () => {
+            // El estado activo se confirmará en checkLighting
+          };
+          vTrack.onended = () => {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+          };
+        } else {
+          setCameraActive(false);
+          setStreamActive(false);
+          if (videoRef.current) {
+            videoRef.current.srcObject = null;
+          }
+        }
+
+        // Guardar preferencias seleccionadas
+        if (selectedVideoId) {
+          try { localStorage.setItem('voxready_selected_camera', selectedVideoId); } catch {}
+        }
+        if (selectedAudioId) {
+          try { localStorage.setItem('voxready_selected_mic', selectedAudioId); } catch {}
+        }
+
+        // Una vez concedidos permisos, listar dispositivos para obtener etiquetas reales
+        await enumerateUserDevices();
+
+        if (isCancelled) return;
+
+        // --- 1. CONFIGURACIÓN DEL MICRÓFONO CON WEB AUDIO API ---
+        const audioTracks = audioStream ? audioStream.getAudioTracks() : [];
+        if (audioTracks.length > 0) {
+          const AudioContextClass =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+          audioContext = new AudioContextClass();
+          
+          if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+          }
+
+          const source = audioContext.createMediaStreamSource(audioStream!);
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 512;
+          analyser.smoothingTimeConstant = 0.3; // Más responsivo al habla inmediata
+          source.connect(analyser);
+
+          const timeData = new Uint8Array(analyser.fftSize);
+          let framesOverThreshold = 0;
+
+          const checkAudio = () => {
+            if (!analyser) return;
+            analyser.getByteTimeDomainData(timeData);
+
+            // Calcular desviación respecto al silencio (amplitud real pico a pico / RMS)
+            let sumSquares = 0;
+            for (let i = 0; i < timeData.length; i++) {
+              const deviation = (timeData[i] - 128) / 128; // normalizado -1 a 1
+              sumSquares += deviation * deviation;
+            }
+            const rms = Math.sqrt(sumSquares / timeData.length);
+            
+            // Factor de ganancia visual para escala de 0 a 100 realista
+            const currentLevel = Math.min(100, Math.round(rms * 280));
+            setAudioLevel(currentLevel);
+
+            // Requiere al menos 6 frames consecutivos por encima del umbral (habla real)
+            if (currentLevel >= MIC_THRESHOLD) {
+              framesOverThreshold++;
+              if (framesOverThreshold >= 6) {
+                setMicPassed(true);
+              }
+            } else {
+              framesOverThreshold = Math.max(0, framesOverThreshold - 1);
+            }
+
+            animationFrameId = requestAnimationFrame(checkAudio);
+          };
+          checkAudio();
+        }
+
+        // --- 2. CONFIGURACIÓN DE ILUMINACIÓN MEDIANTE CANVAS ---
+        const checkLighting = () => {
+          const video = videoRef.current;
+          const canvas = canvasRef.current;
+          if (!video || !canvas || video.readyState < 2 || video.videoWidth === 0) {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+            return;
+          }
+
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          if (!ctx) return;
+
+          const w = 48;
+          const h = 36;
+          canvas.width = w;
+          canvas.height = h;
+
+          ctx.drawImage(video, 0, 0, w, h);
+          const imageData = ctx.getImageData(0, 0, w, h);
+          const data = imageData.data;
+
+          // Detección de imagen estática / tarjeta de prueba congelada (como Camo desconectado)
+          if (prevFrameData) {
+            let totalDiff = 0;
+            for (let i = 0; i < data.length; i += 8) {
+              totalDiff += Math.abs(data[i] - prevFrameData[i]);
+            }
+            if (totalDiff === 0) {
+              staticCount++;
+              dynamicFrames = 0;
+            } else {
+              dynamicFrames++;
+              staticCount = Math.max(0, staticCount - 1);
+            }
+          }
+          prevFrameData = new Uint8ClampedArray(data);
+
+          // Si la imagen está 100% congelada o es un gráfico estático artificial por varios ciclos
+          if (dynamicFrames < 2 || staticCount >= 2) {
+            setCameraActive(false);
+            setLightPassed(false);
+            setLightLevel(0);
+            return;
+          }
+
+          setCameraActive(true);
+
+          let totalBrightness = 0;
+          const totalPixels = data.length / 4;
+
+          // Fórmula de luminancia perceptual estándar (Rec. 601)
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            totalBrightness += 0.299 * r + 0.587 * g + 0.114 * b;
+          }
+
+          const avgBrightness = Math.round((totalBrightness / totalPixels / 255) * 100);
+          setLightLevel(avgBrightness);
+
+          if (avgBrightness >= LIGHT_MIN_THRESHOLD && avgBrightness <= LIGHT_MAX_THRESHOLD) {
+            setLightPassed(true);
+          } else {
+            setLightPassed(false);
+          }
+        };
+
+        // Medir iluminación periódicamente (cada 400ms para ahorrar CPU)
+        lightIntervalId = setInterval(checkLighting, 400);
+
       } catch (e) {
-        console.warn('Camera access in TechConsentView:', e);
+        console.warn('Error accediendo a dispositivos en TechConsentView:', e);
       }
     }
-    setupCamera();
+
+    setupDevices();
+
+    // Escuchar cuando se conecta o desconecta un dispositivo USB
+    const handleDeviceChange = () => {
+      enumerateUserDevices();
+    };
+    navigator.mediaDevices?.addEventListener('devicechange', handleDeviceChange);
+
     return () => {
+      isCancelled = true;
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      if (lightIntervalId) clearInterval(lightIntervalId);
+      navigator.mediaDevices?.removeEventListener('devicechange', handleDeviceChange);
+      if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close();
+      }
+      if (audioStream) {
+        audioStream.getTracks().forEach((track) => track.stop());
+      }
+      if (videoStream) {
+        videoStream.getTracks().forEach((track) => track.stop());
+      }
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
       }
     };
-  }, []);
+  }, [selectedVideoId, selectedAudioId]);
 
-  const isEnabled = chk1 && chk2;
+  const isTechnicalReady = cameraActive && micPassed && lightPassed;
+  const isEnabled = chk1 && chk2 && isTechnicalReady && !submitting;
+
+  const handleBegin = async () => {
+    if (!isEnabled) return;
+    setSubmitting(true);
+    setConsentError('');
+    try {
+      if (setup?.sessionId) {
+        await sessionFlowService.grantConsent(setup.sessionId, policy.version);
+      }
+      if (onBegin) {
+        onBegin();
+      } else if (onNavigate) {
+        onNavigate('u4');
+      }
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.problem?.title === 'policy_version_changed') {
+        try {
+          if (setup?.sessionId) {
+            const updated = await sessionFlowService.getSession(setup.sessionId);
+            setPolicy(updated.retentionPolicy);
+            setChk1(false);
+            setChk2(false);
+          }
+        } catch {}
+      }
+      setConsentError(cause instanceof Error ? cause.message : 'No se pudo registrar el consentimiento.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCancel = () => {
+    if (onCancel) {
+      onCancel();
+    } else if (onNavigate) {
+      onNavigate('u2');
+    }
+  };
 
   return (
     <div className="canvas-content">
+      {/* Canvas invisible para el cálculo de luminosidad */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+
       <div className="row">
         {/* Left Column: Tech validation */}
         <div className="card col">
@@ -61,54 +429,295 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
                 minHeight: '220px',
                 objectFit: 'cover',
                 transform: 'scaleX(-1)',
-                display: streamActive ? 'block' : 'none'
+                display: cameraActive ? 'block' : 'none'
               }}
             />
-            {!streamActive && (
+            {!cameraActive && (
               <div style={{ textAlign: 'center', padding: '40px 0' }}>
                 <div style={{ fontSize: '38px', marginBottom: '8px' }}>👤</div>
-                <div style={{ fontSize: '13px', color: '#cdd4da' }}>{d.camL}</div>
+                <div style={{ fontSize: '13px', color: '#cdd4da' }}>
+                  {cameraError || (streamActive ? 'Detectando señal de video...' : (d.camL || 'Iniciando cámara...'))}
+                </div>
               </div>
             )}
+            
+            {/* Badge de estado de cámara: compacto, discreto y sin fondo invasivo */}
             <div
-              className="reclamp"
-              style={{ background: 'rgba(0, 0, 0, 0.65)', color: '#fff', position: 'absolute', bottom: '10px', left: '10px' }}
+              style={{
+                position: 'absolute',
+                top: '10px',
+                right: '10px',
+                background: 'rgba(15, 23, 42, 0.75)',
+                backdropFilter: 'blur(6px)',
+                color: '#fff',
+                padding: '3px 8px',
+                borderRadius: '6px',
+                fontSize: '11px',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                border: '1px solid rgba(255, 255, 255, 0.1)'
+              }}
             >
-              <i className="recdot" style={{ background: streamActive ? '#3b6d11' : '#c93b2b' }} />
-              <span>{streamActive ? d.camOk : 'Iniciando cámara...'}</span>
+              <i
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  background: cameraActive ? '#22c55e' : '#ef4444'
+                }}
+              />
+              <span>{cameraActive ? (d.camOk || 'Cámara activa') : (cameraError ? 'Sin cámara' : 'Cámara inactiva')}</span>
             </div>
           </div>
 
           <div style={{ marginTop: '16px' }}>
+            {/* Medidor de Micrófono con umbral y feedback interactivo */}
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
-                fontSize: '12.5px',
-                marginBottom: '6px'
+                fontSize: '12px',
+                marginBottom: '5px'
               }}
             >
-              <span>🎤 {d.mic}</span>
-              <span style={{ color: 'var(--success)', fontWeight: 600 }}>{d.micOk}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500, flexWrap: 'wrap' }}>
+                🎤 Micrófono
+                <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 400 }}>
+                  ({micPassed ? 'superó el umbral: correcto' : 'si supera el umbral está correcto'})
+                </span>
+              </span>
+              <span
+                style={{
+                  color: micPassed ? '#22c55e' : '#eab308',
+                  fontWeight: 600,
+                  fontSize: '11.5px'
+                }}
+              >
+                {micPassed ? `✓ Audio correcto (${audioLevel}%)` : `Requiere hablar (mín. ${MIC_THRESHOLD}%)`}
+              </span>
             </div>
-            <div className="meter">
-              <i style={{ width: '68%', background: 'var(--success)' }} />
+            <div
+              className="meter"
+              style={{
+                position: 'relative',
+                background: 'rgba(0,0,0,0.1)',
+                height: '8px',
+                borderRadius: '4px',
+                overflow: 'hidden'
+              }}
+            >
+              {/* Marca del umbral */}
+              <div
+                style={{
+                  position: 'absolute',
+                  left: `${MIC_THRESHOLD}%`,
+                  top: 0,
+                  bottom: 0,
+                  width: '2px',
+                  background: 'rgba(255, 255, 255, 0.8)',
+                  boxShadow: '0 0 4px rgba(0,0,0,0.5)',
+                  zIndex: 2
+                }}
+                title={`Umbral requerido: ${MIC_THRESHOLD}%`}
+              />
+              <i
+                style={{
+                  width: `${audioLevel}%`,
+                  background: audioLevel >= MIC_THRESHOLD ? '#22c55e' : '#eab308',
+                  transition: 'width 0.08s ease-out'
+                }}
+              />
             </div>
 
+            {/* Medidor de Iluminación con umbral requerido */}
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
-                fontSize: '12.5px',
-                margin: '14px 0 6px'
+                fontSize: '12px',
+                margin: '14px 0 5px'
               }}
             >
-              <span>💡 {d.light}</span>
-              <span style={{ color: '#ba7517', fontWeight: 600 }}>{d.lightW}</span>
+              <span style={{ fontWeight: 500 }}>💡 Iluminación de sala</span>
+              <span
+                style={{
+                  color: !cameraActive
+                    ? '#94a3b8'
+                    : lightPassed
+                    ? '#22c55e'
+                    : lightLevel < LIGHT_MIN_THRESHOLD
+                    ? '#eab308'
+                    : '#ef4444',
+                  fontWeight: 600,
+                  fontSize: '11.5px'
+                }}
+              >
+                {!cameraActive
+                  ? 'Requiere cámara activa'
+                  : lightPassed
+                  ? `✓ Óptima (${lightLevel}%)`
+                  : lightLevel < LIGHT_MIN_THRESHOLD
+                  ? `Baja (${lightLevel}% / mín. ${LIGHT_MIN_THRESHOLD}%)`
+                  : `Muy brillante (${lightLevel}%)`}
+              </span>
             </div>
-            <div className="meter">
-              <i style={{ width: '55%', background: '#ba7517' }} />
+            <div
+              className="meter"
+              style={{
+                position: 'relative',
+                background: 'rgba(0,0,0,0.1)',
+                height: '8px',
+                borderRadius: '4px',
+                overflow: 'hidden'
+              }}
+            >
+              {/* Marca de umbral mínimo */}
+              <div
+                style={{
+                  position: 'absolute',
+                  left: `${LIGHT_MIN_THRESHOLD}%`,
+                  top: 0,
+                  bottom: 0,
+                  width: '2px',
+                  background: 'rgba(255, 255, 255, 0.7)',
+                  zIndex: 2
+                }}
+                title={`Mínimo requerido: ${LIGHT_MIN_THRESHOLD}%`}
+              />
+              <i
+                style={{
+                  width: `${cameraActive ? lightLevel : 0}%`,
+                  background: !cameraActive
+                    ? '#94a3b8'
+                    : lightPassed
+                    ? '#22c55e'
+                    : lightLevel < LIGHT_MIN_THRESHOLD
+                    ? '#eab308'
+                    : '#ef4444',
+                  transition: 'width 0.3s ease'
+                }}
+              />
             </div>
+
+            {/* Selectores de Dispositivos (Cámara y Micrófono) */}
+            <div
+              style={{
+                marginTop: '16px',
+                paddingTop: '14px',
+                borderTop: '1px solid var(--line)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    color: 'var(--muted)',
+                    textTransform: 'uppercase',
+                    marginBottom: '4px',
+                    letterSpacing: '0.04em'
+                  }}
+                >
+                  📹 Cámara
+                </label>
+                <select
+                  value={selectedVideoId}
+                  onChange={(e) => setSelectedVideoId(e.target.value)}
+                  className="field"
+                  style={{
+                    width: '100%',
+                    fontSize: '12px',
+                    background: 'var(--panel)',
+                    color: 'var(--ink)',
+                    cursor: 'pointer',
+                    borderRadius: '6px'
+                  }}
+                >
+                  {videoDevices.length === 0 ? (
+                    <option value="">Cámara por defecto</option>
+                  ) : (
+                    videoDevices.map((dev, idx) => (
+                      <option key={dev.deviceId || idx} value={dev.deviceId}>
+                        {dev.label || `Cámara ${idx + 1}`}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    color: 'var(--muted)',
+                    textTransform: 'uppercase',
+                    marginBottom: '4px',
+                    letterSpacing: '0.04em'
+                  }}
+                >
+                  🎙️ Micrófono
+                </label>
+                <select
+                  value={selectedAudioId}
+                  onChange={(e) => {
+                    setSelectedAudioId(e.target.value);
+                    setMicPassed(false); // Pedir hablar de nuevo al cambiar de micrófono
+                  }}
+                  className="field"
+                  style={{
+                    width: '100%',
+                    fontSize: '12px',
+                    background: 'var(--panel)',
+                    color: 'var(--ink)',
+                    cursor: 'pointer',
+                    borderRadius: '6px'
+                  }}
+                >
+                  {audioDevices.length === 0 ? (
+                    <option value="">Micrófono por defecto</option>
+                  ) : (
+                    audioDevices.map((dev, idx) => (
+                      <option key={dev.deviceId || idx} value={dev.deviceId}>
+                        {dev.label || `Micrófono ${idx + 1}`}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+            </div>
+
+            {!isTechnicalReady && (
+              <div
+                style={{
+                  marginTop: '12px',
+                  fontSize: '11.5px',
+                  color: '#eab308',
+                  background: 'rgba(234, 179, 8, 0.08)',
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(234, 179, 8, 0.2)',
+                  lineHeight: 1.45
+                }}
+              >
+                {!cameraActive
+                  ? '• Activa o conecta tu cámara web para verificar la imagen e iluminación.'
+                  : !micPassed
+                  ? '• Pronuncia unas palabras en el micrófono seleccionado para validar el umbral.'
+                  : '• Ajusta la iluminación de tu entorno (mínimo 30%).'}
+              </div>
+            )}
           </div>
         </div>
 
@@ -124,7 +733,14 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
               color: 'var(--ink)'
             }}
           >
-            {d.legal}
+            <p style={{ margin: '0 0 10px' }}>
+              Se grabarán voz e imagen para evaluar tu práctica de vocería. Dar permisos al navegador habilita los dispositivos; el consentimiento se registra formalmente en el sistema.
+            </p>
+            <p style={{ margin: '0', color: 'var(--muted)', fontSize: '12px' }}>
+              Política de retención aplicable: <strong>versión {policy.version}</strong>. {policy.keep === 'full_recording'
+                ? `Grabación conservada durante ${policy.termDays ?? 30} días.`
+                : 'Solo se conservan métricas y transcripción sin video permanente.'}
+            </p>
           </div>
 
           <div style={{ marginTop: '14px' }}>
@@ -150,7 +766,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
                   cursor: 'pointer'
                 }}
               />
-              <span>{d.chk1}</span>
+              <span>Consiento la grabación de mi voz e imagen y su tratamiento para esta sesión conforme a la política indicada.</span>
             </label>
 
             <label
@@ -174,9 +790,15 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
                   cursor: 'pointer'
                 }}
               />
-              <span>{d.chk2}</span>
+              <span>Entiendo que puedo solicitar el borrado de mis grabaciones en cualquier momento.</span>
             </label>
           </div>
+
+          {consentError && (
+            <p role="alert" style={{ color: '#ef4444', fontSize: '12px', marginTop: '10px', fontWeight: 500 }}>
+              {consentError}
+            </p>
+          )}
 
           <div
             style={{
@@ -189,24 +811,33 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({ onNavigate }) 
             <button
               type="button"
               className={`btn pri ${!isEnabled ? 'disabled' : ''}`}
-              onClick={() => {
-                if (isEnabled) onNavigate('u4');
-              }}
+              onClick={handleBegin}
+              disabled={!isEnabled}
             >
-              {d.beginBtn} →
+              {submitting ? 'Registrando consentimiento…' : `${d.beginBtn} →`}
             </button>
             <button
               type="button"
               className="btn ghost"
-              onClick={() => onNavigate('u2')}
+              onClick={handleCancel}
             >
               {d.cancel}
             </button>
           </div>
 
-          <div className="legend" style={{ marginTop: '8px' }}>
-            {d.sesLang}
-          </div>
+          {!isEnabled && !submitting && (
+            <div className="legend" style={{ marginTop: '10px', fontSize: '11px', color: 'var(--muted)', lineHeight: 1.4 }}>
+              {!cameraActive
+                ? '⚠️ Requiere encender/conectar la cámara web para evaluar la imagen.'
+                : !micPassed
+                ? '⚠️ Habla al micrófono hasta superar el umbral de audio requerido.'
+                : !lightPassed
+                ? '⚠️ Ajusta la iluminación hasta que sea óptima (mínimo 30%).'
+                : (!chk1 || !chk2)
+                ? '⚠️ Marca ambas casillas de consentimiento para continuar.'
+                : 'Completa todas las validaciones técnicas y legales.'}
+            </div>
+          )}
         </div>
       </div>
     </div>

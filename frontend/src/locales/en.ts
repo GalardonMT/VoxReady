@@ -13,7 +13,12 @@ export const en = {
     signIn: "Sign in",
     err: "Email not recognized. Use one of the demo test users.",
     testL: "Demo test users",
-    logout: "Sign out"
+    logout: "Sign out",
+    azureBtn: "Sign in with Microsoft",
+    loading: "Authenticating…",
+    azureErr: "Sign in failed. Please try again.",
+    azureSub: "Sign in with your corporate Microsoft account.",
+    dividerOr: "or"
   },
   roles: {
     spokesperson: "End user (spokesperson)",

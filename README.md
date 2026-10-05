@@ -78,6 +78,15 @@ Opciones disponibles:
 3. **Ver Logs del Backend API:** Muestra las peticiones HTTP entrantes, creación de sesiones y firmas SAS.
 4. **Ver Logs de Visión:** Monitorea el análisis de fotogramas en `ca-vision-service`.
 
+### Arranque con Docker Compose
+Para probar el flujo local con autenticación demo y entorno aislado, consulta [LOCAL_DOCKER.md](LOCAL_DOCKER.md).
+Para iniciar el entorno demo aislado:
+```bash
+docker compose -p voxready-local -f docker-compose.local.yml up --build -d --wait
+```
+- **Frontend:** [http://localhost:3100/login](http://localhost:3100/login)
+- **Backend (API REST Docs):** [http://localhost:8100/docs](http://localhost:8100/docs)
+
 ---
 
 ## 🚀 Puesta en Marcha Rápida
@@ -122,6 +131,23 @@ BLOB_CONTAINER_NAME="recordings"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
 DEV_AUTH="true"
 CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestaticapps.net"
+```
+
+---
+
+## 🧪 Ejecución de Pruebas
+
+### Backend
+```bash
+cd backend
+pytest -v
+```
+
+### Frontend
+```bash
+cd frontend
+npm run build
+npm run lint
 ```
 
 ---

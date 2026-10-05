@@ -6,54 +6,124 @@
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   process.env.NEXT_PUBLIC_BACKEND_API_URL ||
-  'https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io';
+  'http://localhost:8000/v1';
+
+const TOKEN_KEY = 'voxready_access_token';
+let tokenProvider: (() => Promise<string | null>) | null = null;
+
+export function registerTokenProvider(provider: (() => Promise<string | null>) | null): void {
+  tokenProvider = provider;
+}
 
 export interface ProblemDetails {
   type?: string;
   title: string;
   status: number;
   detail?: string;
-  instance?: string;
   correlationId?: string;
   code?: string;
 }
 
 export class ApiError extends Error {
-  problem: ProblemDetails;
-
-  constructor(problem: ProblemDetails) {
-    super(problem.detail || problem.title || `API Error ${problem.status}`);
+  constructor(public problem: ProblemDetails) {
+    super(problem.detail || problem.title);
     this.name = 'ApiError';
-    this.problem = problem;
   }
+}
+
+export class NetworkError extends Error {
+  constructor() {
+    super('No se pudo conectar con la API. Comprueba tu conexión e inténtalo de nuevo.');
+    this.name = 'NetworkError';
+  }
+}
+
+export function isAccessError(error: unknown): boolean {
+  return error instanceof ApiError && (error.problem.status === 401 || error.problem.status === 403);
+}
+
+export function getAccessToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem('voxready_token');
+}
+
+export function setAccessToken(token: string): void {
+  sessionStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem('voxready_token', token);
+}
+
+export function clearAccessToken(): void {
+  sessionStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem('voxready_token');
 }
 
 async function getAuthToken(): Promise<string | null> {
   if (typeof window === 'undefined') return null;
-  const token = localStorage.getItem('voxready_token');
+
+  if (tokenProvider) {
+    try {
+      const customToken = await tokenProvider();
+      if (customToken) return customToken;
+    } catch {}
+  }
+
+  // 1. Check storage (set by AuthContext after login)
+  const token = getAccessToken();
   if (token) return token;
 
+  // 2. Try MSAL silent token renewal (if configured and user is signed in)
+  try {
+    const { msalInstance, loginRequest, loginRedirectRequest, isAzureConfigured } = await import('./authConfig');
+    if (isAzureConfigured) {
+      const accounts = msalInstance.getAllAccounts();
+      if (accounts.length > 0) {
+        const response = await msalInstance.acquireTokenSilent({
+          ...loginRequest,
+          account: accounts[0],
+        });
+        if (response.accessToken) {
+          setAccessToken(response.accessToken);
+          return response.accessToken;
+        }
+      }
+    }
+  } catch (err: unknown) {
+    clearAccessToken();
+
+    // If the error requires user interaction, redirect to Microsoft login
+    if (err && typeof err === 'object' && 'name' in err &&
+        (err as { name: string }).name === 'InteractionRequiredAuthError') {
+      try {
+        const { msalInstance, loginRedirectRequest } = await import('./authConfig');
+        await msalInstance.acquireTokenRedirect(loginRedirectRequest);
+      } catch {
+        // redirect will navigate away
+      }
+    }
+  }
+
+  // 3. Fallback: if user is logged in as a demo/dev user, try dev token if available
   const userJson = localStorage.getItem('voxready_user');
-  let email = 'admin@demo.voxready.io';
   if (userJson) {
     try {
       const user = JSON.parse(userJson);
       if (user.token) return user.token;
-      if (user.email) {
-        if (user.role === 'client_admin') email = 'admin@demo.voxready.io';
-        else if (user.role === 'master_config') email = 'master@voxready.io';
-        else email = 'vocero@demo.voxready.io';
+      const email = user.email || 'vocero@demo.voxready.io';
+      const res = await fetch(`${API_BASE_URL}/dev/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.accessToken) {
+          setAccessToken(data.accessToken);
+          return data.accessToken;
+        }
       }
     } catch {
-      // Ignorar error al parsear user
+      // Backend offline or dev token not enabled
     }
-  }
-
-  // En modo desarrollo o dev auth, retornar dev-token directamente
-  if (process.env.NEXT_PUBLIC_DEV_AUTH === 'true' || typeof window !== 'undefined') {
-    const devToken = 'dev-token-voxready';
-    localStorage.setItem('voxready_token', devToken);
-    return devToken;
   }
 
   return null;
@@ -65,7 +135,6 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
   const token = await getAuthToken();
-
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -79,15 +148,20 @@ export async function apiFetch<T>(
     headers['Authorization'] = `Bearer ${effectiveToken}`;
   }
 
-  // Generar correlation-id para trazabilidad
+  // Correlation ID para trazabilidad
   if (!headers['x-correlation-id']) {
     headers['x-correlation-id'] = `client-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers
+    });
+  } catch {
+    throw new NetworkError();
+  }
 
   if (!response.ok) {
     let problem: ProblemDetails;
@@ -100,10 +174,13 @@ export async function apiFetch<T>(
         detail: `HTTP status ${response.status} en ${endpoint}`
       };
     }
-    throw new ApiError(problem);
+    if (response.status === 401) {
+      clearAccessToken();
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('voxready:session-expired'));
+    }
+    throw new ApiError({ ...problem, status: response.status });
   }
 
-  // Manejar respuestas sin contenido (204 No Content)
   if (response.status === 204) {
     return {} as T;
   }
