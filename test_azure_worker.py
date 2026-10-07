@@ -35,34 +35,42 @@ def resolve_service_bus_conn():
     global SB_CONN
     if SB_CONN:
         return SB_CONN
-    try:
-        import subprocess
-        res = subprocess.run(
-            "az servicebus namespace authorization-rule keys list --resource-group rg-voxready-dev --namespace-name sb-voxready-dev --name RootManageSharedAccessKey --query primaryConnectionString -o tsv",
-            shell=True, capture_output=True, text=True, check=True
-        )
-        SB_CONN = res.stdout.strip()
-        return SB_CONN
-    except Exception as e:
-        print(f"Aviso: No se pudo obtener SERVICE_BUS_CONNECTION_STRING vía Azure CLI: {e}")
-        return None
+    import subprocess
+    for ns in ["sb-voxready-st", "sb-voxready-dev"]:
+        try:
+            res = subprocess.run(
+                f"az servicebus namespace authorization-rule keys list --resource-group rg-voxready-dev --namespace-name {ns} --name RootManageSharedAccessKey --query primaryConnectionString -o tsv",
+                shell=True, capture_output=True, text=True, check=True
+            )
+            out = res.stdout.strip()
+            if out:
+                SB_CONN = out
+                return SB_CONN
+        except Exception:
+            continue
+    print("Aviso: No se pudo obtener SERVICE_BUS_CONNECTION_STRING vía Azure CLI.")
+    return None
 
 
 def resolve_storage_conn():
     global STORAGE_CONN
     if STORAGE_CONN:
         return STORAGE_CONN
-    try:
-        import subprocess
-        res = subprocess.run(
-            "az storage account show-connection-string --name stavoxreadydev --resource-group rg-voxready-dev --query connectionString -o tsv",
-            shell=True, capture_output=True, text=True, check=True
-        )
-        STORAGE_CONN = res.stdout.strip()
-        return STORAGE_CONN
-    except Exception as e:
-        print(f"Aviso: No se pudo obtener STORAGE_CONNECTION_STRING vía Azure CLI: {e}")
-        return None
+    import subprocess
+    for sa in ["stavoxreadyst", "stavoxreadydev"]:
+        try:
+            res = subprocess.run(
+                f"az storage account show-connection-string --name {sa} --resource-group rg-voxready-dev --query connectionString -o tsv",
+                shell=True, capture_output=True, text=True, check=True
+            )
+            out = res.stdout.strip()
+            if out:
+                STORAGE_CONN = out
+                return STORAGE_CONN
+        except Exception:
+            continue
+    print("Aviso: No se pudo obtener STORAGE_CONNECTION_STRING vía Azure CLI.")
+    return None
 
 
 def list_available_blobs(storage_conn):
@@ -159,11 +167,25 @@ def print_report_summary(report: dict):
     print(f" Brecha Crítica:        {feedback.get('brecha_critica')}")
     print(f" Recomendación:         {feedback.get('recomendacion_accionable')}")
 
-    dimensiones = judge.get("dimensiones", {})
-    if dimensiones:
-        print("\n Dimensiones Evaluadas:")
-        for dim, val in dimensiones.items():
-            print(f"   * {dim:26}: Nivel {val.get('nivel_visum')}/5 (Score: {val.get('score_100')}) - {val.get('criterio')}")
+    # VISUM Executive Report
+    visum = report.get("informe_ejecutivo_visum") or (report.get("narrative") or {}).get("visum")
+    if visum:
+        print("\n--- SÍNTESIS EJECUTIVA VISUM CONSULTING ---")
+        sintesis = visum.get("sintesis_ejecutiva", {})
+        print(f" Diagnóstico General:    {sintesis.get('diagnostico_general')}")
+        print(f" Fortaleza Principal:    {sintesis.get('fortaleza_principal')}")
+        print(f" Foco de Desarrollo:     {sintesis.get('foco_desarrollo')}")
+        print(f" Continuidad:            {sintesis.get('continuidad_recomendada')}")
+
+        desempeno = visum.get("desempeno_observado", {})
+        print(f"\n Fórmula Práctica:       {desempeno.get('formula_practica_recomendada')}")
+        print(f" Observación Cruzada:    {visum.get('observacion_senal_cruzada')}")
+
+    area_scores = report.get("areaScores") or []
+    if area_scores:
+        print("\n--- SCORES POR ÁREA (RÚBRICA PONDERADA v0.4) ---")
+        for a in area_scores:
+            print(f"   * {a.get('area'):15}: {a.get('value')}%")
     print("=" * 70)
 
 

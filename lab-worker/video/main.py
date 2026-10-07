@@ -31,9 +31,63 @@ EYE_RIGHT_BOTTOM = 374
 NOSE_TIP = 1
 CHIN = 152
 
-# Pose
+# Pose & Gesticulación (VISUM)
 SHOULDER_LEFT = 11
 SHOULDER_RIGHT = 12
+WRIST_LEFT = 15
+WRIST_RIGHT = 16
+HIP_LEFT = 23
+HIP_RIGHT = 24
+
+
+def calculate_expression_area_score(vision_summary: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Calibración de rigor VISUM para el área 'expression' (0 a 100):
+    - Contacto visual: 40%
+    - Estabilidad corporal y postura: 30% (penalización estricta por balanceo lateral > 0.015)
+    - Gesticulación: 30% (con penalización por ocultamiento crónico de manos si < 30%)
+    - Techo de contención: si las manos están ausentes (< 10%), el área no puede superar 45 pts.
+    """
+    eye_pct = float(vision_summary.get("eye_contact_pct", 0.0))
+    shoulder_score = float(vision_summary.get("shoulder_stability_score", 100.0))
+    sway_std = float(vision_summary.get("body_sway_std", 0.0))
+    hands_vis_pct = float(vision_summary.get("hands_visible_pct", 0.0))
+    hands_act_pct = float(vision_summary.get("hands_active_pct", 0.0))
+
+    # 1. Penalización de balanceo lateral (umbral estricto en 0.015)
+    sway_penalty = min(40.0, max(0.0, (sway_std - 0.015) * 1200.0))
+    body_stability_final = max(0.0, shoulder_score - sway_penalty)
+
+    # 2. Gesticulación con penalización por ocultamiento crónico
+    # Si las manos son visibles menos del 30% del tiempo, se penaliza por corporalidad cerrada
+    base_gesticulation = (hands_vis_pct * 0.5) + (hands_act_pct * 0.5)
+    hidden_penalty = max(0.0, (30.0 - hands_vis_pct) * 1.0) if hands_vis_pct < 30.0 else 0.0
+    gesticulation_score = max(0.0, base_gesticulation - hidden_penalty)
+
+    # 3. Ponderación VISUM (40% contacto, 30% postura/estabilidad, 30% gesticulación)
+    raw_expression = (
+        (eye_pct * 0.40) +
+        (body_stability_final * 0.30) +
+        (gesticulation_score * 0.30)
+    )
+
+    # Techo de contención: si manos están ausentes (<10%), el área no puede superar 45 pts
+    if hands_vis_pct < 10.0:
+        final_expression_score = min(45.0, raw_expression)
+    else:
+        final_expression_score = raw_expression
+
+    return {
+        "score": round(max(0.0, min(100.0, final_expression_score)), 2),
+        "metrics": {
+            "contacto_visual_pct": eye_pct,
+            "estabilidad_postural": round(body_stability_final, 2),
+            "manos_visibles_pct": hands_vis_pct,
+            "gesticulacion_activa_pct": hands_act_pct,
+            "balanceo_torso_std": sway_std,
+            "penalizacion_manos_ocultas": round(hidden_penalty, 2)
+        }
+    }
 
 
 def _descargar_modelo_si_no_existe(ruta_modelo: Path, url: str) -> str:
@@ -215,6 +269,66 @@ class EvaluadorExpresionVideo:
 
         return indice_tension_frame, es_parpadeo, detalles_tension
 
+    def _evaluar_gesticulacion(
+        self,
+        pose_landmarks
+    ) -> Tuple[bool, bool, bool, float, float, float, float, str]:
+        """
+        Variables operacionales VISUM (Gesticulación y Estabilidad Corporal):
+        1. Visibilidad de manos: proporción de frames donde muñecas/manos están dentro del encuadre (visibility > 0.5)
+        2. Zona de gesticulación ilustrativa: muñecas ubicadas por encima de la cadera (y < hip_avg_y)
+        3. Inclinación de hombros: simetría postural (shoulder_slope = abs(l_shoulder.y - r_shoulder.y))
+        4. Centro gravitacional del torso (X): torso_center_x = (l_shoulder.x + r_shoulder.x) / 2.0
+        """
+        pose_detected = False
+        hands_visible = False
+        hands_active = False
+        shoulder_slope = 0.0
+        torso_center_x = 0.5
+        l_vis = 0.0
+        r_vis = 0.0
+        detalle = "pose_no_detectada"
+
+        if pose_landmarks and len(pose_landmarks) > 0:
+            p = pose_landmarks[0]
+            if len(p) > max(HIP_LEFT, HIP_RIGHT):
+                pose_detected = True
+                l_shoulder = p[SHOULDER_LEFT]
+                r_shoulder = p[SHOULDER_RIGHT]
+                l_wrist = p[WRIST_LEFT]
+                r_wrist = p[WRIST_RIGHT]
+                l_hip = p[HIP_LEFT]
+                r_hip = p[HIP_RIGHT]
+
+                # Inclinación de hombros (simetría postural)
+                shoulder_slope = abs(l_shoulder.y - r_shoulder.y)
+
+                # Centro gravitacional del torso (eje X)
+                torso_center_x = (l_shoulder.x + r_shoulder.x) / 2.0
+
+                # Visibilidad de manos (threshold de confianza > 0.5)
+                l_vis = getattr(l_wrist, "visibility", 0.0) or 0.0
+                r_vis = getattr(r_wrist, "visibility", 0.0) or 0.0
+                l_visible = l_vis > 0.5
+                r_visible = r_vis > 0.5
+                hands_visible = l_visible or r_visible
+
+                # Zona activa de gesticulación (muñecas ubicadas por encima de la cadera)
+                # En coordenadas normalizadas MediaPipe, y=0 es el borde superior, y=1 el inferior
+                hip_avg_y = (l_hip.y + r_hip.y) / 2.0
+                l_active = l_visible and (l_wrist.y < hip_avg_y)
+                r_active = r_visible and (r_wrist.y < hip_avg_y)
+                hands_active = l_active or r_active
+
+                if hands_active:
+                    detalle = "gesticulacion_activa_plano_medio"
+                elif hands_visible:
+                    detalle = "manos_visibles_bajo_plano"
+                else:
+                    detalle = "manos_ocultas_bajo_mesa"
+
+        return pose_detected, hands_visible, hands_active, float(shoulder_slope), float(torso_center_x), float(l_vis), float(r_vis), detalle
+
     def _calcular_score_expresion(
         self,
         contacto_pct: float,
@@ -286,19 +400,43 @@ class EvaluadorExpresionVideo:
         if total_frames == 0:
             return {
                 "total_frames_analizados": 0,
+                "score_area_expresion": 0.0,
+                "visum_summary": {
+                    "eye_contact_pct": 0.0,
+                    "hands_visible_pct": 0.0,
+                    "hands_active_pct": 0.0,
+                    "shoulder_stability_score": 0.0,
+                    "body_sway_std": 0.0,
+                    "total_frames_analyzed": 0
+                },
+                "evaluacion_expresion_visum": {
+                    "score": 0.0,
+                    "metrics": {
+                        "contacto_visual_pct": 0.0,
+                        "estabilidad_postural": 0.0,
+                        "manos_visibles_pct": 0.0,
+                        "gesticulacion_activa_pct": 0.0,
+                        "balanceo_torso_std": 0.0
+                    }
+                },
                 "metricas_ejes": {
                     "contacto_visual_porcentaje": 0.0,
                     "desvios_mirada_total": 0,
+                    "manos_visibles_pct": 0.0,
+                    "gesticulacion_activa_pct": 0.0,
+                    "shoulder_stability_score": 0.0,
+                    "body_sway_std": 0.0,
                     "alineacion_hombros_grados_promedio": 0.0,
                     "ladeo_cabeza_grados_promedio": 0.0,
                     "indice_tension_facial": 0.0,
                     "tasa_parpadeo_por_minuto": 0.0,
                     "estabilidad_balanceo_score": 0.0
                 },
-                "score_area_expresion": 0.0,
                 "tuplas_eventos_detectados": [],
                 "desglose_tuplas_por_eje": {
                     "desvios_mirada": [],
+                    "gesticulacion": [],
+                    "balanceo_torso": [],
                     "inclinacion_hombros": [],
                     "ladeo_cabeza": [],
                     "tension_facial": [],
@@ -310,6 +448,10 @@ class EvaluadorExpresionVideo:
         print(f"--> Analizando {total_frames} fotogramas (Intervalo: {fps} fps)...")
 
         frames_contacto_visual = 0
+        frames_manos_visibles = 0
+        frames_manos_activas = 0
+        shoulder_slopes_list = []
+        torso_x_series = []
         hombros_grados_list = []
         cabeza_grados_list = []
         tension_facial_list = []
@@ -324,6 +466,8 @@ class EvaluadorExpresionVideo:
         tuplas_tension_facial: List[Tuple[str, str, float, List[str]]] = []
         tuplas_parpadeos: List[Tuple[str, str]] = []
         tuplas_balanceo: List[Tuple[str, str, float]] = []
+        tuplas_gesticulacion: List[Tuple[str, str, str, Dict[str, Any]]] = []
+        tuplas_balanceo_torso: List[Tuple[str, str, float, str]] = []
         todas_las_tuplas: List[Tuple[Any, ...]] = []
 
         for idx, frame_path in enumerate(archivos_frames):
@@ -337,12 +481,34 @@ class EvaluadorExpresionVideo:
 
             # 1. Detección Facial (Landmarks + Blendshapes)
             face_res = self.face_landmarker.detect(mp_image)
-            # 2. Detección Postural (Pose)
+            # 2. Detección Postural y Extremidades Superiores (Pose)
             pose_res = self.pose_landmarker.detect(mp_image)
 
             face_landmarks = face_res.face_landmarks[0] if face_res.face_landmarks else None
             blendshapes = self._extraer_blendshapes_dict(face_res.face_blendshapes)
             pose_landmarks = pose_res.pose_landmarks if pose_res.pose_landmarks else None
+
+            # -------------------------------------------------------------
+            # Eje VISUM: Gesticulación y Estabilidad Corporal (MediaPipe Pose)
+            # -------------------------------------------------------------
+            pose_det, h_vis, h_act, sh_slope, torso_cx, l_vis, r_vis, det_manos = self._evaluar_gesticulacion(pose_landmarks)
+            if pose_det:
+                shoulder_slopes_list.append(sh_slope)
+                torso_x_series.append((frame_nombre, torso_cx))
+                if h_vis:
+                    frames_manos_visibles += 1
+                if h_act:
+                    frames_manos_activas += 1
+
+                # Registrar tupla de gesticulación
+                tupla_gest = (
+                    frame_nombre,
+                    "gesticulacion",
+                    det_manos,
+                    {"manos_visibles": h_vis, "manos_activas": h_act, "l_vis": round(l_vis, 2), "r_vis": round(r_vis, 2)}
+                )
+                tuplas_gesticulacion.append(tupla_gest)
+                todas_las_tuplas.append(tupla_gest)
 
             if face_landmarks:
                 # Eje 1: Contacto visual
@@ -415,14 +581,23 @@ class EvaluadorExpresionVideo:
                     todas_las_tuplas.append(tupla_parpadeo)
                 estaba_parpadeando = es_parpadeo
 
-                # Eje 4: Centro de la cara (coordenada X para balanceo lateral)
+                # Eje 4: Centro de la cara (coordenada X para balanceo de cabeza)
                 centros_cara_x.append((frame_nombre, face_landmarks[NOSE_TIP].x))
 
         # -------------------------------------------------------------
-        # Consolidación de Métricas
+        # Consolidación de Métricas VISUM
         # -------------------------------------------------------------
-        pct_contacto = round((frames_contacto_visual / total_frames) * 100.0, 1)
+        pct_contacto = round((frames_contacto_visual / total_frames) * 100.0, 2)
         desvios_mirada = total_frames - frames_contacto_visual
+
+        hands_vis_pct = round((frames_manos_visibles / total_frames) * 100.0, 2)
+        hands_act_pct = round((frames_manos_activas / total_frames) * 100.0, 2)
+
+        avg_shoulder_slope = float(np.mean(shoulder_slopes_list)) if shoulder_slopes_list else 0.0
+        shoulder_stability_score = round(max(0.0, 100.0 - (avg_shoulder_slope * 1500.0)), 2)
+
+        torso_x_vals = [tx for _, tx in torso_x_series]
+        body_sway_std = round(float(np.std(torso_x_vals)) if len(torso_x_vals) > 1 else 0.0, 4)
 
         avg_hombros = round(float(np.mean(hombros_grados_list)), 1) if hombros_grados_list else 0.0
         avg_cabeza = round(float(np.mean(cabeza_grados_list)), 1) if cabeza_grados_list else 0.0
@@ -432,14 +607,13 @@ class EvaluadorExpresionVideo:
         duracion_minutos = max(0.01, duracion_segundos / 60.0)
         tasa_parpadeo = round(float(parpadeos_totales / duracion_minutos), 1)
 
-        # Eje 4: Estabilidad y balanceo
+        # Balanceo lateral de rostro
         if len(centros_cara_x) > 1:
             valores_x = [cx for _, cx in centros_cara_x]
             sigma_x = float(np.std(valores_x))
             mean_x = float(np.mean(valores_x))
-            score_estabilidad = round(max(0.0, min(100.0, 100.0 - (sigma_x * 400.0))), 1)
+            score_estabilidad_rostro = round(max(0.0, min(100.0, 100.0 - (sigma_x * 400.0))), 1)
 
-            # Detectar frames con balanceo / desviación notable del centro (> 2 * sigma o > 0.035)
             umbral_balanceo = max(0.035, 2.0 * sigma_x)
             for f_name, cx in centros_cara_x:
                 diff = cx - mean_x
@@ -449,32 +623,57 @@ class EvaluadorExpresionVideo:
                     tuplas_balanceo.append(tupla_bal)
                     todas_las_tuplas.append(tupla_bal)
         else:
-            score_estabilidad = 100.0
+            score_estabilidad_rostro = 100.0
 
-        score_expresion = self._calcular_score_expresion(
-            contacto_pct=pct_contacto,
-            hombros_deg=avg_hombros,
-            cabeza_deg=avg_cabeza,
-            tension_idx=avg_tension,
-            parpadeo_bpm=tasa_parpadeo,
-            estabilidad_score=score_estabilidad
-        )
+        # Balanceo lateral del torso (VISUM)
+        if len(torso_x_series) > 1:
+            mean_tx = float(np.mean(torso_x_vals))
+            umbral_sway = max(0.035, 2.0 * body_sway_std)
+            for f_name, tx in torso_x_series:
+                diff_tx = tx - mean_tx
+                if abs(diff_tx) > umbral_sway:
+                    dir_sway = "desplazamiento_torso_derecha" if diff_tx > 0 else "desplazamiento_torso_izquierda"
+                    tupla_sway = (f_name, "balanceo_torso", round(diff_tx, 3), dir_sway)
+                    tuplas_balanceo_torso.append(tupla_sway)
+                    todas_las_tuplas.append(tupla_sway)
+
+        # Resumen operacional VISUM
+        visum_summary = {
+            "eye_contact_pct": pct_contacto,
+            "hands_visible_pct": hands_vis_pct,
+            "hands_active_pct": hands_act_pct,
+            "shoulder_stability_score": shoulder_stability_score,
+            "body_sway_std": body_sway_std,
+            "total_frames_analyzed": total_frames
+        }
+
+        # Ponderación oficial VISUM del área Expresión (40% contacto, 30% postura/estabilidad, 30% gesticulación)
+        evaluacion_visum = calculate_expression_area_score(visum_summary)
+        score_expresion = evaluacion_visum["score"]
 
         resultado = {
             "total_frames_analizados": total_frames,
+            "score_area_expresion": score_expresion,
+            "visum_summary": visum_summary,
+            "evaluacion_expresion_visum": evaluacion_visum,
             "metricas_ejes": {
                 "contacto_visual_porcentaje": pct_contacto,
                 "desvios_mirada_total": desvios_mirada,
+                "manos_visibles_pct": hands_vis_pct,
+                "gesticulacion_activa_pct": hands_act_pct,
+                "shoulder_stability_score": shoulder_stability_score,
+                "body_sway_std": body_sway_std,
                 "alineacion_hombros_grados_promedio": avg_hombros,
                 "ladeo_cabeza_grados_promedio": avg_cabeza,
                 "indice_tension_facial": avg_tension,
                 "tasa_parpadeo_por_minuto": tasa_parpadeo,
-                "estabilidad_balanceo_score": score_estabilidad
+                "estabilidad_balanceo_score": score_estabilidad_rostro
             },
-            "score_area_expresion": score_expresion,
             "tuplas_eventos_detectados": todas_las_tuplas,
             "desglose_tuplas_por_eje": {
                 "desvios_mirada": tuplas_desvios_mirada,
+                "gesticulacion": tuplas_gesticulacion,
+                "balanceo_torso": tuplas_balanceo_torso,
                 "inclinacion_hombros": tuplas_inclinacion_hombros,
                 "ladeo_cabeza": tuplas_ladeo_cabeza,
                 "tension_facial": tuplas_tension_facial,
