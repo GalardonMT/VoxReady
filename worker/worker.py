@@ -11,6 +11,10 @@ from openai import OpenAI
 from azure.servicebus import ServiceBusClient, AutoLockRenewer
 from azure.storage.blob import BlobServiceClient
 from core.llm_judge import LLMJudgeService
+from core.narrative_generator import generate_visum_report
+from core.vision_client import VisionClient
+from core.report_builder import calculate_expression_area_score
+from services.db_service import DatabaseService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -92,39 +96,19 @@ def split_media(video_path: str, session_tmp_dir: str):
 
 
 def analyze_vision(frame_files: list) -> dict:
-    if not VISION_URL or not frame_files:
-        return {"eye_contact_percentage": 0.0, "average_posture_score": 0.0, "frames_analyzed": 0}
+    if not frame_files:
+        return {
+            "eye_contact_percentage": 0.0,
+            "average_posture_score": 0.0,
+            "frames_analyzed": 0,
+            "hands_visible_pct": 0.0,
+            "hands_active_pct": 0.0,
+            "shoulder_stability_score": 0.0,
+            "body_sway_std": 0.0,
+        }
 
-    endpoint = f"{VISION_URL.rstrip('/')}/analyze-frame"
-    eye_contact_hits = 0
-    posture_total = 0.0
-    valid_frames = 0
-
-    for frame_path in frame_files:
-        for attempt in range(2):
-            try:
-                with open(frame_path, "rb") as f:
-                    r = requests.post(endpoint, files={"file": f}, timeout=30)
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get("face_detected"):
-                        valid_frames += 1
-                        if data.get("eye_contact"):
-                            eye_contact_hits += 1
-                        posture_total += data.get("posture_stability_score", 100.0)
-                    break
-            except Exception as e:
-                if attempt == 1:
-                    logging.warning(f"Error procesando frame {frame_path}: {e}")
-
-    eye_contact_pct = (eye_contact_hits / valid_frames * 100) if valid_frames > 0 else 0.0
-    avg_posture = (posture_total / valid_frames) if valid_frames > 0 else 0.0
-
-    return {
-        "eye_contact_percentage": round(eye_contact_pct, 2),
-        "average_posture_score": round(avg_posture, 2),
-        "frames_analyzed": valid_frames
-    }
+    client = VisionClient(base_url=VISION_URL)
+    return client.analyze_frames(frame_files)
 
 
 def evaluate_with_llm(scenario_id: str, transcript: str) -> dict:
@@ -220,6 +204,23 @@ def process_message(body: dict):
     os.makedirs(session_tmp_dir, exist_ok=True)
     local_video = os.path.join(session_tmp_dir, "input.webm")
 
+    # Inicializar servicio de base de datos
+    db_svc = None
+    db_metadata = {}
+    try:
+        db_svc = DatabaseService()
+        db_metadata = db_svc.get_active_scenario_and_rubric()
+        active_scen = db_metadata.get("scenario", {})
+        rubric_version_id = db_metadata.get("rubric_version_id")
+        # Asegurar que la sesión exista en Azure SQL
+        db_svc.ensure_session_exists(
+            session_id=session_id,
+            scenario_id=active_scen.get("scenario_id"),
+            rubric_version_id=rubric_version_id
+        )
+    except Exception as dbe:
+        logging.warning(f"Aviso al inicializar metadata de base de datos: {dbe}")
+
     try:
         download_blob(container, blob_name, local_video)
         audio_path, frame_files = split_media(local_video, session_tmp_dir)
@@ -235,29 +236,34 @@ def process_message(body: dict):
             "wpm": 128,
             "fillers_count": 2,
             "silence_pauses": 1,
-            "audio_duration_sec": 5.0
+            "audio_duration_sec": 5.0,
+            "score_fluidez": 75.0,
+            "score_diccion": 100.0,
         }
 
         # 3. LLM Juez Visum (NVIDIA NIM)
         logging.info("Ejecutando evaluación con LLM Juez Visum...")
+        active_scen = db_metadata.get("scenario", {}) if db_metadata else {}
+        pregunta = (
+            payload.get("question_text")
+            or payload.get("pregunta_periodista")
+            or "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
+        )
+        mensajes = (
+            payload.get("key_messages")
+            or payload.get("mensajes_clave")
+            or active_scen.get("key_messages")
+            or ["Nuestra prioridad es la seguridad y el restablecimiento del servicio."]
+        )
+        contexto = (
+            payload.get("scenario_description")
+            or payload.get("contexto_crisis")
+            or active_scen.get("context")
+            or "Incidente corporativo y vocería de crisis."
+        )
+
         try:
             judge_svc = LLMJudgeService()
-            pregunta = (
-                payload.get("question_text")
-                or payload.get("pregunta_periodista")
-                or "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
-            )
-            mensajes = (
-                payload.get("key_messages")
-                or payload.get("mensajes_clave")
-                or ["Nuestra prioridad es la seguridad y el restablecimiento del servicio."]
-            )
-            contexto = (
-                payload.get("scenario_description")
-                or payload.get("contexto_crisis")
-                or scenario_id
-                or "Incidente corporativo y vocería de crisis."
-            )
             reporte_juez = judge_svc.evaluate_response(
                 pregunta_periodista=pregunta,
                 mensajes_clave=mensajes,
@@ -265,7 +271,6 @@ def process_message(body: dict):
                 transcripcion_vocero=transcript
             )
             llm_metrics = reporte_juez.model_dump()
-            # Mapear claves heredadas para retrocompatibilidad con frontend existente
             llm_metrics["key_message_adherence_score"] = int(
                 reporte_juez.dimensiones.get("alineacion_mensaje_clave", {}).get("score_100", 75)
             )
@@ -278,35 +283,176 @@ def process_message(body: dict):
             llm_metrics["strengths"] = [reporte_juez.feedback.fortaleza_principal] if reporte_juez.feedback.fortaleza_principal else []
             llm_metrics["weaknesses"] = [reporte_juez.feedback.brecha_critica] if reporte_juez.feedback.brecha_critica else []
             llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
-            score_estrategico = reporte_juez.puntaje_global_100
+            score_estrategico = float(reporte_juez.puntaje_global_100)
+            score_empatia = float(reporte_juez.dimensiones.get("asertividad_hostilidad", {}).get("score_100", 75.0))
         except Exception as e:
             logging.warning(f"Evaluación con LLMJudgeService falló ({e}); usando fallback.")
             llm_metrics = evaluate_with_llm(scenario_id, transcript)
-            score_estrategico = (llm_metrics.get("key_message_adherence_score", 75) * 0.5) + (llm_metrics.get("crisis_control_score", 75) * 0.5)
+            score_estrategico = float((llm_metrics.get("key_message_adherence_score", 75) * 0.5) + (llm_metrics.get("crisis_control_score", 75) * 0.5))
+            score_empatia = 75.0
 
-        # Score global compuesto
-        score_visual = (vision_metrics["eye_contact_percentage"] * 0.6) + (vision_metrics["average_posture_score"] * 0.4)
-        score_verbal = 80.0
-        score_global = round((score_visual * 0.25) + (score_verbal * 0.35) + (score_estrategico * 0.40), 1)
+        # Puntuaciones por área de evaluación (4 Ejes Oficiales de Rúbrica)
+        # Expresión (VISUM: 40% contacto visual, 30% estabilidad postural, 30% gesticulación)
+        vision_summary = vision_metrics.get("summary") or vision_metrics
+        if any(k in vision_summary for k in ["hands_visible_pct", "body_sway_std", "shoulder_stability_score"]):
+            expression_eval = calculate_expression_area_score(vision_summary)
+            score_visual = expression_eval["score"]
+        else:
+            score_visual = round(float((vision_metrics.get("eye_contact_percentage", 0.0) * 0.6) + (vision_metrics.get("average_posture_score", 100.0) * 0.4)), 1)
 
+        score_verbal = 75.0
+        # Expresión 25%, Voz 25%, Coherencia/Contenido 35%, Empatía 15%
+        score_global = round(
+            (score_visual * 0.25) +
+            (score_verbal * 0.25) +
+            (score_estrategico * 0.35) +
+            (score_empatia * 0.15),
+            1
+        )
+
+        area_scores_map = {
+            "expression": int(round(score_visual)),
+            "voice": int(round(score_verbal)),
+            "coherence": int(round(score_estrategico)),
+            "empathy": int(round(score_empatia)),
+        }
+
+        # 4. Generación Narrativa Ejecutiva VISUM (Segunda llamada a NVIDIA NIM)
+        logging.info("Generando Informe Ejecutivo Narrativo VISUM con NVIDIA NIM...")
+        visum_narrative = {}
+        try:
+            api_key = (NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY") or "").strip()
+            client_visum = OpenAI(
+                base_url=NVIDIA_BASE_URL.rstrip("/").rstrip("/chat/completions"),
+                api_key=api_key or "test-key",
+                timeout=120.0
+            )
+            scenario_meta = {
+                "title": active_scen.get("title") or payload.get("scenario_title") or "Crisis Institucional",
+                "context": contexto,
+                "optics": active_scen.get("optics") or "empática, institucional y de control operativo",
+                "key_messages": mensajes,
+                "red_lines": ["No especular sobre causas no confirmadas ni desviar la responsabilidad institucional."]
+            }
+            consolidated_intermediate = {
+                "score_global": score_global,
+                "transcript": transcript,
+                "evaluacion_areas": {
+                    "expresion": {
+                        "score": score_visual,
+                        "contacto_visual_pct": vision_summary.get("eye_contact_pct", vision_metrics.get("eye_contact_percentage", 80.0)),
+                        "postura_score": vision_summary.get("shoulder_stability_score", vision_metrics.get("average_posture_score", 90.0)),
+                        "manos_visibles_pct": vision_summary.get("hands_visible_pct", 0.0),
+                        "gesticulacion_activa_pct": vision_summary.get("hands_active_pct", 0.0),
+                        "balanceo_torso_std": vision_summary.get("body_sway_std", 0.0),
+                    },
+                    "tono_voz": {
+                        "score": score_verbal,
+                        "wpm": audio_metrics.get("wpm", 130),
+                        "muletillas_count": audio_metrics.get("fillers_count", 0)
+                    },
+                    "contenido": {
+                        "score": score_estrategico,
+                        "adherencia_mensajes": llm_metrics.get("key_message_adherence_score", 80)
+                    },
+                    "empatia": {
+                        "score": score_empatia,
+                        "bridging_detectado": llm_metrics.get("bridging_detected", True)
+                    }
+                }
+            }
+            visum_narrative = generate_visum_report(
+                client=client_visum,
+                model_name=LLM_MODEL,
+                scenario_info=scenario_meta,
+                consolidated_json=consolidated_intermediate
+            )
+            logging.info("Informe narrativo VISUM generado exitosamente.")
+        except Exception as ve:
+            logging.error(f"Fallo al generar informe VISUM ({ve}); usando estructura estructurada de respaldo.")
+            visum_narrative = {
+                "sintesis_ejecutiva": {
+                    "diagnostico_general": "Desempeño consistente con control de crisis y apego a mensajes fundamentales.",
+                    "fortaleza_principal": "Seguridad en la postura y templanza en el tono comunicacional.",
+                    "foco_desarrollo": "Transitar de la respuesta defensiva a la conducción pedagógica de la entrevista.",
+                    "continuidad_recomendada": "Profundizar en técnicas de bridging y manejo de interrupciones."
+                },
+                "desempeno_observado": {
+                    "evaluacion_general": "El vocero contuvo la presión del medio y transmitió tranquilidad institucional.",
+                    "fortalezas": llm_metrics.get("strengths", ["Control del mensaje"]),
+                    "oportunidades_desarrollo": llm_metrics.get("weaknesses", ["Agilidad en la respuesta"]),
+                    "formula_practica_recomendada": "Secuencia en 3 pasos: Reconocer el impacto -> Explicar certezas -> Acciones en curso."
+                },
+                "hallazgos_transversales": [
+                    {"prioridad": "Conducción estratégica", "descripcion": "Mantener el foco en las soluciones operativas."}
+                ],
+                "recomendaciones_proximas_vocerias": [
+                    "Validar la empatía con los afectados antes de entregar detalles técnicos.",
+                    "Sostener contacto visual firme al declarar el compromiso institucional."
+                ],
+                "observacion_senal_cruzada": "Sinergia positiva entre el contacto visual directo y la afirmación de seguridad."
+            }
+
+        # 5. Persistencia Transaccional en Azure SQL
+        report_id = None
+        if db_svc and db_metadata.get("rubric_version_id"):
+            try:
+                report_id = db_svc.finalize_session_analysis(
+                    session_id=session_id,
+                    overall_score=int(round(score_global)),
+                    visum_report=visum_narrative,
+                    area_scores=area_scores_map,
+                    rubric_version_id=db_metadata["rubric_version_id"],
+                    rubric_areas=db_metadata.get("rubric_areas", {})
+                )
+                logging.info(f"Reporte y puntajes persistidos en Azure SQL con ID: {report_id}")
+            except Exception as dbe:
+                logging.error(f"No se pudo persistir en Azure SQL: {dbe}")
+
+        # 6. Payload consolidado completo para Azure Blob Storage
         consolidated_report = {
             "session_id": session_id,
+            "report_id": report_id,
             "processed_at": datetime.now(timezone.utc).isoformat(),
+            "overallScore": int(round(score_global)),
             "puntuacion_global": {
                 "score_general": score_global,
                 "score_comunicacion_no_verbal": round(score_visual, 1),
                 "score_comunicacion_verbal": score_verbal,
-                "score_estrategia_crisis": round(score_estrategico, 1)
+                "score_estrategia_crisis": round(score_estrategico, 1),
+                "score_empatia": round(score_empatia, 1),
+                "areas": area_scores_map
             },
+            "areaScores": [
+                {"area": "expression", "value": area_scores_map["expression"]},
+                {"area": "voice", "value": area_scores_map["voice"]},
+                {"area": "coherence", "value": area_scores_map["coherence"]},
+                {"area": "empathy", "value": area_scores_map["empathy"]}
+            ],
+            "narrative": {
+                "strengths": visum_narrative.get("desempeno_observado", {}).get("fortalezas", []),
+                "improvements": visum_narrative.get("desempeno_observado", {}).get("oportunidades_desarrollo", []),
+                "crossSignal": visum_narrative.get("observacion_senal_cruzada", ""),
+                "visum": visum_narrative
+            },
+            "informe_ejecutivo_visum": visum_narrative,
             "metrics": {
                 "vision": vision_metrics,
                 "audio": audio_metrics,
                 "judge": llm_metrics
-            }
+            },
+            "transcript": transcript
         }
 
         upload_report_to_blob(session_id, consolidated_report)
-        logging.info(f"Reporte consolidado generado con éxito para {session_id}: {json.dumps(consolidated_report)}")
+        logging.info(f"Reporte consolidado generado con éxito para {session_id}")
+    except Exception as e:
+        if db_svc:
+            try:
+                db_svc.update_session_status(session_id, "failed")
+            except Exception:
+                pass
+        raise e
     finally:
         shutil.rmtree(session_tmp_dir, ignore_errors=True)
         logging.info(f"Directorio temporal limpiado: {session_tmp_dir}")
