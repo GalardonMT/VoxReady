@@ -7,7 +7,7 @@ if _worker_dir not in sys.path:
     sys.path.insert(0, _worker_dir)
 
 from fastapi import FastAPI, BackgroundTasks, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, Optional
 try:
     from core.pipeline_orchestrator import process_session_pipeline
@@ -28,10 +28,30 @@ app = FastAPI(
 
 
 class TurnInterval(BaseModel):
-    questionId: str
-    sequenceNo: int
-    startMs: int
-    endMs: int
+    questionId: str = "q"
+    sequenceNo: int = 1
+    startMs: int = 0
+    endMs: int = 0
+
+    @field_validator("startMs", mode="before")
+    @classmethod
+    def parse_start_ms(cls, v):
+        if v is None:
+            return 0
+        try:
+            return int(round(float(v)))
+        except (ValueError, TypeError):
+            return 0
+
+    @field_validator("endMs", mode="before")
+    @classmethod
+    def parse_end_ms(cls, v):
+        if v is None:
+            return 0
+        try:
+            return int(round(float(v)))
+        except (ValueError, TypeError):
+            return 0
 
 
 class JobRequest(BaseModel):

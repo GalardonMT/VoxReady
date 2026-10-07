@@ -201,12 +201,18 @@ export const sessionService = {
     questionMarks: QuestionMark[] = []
   ): Promise<boolean> {
     const finalBlobName = blobName || `recordings/${sessionId}.webm`;
-    const turns = questionMarks.map((qm, idx) => ({
-      questionId: `q-${qm.questionIndex + 1}`,
-      sequenceNo: idx + 1,
-      startMs: qm.startMs,
-      endMs: qm.endMs ?? qm.startMs + 5000
-    }));
+    const turns = questionMarks.map((qm, idx) => {
+      const start = Math.round(Number(qm.startMs) || 0);
+      const end = Math.round(
+        Number(qm.endMs !== null && qm.endMs !== undefined ? qm.endMs : start + 5000)
+      );
+      return {
+        questionId: `q-${qm.questionIndex + 1}`,
+        sequenceNo: idx + 1,
+        startMs: start,
+        endMs: Math.max(end, start + 1000)
+      };
+    });
 
     try {
       await apiFetch(`/api/sessions/${sessionId}/finish`, {

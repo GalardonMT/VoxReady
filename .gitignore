@@ -100,8 +100,10 @@ reporte_*.json
 
 # Modelos pesados de MediaPipe y Vision
 *.task
-models/
-**/models/
+voxready-vision/models/
+worker/models/
+lab-worker/models/
+!frontend/public/models/
 python-clients/
 **/python-clients/
 

@@ -1,13 +1,33 @@
 # backend/schemas/session.py
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TurnInterval(BaseModel):
-    questionId: str
-    sequenceNo: int
-    startMs: int
-    endMs: int
+    questionId: str = "q"
+    sequenceNo: int = 1
+    startMs: int = 0
+    endMs: int = 0
+
+    @field_validator("startMs", mode="before")
+    @classmethod
+    def parse_start_ms(cls, v):
+        if v is None:
+            return 0
+        try:
+            return int(round(float(v)))
+        except (ValueError, TypeError):
+            return 0
+
+    @field_validator("endMs", mode="before")
+    @classmethod
+    def parse_end_ms(cls, v):
+        if v is None:
+            return 0
+        try:
+            return int(round(float(v)))
+        except (ValueError, TypeError):
+            return 0
 
 
 class FinishSessionRequest(BaseModel):
