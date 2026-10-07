@@ -20,6 +20,9 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [report, setReport] = useState<CoachReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [videoUrl, setVideoUrl] = useState<string>('');
+  const [videoLoading, setVideoLoading] = useState(false);
+  const [videoError, setVideoError] = useState<string>('');
 
   useEffect(() => {
     async function loadReport() {
@@ -191,7 +194,24 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
         <button
           type="button"
           className="btn"
-          onClick={() => setShowVideoModal(true)}
+          onClick={async () => {
+            setShowVideoModal(true);
+            setVideoLoading(true);
+            setVideoError('');
+            setVideoUrl('');
+            try {
+              const url = await sessionService.getPlaybackUrl(sessionId);
+              if (url) {
+                setVideoUrl(url);
+              } else {
+                setVideoError('La grabación no está disponible. Es posible que el almacenamiento no esté configurado o que la grabación no se haya completado.');
+              }
+            } catch {
+              setVideoError('Error al obtener la URL de reproducción. Intente nuevamente.');
+            } finally {
+              setVideoLoading(false);
+            }
+          }}
         >
           {d.watch}
         </button>
@@ -211,60 +231,189 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
         </button>
       </div>
 
-      {/* Modal de Video */}
+      {/* Modal de Video con Reproductor Real */}
       {showVideoModal && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.85)',
+            background: 'rgba(0, 0, 0, 0.88)',
             zIndex: 100,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '20px'
+            padding: '20px',
+            backdropFilter: 'blur(4px)'
           }}
           onClick={() => setShowVideoModal(false)}
         >
           <div
             style={{
-              background: 'var(--panel)',
-              borderRadius: '12px',
-              border: '1px solid var(--line)',
-              padding: '24px',
-              maxWidth: '640px',
+              background: '#1a1a2e',
+              borderRadius: '16px',
+              border: '1px solid rgba(255,255,255,0.1)',
+              padding: '0',
+              maxWidth: '780px',
               width: '100%',
-              textAlign: 'center'
+              overflow: 'hidden',
+              boxShadow: '0 25px 60px rgba(0,0,0,0.5)'
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ fontSize: '17px', fontWeight: 700, marginBottom: '8px' }}>
-              Grabación en Azure Blob Storage
-            </h3>
-            <p style={{ fontSize: '13px', color: 'var(--muted)', marginBottom: '16px' }}>
-              Ubicación segura: <code>recordings/{sessionId}.webm</code>
-            </p>
+            {/* Cabecera del modal */}
             <div
               style={{
-                aspectRatio: '16/9',
-                background: '#000',
-                borderRadius: '8px',
                 display: 'flex',
+                justifyContent: 'space-between',
                 alignItems: 'center',
-                justifyContent: 'center',
-                color: '#94a3b8',
-                marginBottom: '18px'
+                padding: '18px 24px',
+                borderBottom: '1px solid rgba(255,255,255,0.08)'
               }}
             >
-              🎬 Video archivado en Azure Blob Storage (Zero-Proxy)
+              <div>
+                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#f1f5f9', margin: 0 }}>
+                  🎬 Mi Grabación
+                </h3>
+                <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0 0' }}>
+                  Sesión: <code style={{ color: '#818cf8' }}>{sessionId}</code>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowVideoModal(false)}
+                style={{
+                  background: 'rgba(255,255,255,0.08)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: '8px',
+                  width: '36px',
+                  height: '36px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  color: '#94a3b8',
+                  fontSize: '18px',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.15)'; e.currentTarget.style.color = '#f1f5f9'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#94a3b8'; }}
+              >
+                ✕
+              </button>
             </div>
-            <button
-              type="button"
-              className="btn pri"
-              onClick={() => setShowVideoModal(false)}
+
+            {/* Área del reproductor */}
+            <div style={{ padding: '0' }}>
+              {videoLoading && (
+                <div
+                  style={{
+                    aspectRatio: '16/9',
+                    background: '#0f0f23',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '12px'
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '40px',
+                      height: '40px',
+                      border: '3px solid rgba(129, 140, 248, 0.2)',
+                      borderTopColor: '#818cf8',
+                      borderRadius: '50%',
+                      animation: 'spin 0.8s linear infinite'
+                    }}
+                  />
+                  <span style={{ color: '#94a3b8', fontSize: '13px' }}>Cargando grabación...</span>
+                  <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                </div>
+              )}
+
+              {!videoLoading && videoError && (
+                <div
+                  style={{
+                    aspectRatio: '16/9',
+                    background: '#0f0f23',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '12px',
+                    padding: '24px'
+                  }}
+                >
+                  <span style={{ fontSize: '36px' }}>⚠️</span>
+                  <p style={{ color: '#f87171', fontSize: '13px', textAlign: 'center', maxWidth: '400px', lineHeight: 1.5 }}>
+                    {videoError}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ marginTop: '8px', fontSize: '12px', color: '#818cf8', borderColor: '#818cf8' }}
+                    onClick={async () => {
+                      setVideoLoading(true);
+                      setVideoError('');
+                      try {
+                        const url = await sessionService.getPlaybackUrl(sessionId);
+                        if (url) {
+                          setVideoUrl(url);
+                        } else {
+                          setVideoError('La grabación no está disponible.');
+                        }
+                      } catch {
+                        setVideoError('Error al obtener la URL de reproducción.');
+                      } finally {
+                        setVideoLoading(false);
+                      }
+                    }}
+                  >
+                    🔄 Reintentar
+                  </button>
+                </div>
+              )}
+
+              {!videoLoading && !videoError && videoUrl && (
+                <video
+                  controls
+                  autoPlay
+                  playsInline
+                  style={{
+                    width: '100%',
+                    display: 'block',
+                    background: '#000',
+                    maxHeight: '480px'
+                  }}
+                >
+                  <source src={videoUrl} type="video/webm" />
+                  Tu navegador no soporta la reproducción de video.
+                </video>
+              )}
+            </div>
+
+            {/* Pie del modal */}
+            <div
+              style={{
+                padding: '14px 24px',
+                borderTop: '1px solid rgba(255,255,255,0.08)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}
             >
-              Cerrar
-            </button>
+              <span style={{ fontSize: '11px', color: '#475569' }}>
+                Almacenamiento seguro · Azure Blob Storage · URL válida por 60 min
+              </span>
+              <button
+                type="button"
+                className="btn pri"
+                style={{ fontSize: '13px', padding: '8px 20px' }}
+                onClick={() => setShowVideoModal(false)}
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}
