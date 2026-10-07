@@ -142,7 +142,7 @@ export const sessionService = {
   /**
    * Solicita una URL firmada SAS de Azure Blob Storage para subida directa (Zero-Proxy)
    */
-  async getUploadUrl(sessionId: string, extension: string = 'webm'): Promise<RecordingUrlResponse> {
+  async getUploadUrl(sessionId: string, _extension: string = 'webm'): Promise<RecordingUrlResponse> {
     try {
       const res = await apiFetch<{ upload_url: string; blob_name: string }>(
         `/api/sessions/${sessionId}/upload-url`,
@@ -150,7 +150,7 @@ export const sessionService = {
       );
       return {
         uploadUrl: res.upload_url,
-        blobPath: res.blob_name,
+        blobPath: res.blob_name || `recordings/${sessionId}.webm`,
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         maxSizeBytes: 524288000
       };
@@ -158,7 +158,7 @@ export const sessionService = {
       if (isAccessError(err)) throw err;
       return {
         uploadUrl: `/api/sessions/${sessionId}/upload-url`,
-        blobPath: `recordings/${sessionId}.${extension}`,
+        blobPath: `recordings/${sessionId}.webm`,
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         maxSizeBytes: 524288000
       };
@@ -200,13 +200,23 @@ export const sessionService = {
     tenantId: string = 'tenant-voxready-dev',
     questionMarks: QuestionMark[] = []
   ): Promise<boolean> {
+    const finalBlobName = blobName || `recordings/${sessionId}.webm`;
+    const turns = questionMarks.map((qm, idx) => ({
+      questionId: `q-${qm.questionIndex + 1}`,
+      sequenceNo: idx + 1,
+      startMs: qm.startMs,
+      endMs: qm.endMs ?? qm.startMs + 5000
+    }));
+
     try {
       await apiFetch(`/api/sessions/${sessionId}/finish`, {
         method: 'POST',
         body: JSON.stringify({
-          video_blob_name: blobName,
+          blobPath: finalBlobName,
+          video_blob_name: finalBlobName,
           scenario_id: scenarioId,
           tenant_id: tenantId,
+          turns: turns,
           question_marks: questionMarks
         })
       });

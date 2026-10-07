@@ -6,10 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencias del sistema requeridas por MediaPipe y OpenCV (incluye libgl1 para libGL.so.1)
+# Dependencias del sistema requeridas por MediaPipe (EGL, GL) y OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    libegl1 \
+    libgles2 \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \

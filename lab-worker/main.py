@@ -9,6 +9,21 @@ from typing import Dict, Optional, Union
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUTS_DIR = BASE_DIR / "outputs"
 
+# Cargar automáticamente variables de entorno desde .env si existe
+env_file = BASE_DIR / ".env"
+if env_file.exists():
+    with open(env_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip().lstrip('\ufeff')
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip().lstrip('\ufeff')
+                v = v.strip().strip('"').strip("'")
+                os.environ[k] = v
+
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 
 def _cargar_modulo(nombre: str, ruta_relativa: str):
     ruta = BASE_DIR / ruta_relativa
@@ -71,6 +86,7 @@ def preparar_directorio_salida(
         "video_metrics_json_path": video_output_dir / "metricas_video.json",
         "voice_metrics_json_path": video_output_dir / "metricas_voz.json",
         "judge_metrics_json_path": video_output_dir / "metricas_juez.json",
+        "visum_report_json_path": video_output_dir / "informe_visum.json",
     }
 
 
@@ -179,7 +195,109 @@ def procesar_video_completo(
         except Exception as e:
             print(f"[AVISO] No se pudo procesar la evaluacion del LLM Juez ({type(e).__name__}): {e}")
 
-    # Paso 5: Construir Payload Consolidado Final
+    # Paso 5: Generar Informe Narrativo Ejecutivo VISUM (Llamada 2 a NVIDIA NIM)
+    resultado_visum = None
+    if evaluar_juez_llm:
+        try:
+            from core.narrative_generator import generate_visum_report
+            from openai import OpenAI
+            print("[INFO] Generando Informe Ejecutivo Narrativo VISUM con NVIDIA NIM...")
+            nvidia_key = (os.environ.get("NVIDIA_API_KEY") or (modulo_voice.API_KEY if modulo_voice and hasattr(modulo_voice, "API_KEY") else "") or "").strip()
+            nvidia_base_url = (os.environ.get("NVIDIA_BASE_URL") or "https://integrate.api.nvidia.com/v1").strip()
+            model_name = os.environ.get("LLM_MODEL_NAME") or "meta/llama-3.2-11b-vision-instruct"
+
+            client_visum = OpenAI(base_url=nvidia_base_url, api_key=nvidia_key or "test-key", timeout=120.0)
+
+            scenario_meta = {
+                "title": contexto_crisis or "Simulación de Vocería en Crisis",
+                "context": contexto_crisis or "Incidente corporativo y vocería de crisis.",
+                "optics": "empática, institucional y de control operativo",
+                "key_messages": mensajes_clave or ["Nuestra máxima prioridad es la seguridad y el restablecimiento del servicio."],
+                "red_lines": ["No especular sobre causas no confirmadas ni desviar la responsabilidad institucional."]
+            }
+
+            # Extracción precisa de métricas multimodales de video y audio (sin pisos artificiales de 75/80)
+            score_expresion = float(resultado_video.get("score_area_expresion", 50.0))
+            metricas_ejes = resultado_video.get("metricas_ejes", {})
+            contacto_visual_val = float(metricas_ejes.get("contacto_visual_porcentaje", 0.0))
+            postura_val = float(metricas_ejes.get("shoulder_stability_score", metricas_ejes.get("estabilidad_balanceo_score", 50.0)))
+            manos_visibles_val = float(metricas_ejes.get("manos_visibles_pct", 0.0))
+            gesticulacion_activa_val = float(metricas_ejes.get("gesticulacion_activa_pct", 0.0))
+            sway_torso_val = float(metricas_ejes.get("body_sway_std", 0.0))
+
+            audio_metrics = resultado_audio.get("metrics", {}) if resultado_audio else {}
+            score_voz = float(audio_metrics.get("score_fluidez", 50.0))
+            wpm_val = float(audio_metrics.get("wpm_global", audio_metrics.get("wpm", 130.0)))
+            muletillas_cnt = len(audio_metrics.get("muletillas_detectadas", [])) if "muletillas_detectadas" in audio_metrics else int(audio_metrics.get("cantidad_muletillas", 0))
+
+            score_contenido = float(resultado_juez.get("puntaje_global_100", 50.0)) if resultado_juez else 50.0
+            dimensiones_juez = resultado_juez.get("dimensiones", {}) if resultado_juez else {}
+            adherencia_val = float(dimensiones_juez.get("alineacion_mensaje_clave", {}).get("score_100", 50.0)) if dimensiones_juez else 50.0
+            score_empatia = float(dimensiones_juez.get("asertividad_hostilidad", {}).get("score_100", 50.0)) if "asertividad_hostilidad" in dimensiones_juez else 50.0
+            tecnicas_ctrl = dimensiones_juez.get("tecnicas_control", {}).get("tecnicas_detectadas", []) if dimensiones_juez else []
+            bridging_val = len(tecnicas_ctrl) > 0
+
+            # Ponderación oficial de 4 áreas (Expresión 25%, Voz 25%, Coherencia/Contenido 35%, Empatía 15%)
+            score_global_calculado = round(
+                (0.25 * score_expresion) +
+                (0.25 * score_voz) +
+                (0.35 * score_contenido) +
+                (0.15 * score_empatia),
+                1
+            )
+
+            consolidado_intermedio = {
+                "score_global": score_global_calculado,
+                "transcripcion": transcripcion,
+                "evaluacion_areas": {
+                    "expresion": {
+                        "score": score_expresion,
+                        "contacto_visual_pct": contacto_visual_val,
+                        "estabilidad_postural": postura_val,
+                        "manos_visibles_pct": manos_visibles_val,
+                        "gesticulacion_activa_pct": gesticulacion_activa_val,
+                        "balanceo_torso_std": sway_torso_val
+                    },
+                    "tono_voz": {
+                        "score": score_voz,
+                        "wpm": wpm_val,
+                        "muletillas_count": muletillas_cnt
+                    },
+                    "contenido": {
+                        "score": score_contenido,
+                        "adherencia_mensajes": adherencia_val
+                    },
+                    "empatia": {
+                        "score": score_empatia,
+                        "bridging_detectado": bridging_val
+                    }
+                }
+            }
+
+            resultado_visum = generate_visum_report(
+                client=client_visum,
+                model_name=model_name,
+                scenario_info=scenario_meta,
+                consolidated_json=consolidado_intermedio
+            )
+
+            with open(rutas["visum_report_json_path"], "w", encoding="utf-8") as f:
+                json.dump(resultado_visum, f, indent=2, ensure_ascii=False)
+            print(f"[OK] Informe Ejecutivo Narrativo VISUM guardado en: {rutas['visum_report_json_path'].name}")
+        except Exception as e:
+            print(f"[AVISO] No se pudo generar el informe narrativo VISUM ({type(e).__name__}): {e}")
+
+    # Paso 6: Construir Payload Consolidado Final
+    puntuacion_final = {
+        "score_global": score_global_calculado if 'score_global_calculado' in locals() else (resultado_juez.get("puntaje_global_100") if resultado_juez else resultado_video.get("score_area_expresion", 75.0)),
+        "areas": {
+            "expresion": score_expresion if 'score_expresion' in locals() else resultado_video.get("score_area_expresion", 0.0),
+            "voz": score_voz if 'score_voz' in locals() else (resultado_audio.get("metrics", {}).get("score_fluidez") if resultado_audio else None),
+            "contenido": score_contenido if 'score_contenido' in locals() else (resultado_juez.get("puntaje_global_100") if resultado_juez else None),
+            "empatia": score_empatia if 'score_empatia' in locals() else None,
+        }
+    }
+
     payload_consolidado = {
         "video_origen": str(video_path),
         "fecha_procesamiento": datetime.datetime.now().isoformat(),
@@ -190,18 +308,29 @@ def procesar_video_completo(
             "json_metricas_video": str(rutas["video_metrics_json_path"]),
             "json_metricas_voz": str(rutas["voice_metrics_json_path"]) if resultado_audio else None,
             "json_metricas_juez": str(rutas["judge_metrics_json_path"]) if resultado_juez else None,
+            "json_informe_visum": str(rutas["visum_report_json_path"]) if resultado_visum else None,
             "json_consolidado": str(rutas["consolidated_json_path"])
         },
+        "puntuacion_global": puntuacion_final,
         "resumen_ejecutivo": {
-            "total_frames_analizados": resultado_video.get("total_frames_analizados", 0),
-            "score_expresion_video": resultado_video.get("score_area_expresion", 0.0),
-            "score_fluidez_voz": resultado_audio.get("metrics", {}).get("score_fluidez") if resultado_audio else None,
+            "score_global": puntuacion_final["score_global"],
+            "score_expresion_video": puntuacion_final["areas"]["expresion"],
+            "contacto_visual_pct": float(resultado_video.get("visum_summary", {}).get("eye_contact_pct", 0.0)),
+            "manos_visibles_pct": float(resultado_video.get("visum_summary", {}).get("hands_visible_pct", 0.0)),
+            "gesticulacion_activa_pct": float(resultado_video.get("visum_summary", {}).get("hands_active_pct", 0.0)),
+            "estabilidad_postural_score": float(resultado_video.get("visum_summary", {}).get("shoulder_stability_score", 0.0)),
+            "balanceo_torso_std": float(resultado_video.get("visum_summary", {}).get("body_sway_std", 0.0)),
+            "score_fluidez_voz": puntuacion_final["areas"]["voz"],
             "score_diccion_voz": resultado_audio.get("metrics", {}).get("score_diccion") if resultado_audio else None,
-            "score_global_juez_llm": resultado_juez.get("puntaje_global_100") if resultado_juez else None,
+            "score_contenido_juez": puntuacion_final["areas"]["contenido"],
+            "score_empatia": puntuacion_final["areas"]["empatia"],
+            "diagnostico_visum": resultado_visum.get("sintesis_ejecutiva", {}).get("diagnostico_general") if resultado_visum else None,
+            "formula_visum": resultado_visum.get("desempeno_observado", {}).get("formula_practica_recomendada") if resultado_visum else None,
         },
         "metricas_video": resultado_video,
         "metricas_audio": resultado_audio.get("metrics") if resultado_audio else None,
         "metricas_juez": resultado_juez,
+        "informe_ejecutivo_visum": resultado_visum,
         "transcripcion": transcripcion or None
     }
 
