@@ -88,6 +88,12 @@ const DEFAULT_ANALYSIS_STEPS: MultimodalAnalysisStep[] = [
   { id: 'fusion', label: 'Fusión multimodal e índice de empatía', status: 'done' }
 ];
 
+export interface QuestionMark {
+  questionIndex: number;
+  startMs: number;
+  endMs: number | null;
+}
+
 export const sessionService = {
   /**
    * Crea una nueva sesión en el backend
@@ -136,7 +142,7 @@ export const sessionService = {
   /**
    * Solicita una URL firmada SAS de Azure Blob Storage para subida directa (Zero-Proxy)
    */
-  async getUploadUrl(sessionId: string): Promise<RecordingUrlResponse> {
+  async getUploadUrl(sessionId: string, extension: string = 'webm'): Promise<RecordingUrlResponse> {
     try {
       const res = await apiFetch<{ upload_url: string; blob_name: string }>(
         `/api/sessions/${sessionId}/upload-url`,
@@ -148,10 +154,11 @@ export const sessionService = {
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         maxSizeBytes: 524288000
       };
-    } catch {
+    } catch (err) {
+      if (isAccessError(err)) throw err;
       return {
         uploadUrl: `/api/sessions/${sessionId}/upload-url`,
-        blobPath: `recordings/${sessionId}.webm`,
+        blobPath: `recordings/${sessionId}.${extension}`,
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         maxSizeBytes: 524288000
       };
@@ -190,7 +197,8 @@ export const sessionService = {
     sessionId: string,
     blobName: string,
     scenarioId: string = 'crisis-voceria-01',
-    tenantId: string = 'tenant-voxready-dev'
+    tenantId: string = 'tenant-voxready-dev',
+    questionMarks: QuestionMark[] = []
   ): Promise<boolean> {
     try {
       await apiFetch(`/api/sessions/${sessionId}/finish`, {
@@ -198,13 +206,15 @@ export const sessionService = {
         body: JSON.stringify({
           video_blob_name: blobName,
           scenario_id: scenarioId,
-          tenant_id: tenantId
+          tenant_id: tenantId,
+          question_marks: questionMarks
         })
       });
       return true;
     } catch (err: unknown) {
-      console.warn('Finish notification warning:', err);
-      return true;
+      if (isAccessError(err)) throw err;
+      console.warn('Finish notification error:', err);
+      throw err;
     }
   },
 

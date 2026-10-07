@@ -130,6 +130,7 @@ class FinishSessionRequest(BaseModel):
     video_blob_name: str
     scenario_id: str = "crisis-voceria-01"
     tenant_id: str = "tenant-voxready-dev"
+    question_marks: list[dict] | None = None
 
 # 5. Servicios de persistencia de usuarios (Azure SQL)
 def _normalize_sql_conn_str(conn_str: str) -> str:
