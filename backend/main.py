@@ -3,6 +3,8 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Annotated, Literal
+from pydantic import Field, StringConstraints, field_validator
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,6 +13,8 @@ from azure.servicebus import ServiceBusClient, ServiceBusMessage
 import jwt
 from jwt import PyJWKClient
 import pyodbc
+import master_topics as master_store
+import spokesperson_store
 
 # Cargar variables de entorno locales si existen
 try:
@@ -322,107 +326,30 @@ def get_current_user_profile(user: dict = Depends(verify_token)):
 @app.get("/scenarios")
 @app.get("/v1/scenarios")
 def list_scenarios(category: str = "", q: str = "", page: int = 1, pageSize: int = 20, user: dict = Depends(verify_token)):
-    items = [
-        {
-            "id": "crisis-voceria-01",
-            "title": "Retiro Masivo de Alimentos Infantiles",
-            "context": "Falla de calidad en la planta norte detectada durante control rutinario.",
-            "category": "health",
-            "audience": "Medios nacionales y familias afectadas",
-            "difficulty": "hard",
-            "estimatedMinutes": 15,
-            "questionCount": 8,
-            "languages": ["es"]
-        },
-        {
-            "id": "crisis-operativa-02",
-            "title": "Interrupción Crítica de Plataforma Transaccional",
-            "context": "Caída del sistema central afectando transacciones de clientes corporativos.",
-            "category": "operational",
-            "audience": "Clientes B2B e inversionistas",
-            "difficulty": "intermediate",
-            "estimatedMinutes": 10,
-            "questionCount": 6,
-            "languages": ["es"]
-        },
-        {
-            "id": "crisis-reputacional-03",
-            "title": "Filtración No Autorizada de Datos Internos",
-            "context": "Incidente de ciberseguridad con publicación parcial de registros confidenciales.",
-            "category": "reputational",
-            "audience": "Prensa especializada y reguladores",
-            "difficulty": "hard",
-            "estimatedMinutes": 12,
-            "questionCount": 7,
-            "languages": ["es"]
-        }
-    ]
-    if category:
-        items = [i for i in items if i["category"] == category]
-    if q:
-        items = [i for i in items if q.lower() in i["title"].lower() or q.lower() in i["context"].lower()]
-    return {
-        "items": items,
-        "page": page,
-        "pageSize": pageSize,
-        "total": len(items)
-    }
+    if page < 1 or pageSize < 1 or pageSize > 100:
+        raise HTTPException(422, "Invalid pagination")
+    return spokesperson_store.list_catalog(SQL_CONN_STR, user, category, q, page, pageSize)
 
 @app.get("/scenarios/{scenario_id}")
 @app.get("/v1/scenarios/{scenario_id}")
 def get_scenario(scenario_id: str, user: dict = Depends(verify_token)):
-    return {
-        "id": scenario_id,
-        "title": "Retiro Masivo de Alimentos Infantiles",
-        "context": "Falla de calidad en la planta norte detectada durante control rutinario.",
-        "category": "health",
-        "audience": "Medios nacionales y familias afectadas",
-        "difficulty": "hard",
-        "estimatedMinutes": 15,
-        "questionCount": 8,
-        "languages": ["es"]
-    }
+    return spokesperson_store.scenario_detail(SQL_CONN_STR, user, scenario_id)
 
 @app.post("/sessions", status_code=201)
 @app.post("/v1/sessions", status_code=201)
 @app.post("/api/sessions")
 @app.post("/v1/api/sessions")
-def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_token)):
-    sc_id = payload.scenarioId or payload.scenario_id or "crisis-voceria-01"
-    session_id = f"session-{sc_id}-{int(datetime.now(timezone.utc).timestamp())}"
-    return {
-        "sessionId": session_id,
-        "session_id": session_id,
-        "scenarioId": sc_id,
-        "scenario_id": sc_id,
-        "status": "created",
-        "questionCount": 8,
-    }
+def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_token), idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
+    scenario_id = payload.scenarioId or payload.scenario_id
+    if not scenario_id:
+        raise HTTPException(422, "scenarioId is required")
+    return spokesperson_store.create_session(SQL_CONN_STR, user, scenario_id, payload.language, idempotency_key)
 
 @app.get("/sessions/{session_id}")
 @app.get("/v1/sessions/{session_id}")
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str, user: dict = Depends(verify_token)):
-    return {
-        "sessionId": session_id,
-        "scenarioId": "crisis-voceria-01",
-        "status": "created",
-        "questions": [
-            {"id": "q1", "sequenceNo": 1, "text": "¿Cuál es la gravedad real de la falla detectada en el lote de producción?"},
-            {"id": "q2", "sequenceNo": 2, "text": "¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?"},
-            {"id": "q3", "sequenceNo": 3, "text": "¿Existe algún riesgo directo para la salud o integridad de los consumidores?"},
-            {"id": "q4", "sequenceNo": 4, "text": "¿Qué compensación inmediata recibirán los clientes perjudicados?"},
-            {"id": "q5", "sequenceNo": 5, "text": "¿Existen sanciones internas contra los responsables de la supervisión de calidad?"},
-            {"id": "q6", "sequenceNo": 6, "text": "¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?"},
-            {"id": "q7", "sequenceNo": 7, "text": "¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?"},
-            {"id": "q8", "sequenceNo": 8, "text": "Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?"}
-        ],
-        "retentionPolicy": {
-            "version": "1.0",
-            "keep": "full_recording",
-            "termDays": 30
-        }
-    }
+    return spokesperson_store.get_session(SQL_CONN_STR, user, session_id)
 
 @app.post("/sessions/{session_id}/consent")
 @app.post("/v1/sessions/{session_id}/consent")
@@ -558,4 +485,160 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         return report_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo reporte: {str(e)}")
+
+
+# Configuración maestra. Los tipos técnicos se mantienen separados de etiquetas UI.
+MasterText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+MasterTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+
+
+class MasterQuestionInput(BaseModel):
+    id: uuid.UUID | None = None
+    text: MasterText
+
+
+class MasterTopicRequest(BaseModel):
+    name: MasterTitle
+    context: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    optics: Literal['empathetic', 'formal', 'technical']
+    audience: Literal['leadership', 'frontline', 'technical']
+    keyMessages: list[MasterText] = Field(default_factory=list)
+    redLines: list[MasterText] = Field(default_factory=list)
+    questions: list[MasterQuestionInput] = Field(default_factory=list)
+
+    @field_validator('questions', mode='before')
+    @classmethod
+    def question_strings(cls, questions):
+        return [{"text": q} if isinstance(q, str) else q for q in questions] if isinstance(questions, list) else questions
+
+
+class MasterScenarioRequest(BaseModel):
+    title: MasterTitle
+    category: Literal['health', 'operational', 'reputational']
+    difficulty: Literal['basic', 'intermediate', 'hard']
+    estimatedMinutes: Annotated[int, Field(strict=True, gt=0)]
+    clientId: uuid.UUID
+    questionIds: Annotated[list[uuid.UUID], Field(min_length=1)]
+
+    @field_validator('questionIds')
+    @classmethod
+    def distinct_questions(cls, questions):
+        if len(set(questions)) != len(questions):
+            raise ValueError('No se puede seleccionar una pregunta dos veces.')
+        return questions
+
+
+class MasterStatusRequest(BaseModel):
+    status: Literal['active', 'archived']
+
+
+@app.get('/api/master/clients')
+@app.get('/v1/api/master/clients')
+def master_clients(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        cursor.execute("SELECT id,name,status FROM dbo.client WHERE status='active' AND is_deleted=0 ORDER BY name,id")
+        items = master_store.rows(cursor)
+        for item in items:
+            item['id'] = str(item['id'])
+        return {"items": items}
+
+
+@app.get('/api/master/topics')
+@app.get('/v1/api/master/topics')
+def master_topics(status: Literal['active', 'archived', 'all'] = 'active', user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        cursor.execute("""SELECT t.id,t.name,t.context,t.optics,t.audience,t.status,
+            (SELECT COUNT(*) FROM dbo.question q WHERE q.topic_id=t.id AND q.status='active' AND q.in_bank=1 AND q.is_deleted=0) AS questionCount
+            FROM dbo.topic t WHERE t.client_id IS NULL AND t.is_deleted=0 AND (?='all' OR t.status=?)
+            ORDER BY t.created_at DESC,t.id""", status, status)
+        topics = master_store.rows(cursor)
+        for topic in topics:
+            topic['id'] = str(topic['id'])
+            scenarios = master_store.scenarios_for_topic(cursor, topic['id'])
+            topic['scenarioCount'] = sum(s['status'] == 'active' for s in scenarios) if topic['status'] == 'active' else 0
+            topic['clients'] = list({s['clientId']: {'id': s['clientId'], 'name': s['clientName']} for s in scenarios if s['status'] == 'active' and topic['status'] == 'active'}.values())
+        return {'items': topics, 'total': len(topics)}
+
+
+@app.get('/api/master/topics/{topic_id}')
+@app.get('/v1/api/master/topics/{topic_id}')
+def master_topic_detail(topic_id: uuid.UUID, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return master_store.topic_detail(cursor, str(topic_id))
+
+
+@app.post('/api/master/topics', status_code=201)
+@app.post('/v1/api/master/topics', status_code=201)
+def master_create_topic(payload: MasterTopicRequest, user: dict = Depends(verify_token)):
+    if any(q.id for q in payload.questions):
+        raise HTTPException(422, 'Las preguntas de un tema nuevo deben crearse sin id.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        topic_id = str(uuid.uuid4())
+        cursor.execute("INSERT INTO dbo.topic(id,client_id,name,context,optics,audience,status) VALUES(?,NULL,?,?,?,?,'active')", topic_id, payload.name, payload.context, payload.optics, payload.audience)
+        master_store.save_messages(cursor, topic_id, 'topic_key_message', payload.keyMessages)
+        master_store.save_messages(cursor, topic_id, 'topic_red_line', payload.redLines)
+        master_store.save_questions(cursor, topic_id, payload.questions)
+        return master_store.topic_detail(cursor, topic_id)
+
+
+@app.put('/api/master/topics/{topic_id}')
+@app.put('/v1/api/master/topics/{topic_id}')
+def master_update_topic(topic_id: uuid.UUID, payload: MasterTopicRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        topic_id = str(topic_id)
+        master_store.require_topic(cursor, topic_id, lock=True)
+        cursor.execute("UPDATE dbo.topic SET name=?,context=?,optics=?,audience=?,updated_at=SYSUTCDATETIME() WHERE id=?", payload.name, payload.context, payload.optics, payload.audience, topic_id)
+        master_store.save_messages(cursor, topic_id, 'topic_key_message', payload.keyMessages)
+        master_store.save_messages(cursor, topic_id, 'topic_red_line', payload.redLines)
+        master_store.save_questions(cursor, topic_id, payload.questions)
+        return master_store.topic_detail(cursor, topic_id)
+
+
+@app.patch('/api/master/topics/{topic_id}/status')
+@app.patch('/v1/api/master/topics/{topic_id}/status')
+def master_topic_status(topic_id: uuid.UUID, payload: MasterStatusRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        topic_id = str(topic_id)
+        master_store.require_topic(cursor, topic_id, lock=True)
+        cursor.execute("UPDATE dbo.topic SET status=?,updated_at=SYSUTCDATETIME() WHERE id=?", payload.status, topic_id)
+        cursor.execute("UPDATE dbo.scenario SET status=?,updated_at=SYSUTCDATETIME() WHERE topic_id=? AND is_deleted=0", payload.status, topic_id)
+        return master_store.topic_detail(cursor, topic_id)
+
+
+@app.post('/api/master/topics/{topic_id}/scenarios', status_code=201)
+@app.post('/v1/api/master/topics/{topic_id}/scenarios', status_code=201)
+def master_create_scenario(topic_id: uuid.UUID, payload: MasterScenarioRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return master_store.save_scenario(cursor, str(topic_id), payload)
+
+
+@app.put('/api/master/scenarios/{scenario_id}')
+@app.put('/v1/api/master/scenarios/{scenario_id}')
+def master_update_scenario(scenario_id: uuid.UUID, payload: MasterScenarioRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        scenario_id = str(scenario_id)
+        topic_id = master_store.scenario_topic(cursor, scenario_id)
+        return master_store.save_scenario(cursor, topic_id, payload, scenario_id)
+
+
+@app.patch('/api/master/scenarios/{scenario_id}/status')
+@app.patch('/v1/api/master/scenarios/{scenario_id}/status')
+def master_scenario_status(scenario_id: uuid.UUID, payload: MasterStatusRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        scenario_id = str(scenario_id)
+        topic_id = master_store.scenario_topic(cursor, scenario_id)
+        topic_status = master_store.require_topic(cursor, topic_id, lock=True)
+        if payload.status == 'active' and topic_status != 'active':
+            raise HTTPException(409, 'Reactiva el tema antes de reactivar el escenario.')
+        cursor.execute("UPDATE dbo.scenario SET status=?,updated_at=SYSUTCDATETIME() WHERE id=?", payload.status, scenario_id)
+        return next(s for s in master_store.scenarios_for_topic(cursor, topic_id) if s['id'].lower() == scenario_id)
 

@@ -14,10 +14,10 @@ voxready/
 ├── backend/              # API REST Orquestadora (FastAPI en Azure Container Apps: ca-backend-api)
 ├── worker/               # Procesador Asíncrono de IA (Azure Container Apps: ca-analysis-worker)
 ├── voxready-vision/      # Microservicio de Visión Computacional (MediaPipe en ca-vision-service)
-├── lab-worker/           # Banco de Pruebas y Laboratorio Local (CLI main.py y scripts de prueba)
 ├── dev-tools.ps1         # Script PowerShell de utilidades (Arranque local y logs en vivo de Azure)
-├── .env.example          # Plantilla de variables de entorno globales
-├── .gitignore            # Exclusión de binarios, dependencias y secretos
+├── .env                  # Conexiones locales; archivo ignorado por Git
+├── .env.example          # Plantilla de referencia de variables globales
+├── .gitignore            # Exclusión de dependencias y artefactos locales
 └── README.md             # Documentación maestra del proyecto
 ```
 
@@ -53,17 +53,6 @@ voxready/
 * Microservicio dedicado a la visión artificial.
 * Procesa los fotogramas extraídos utilizando modelos de MediaPipe (Face Mesh, Pose Landmark Detection) para calificar la presencia y control del vocero.
 
-### 5. `lab-worker/` (Laboratorio Local)
-* Espacio de pruebas independiente para ejecutar y depurar algoritmos de análisis multimedia de forma 100% local, sin necesidad de desplegar en Azure.
-* Contiene:
-  - `main.py`: Orquestador CLI local (`python main.py <video.webm> 0.5`).
-  - `separar-audio-video/`: Módulo de prueba de FFmpeg.
-  - `video/`: Módulo de prueba de MediaPipe.
-  - `voice/`: Módulo de prueba de audio y NVIDIA Riva.
-  - `outputs/`: Carpeta donde se guardan los audios extraídos, fotogramas y reportes JSON locales.
-
----
-
 ## 🛠️ Herramientas de Desarrollo (`dev-tools.ps1`)
 
 Para facilitar el desarrollo local y el monitoreo de la infraestructura en Azure, se incluye un menú interactivo en PowerShell:
@@ -73,63 +62,68 @@ Para facilitar el desarrollo local y el monitoreo de la infraestructura en Azure
 ```
 
 Opciones disponibles:
-1. **Iniciar Frontend Local:** Entra automáticamente a `frontend/` y levanta el servidor Next.js en `http://localhost:3000`.
+1. **Iniciar Docker + Azure SQL:** Construye y levanta backend y frontend, con migraciones sobre Azure SQL.
 2. **Ver Logs del Worker:** Conecta con `az containerapp logs` para ver en tiempo real el procesamiento multimedia y de IA.
 3. **Ver Logs del Backend API:** Muestra las peticiones HTTP entrantes, creación de sesiones y firmas SAS.
 4. **Ver Logs de Visión:** Monitorea el análisis de fotogramas en `ca-vision-service`.
+5. **Verificar Azure SQL:** Comprueba conexión y esquema desde la imagen del backend.
+6. **Ejecutar pruebas:** Corre los tests de API y frontend dentro de Docker.
 
 ### Arranque con Docker Compose
-Para probar el flujo local con autenticación demo y entorno aislado, consulta [LOCAL_DOCKER.md](LOCAL_DOCKER.md).
-Para iniciar el entorno demo aislado:
+El flujo habitual usa Docker conectado a Azure SQL, Blob Storage y Service Bus.
+Consulta [DOCKER_AZURE.md](DOCKER_AZURE.md) para configurar, desplegar y verificar.
 ```bash
-docker compose -p voxready-local -f docker-compose.local.yml up --build -d --wait
+docker compose up --build -d --wait --wait-timeout 240
 ```
-- **Frontend:** [http://localhost:3100/login](http://localhost:3100/login)
-- **Backend (API REST Docs):** [http://localhost:8100/docs](http://localhost:8100/docs)
+- **Frontend:** [http://localhost:3000/login/](http://localhost:3000/login/)
+- **Backend (API REST Docs):** [http://localhost:8000/docs](http://localhost:8000/docs)
+
+En PowerShell: `./docker.ps1 up`, `./docker.ps1 verify` y `./docker.ps1 test`.
+No requiere entornos virtuales ni una base de datos local.
 
 ---
 
 ## 🚀 Puesta en Marcha Rápida
 
 ### Prerrequisitos
-- **Node.js 18+** y npm
-- **Python 3.10+**
-- **Azure CLI (`az`)** autenticado con permisos en la suscripción de desarrollo.
+- **Docker Desktop** con motor Linux y Compose 2.20 o posterior.
+- **`.env` local configurado** con las conexiones Azure y autenticación Microsoft Entra; no se incluye en Git.
+- **Azure CLI (`az`)** solo para consultar logs de Container Apps.
 
-### 1. Iniciar el Frontend
+### 1. Iniciar la aplicación con Azure SQL
 ```bash
-cd frontend
-npm install
-npm run dev
+docker compose up --build -d --wait --wait-timeout 240
 ```
 Abre en tu navegador: [http://localhost:3000](http://localhost:3000).
 
-### 2. Ejecutar Pruebas Locales en `lab-worker/`
-```bash
-cd lab-worker
-pip install -r requirements.txt
-python main.py tu_video.webm 0.5
+### 2. Verificar conexión y ejecutar pruebas
+```powershell
+.\docker.ps1 verify
+.\docker.ps1 test
 ```
-Los resultados se generarán en la subcarpeta `lab-worker/outputs/<nombre_video>/`.
+Las pruebas de persistencia usan Azure SQL. El worker mantiene su despliegue
+actual en Azure; no se necesita una base local ni un entorno virtual.
 
 ---
 
 ## 🔐 Configuración de Variables de Entorno
 
-### Frontend (`frontend/.env.local`)
+### Variables públicas en `.env` de la raíz (Docker)
 ```env
 NEXT_PUBLIC_API_URL=https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io
 NEXT_PUBLIC_BACKEND_API_URL=https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io
-NEXT_PUBLIC_DEV_AUTH=true
+NEXT_PUBLIC_DEV_AUTH=false
+VOXREADY_DOCKER_API_URL=http://localhost:8000/v1
+VOXREADY_DOCKER_REDIRECT_URI=http://localhost:3000
 ```
 
-### Backend (`backend/.env`)
+### Conexiones del backend en el mismo `.env`
 ```env
 STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=stavoxreadydev;..."
 SERVICE_BUS_CONNECTION_STRING="Endpoint=sb://sb-voxready-dev.servicebus.windows.net/;..."
 BLOB_CONTAINER_NAME="recordings"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
-DEV_AUTH="true"
+DEV_AUTH="false"
 CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestaticapps.net"
 ```
 
@@ -137,18 +131,13 @@ CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestatica
 
 ## 🧪 Ejecución de Pruebas
 
-### Backend
-```bash
-cd backend
-pytest -v
+Las pruebas habituales de backend y frontend se ejecutan dentro de Docker:
+```powershell
+.\docker.ps1 test
 ```
 
-### Frontend
-```bash
-cd frontend
-npm run build
-npm run lint
-```
+La API se verifica contra Azure SQL y los datos de prueba se revierten al finalizar.
+Los comandos individuales están en [DOCKER_AZURE.md](DOCKER_AZURE.md).
 
 ---
 

@@ -1,5 +1,71 @@
 export type Role = 'spokesperson' | 'client_admin' | 'master_config';
 
+export type LifecycleStatus = 'active' | 'archived';
+export type MasterOptics = 'empathetic' | 'formal' | 'technical';
+export type MasterAudience = 'leadership' | 'frontline' | 'technical';
+export type MasterCategory = 'health' | 'operational' | 'reputational';
+export type MasterDifficulty = 'basic' | 'intermediate' | 'hard';
+
+export interface ClientInfo {
+  id: string;
+  name: string;
+  status?: LifecycleStatus;
+}
+
+export interface MasterQuestion {
+  id: string;
+  text: string;
+  sortOrder?: number;
+  sequenceNo?: number;
+  status: LifecycleStatus;
+}
+
+export interface MasterScenarioInput {
+  title: string;
+  category: MasterCategory;
+  difficulty: MasterDifficulty;
+  estimatedMinutes: number;
+  clientId: string;
+  questionIds: string[];
+}
+
+export interface MasterScenarioFull extends MasterScenarioInput {
+  id: string;
+  clientName: string;
+  questionCount: number;
+  status: LifecycleStatus;
+  questions: MasterQuestion[];
+}
+
+export interface MasterTopicInput {
+  name: string;
+  context: string;
+  optics: MasterOptics;
+  audience: MasterAudience;
+  keyMessages: string[];
+  redLines: string[];
+  questions: (string | { id?: string; text: string })[];
+}
+
+export interface MasterTopicListItem {
+  id: string;
+  name: string;
+  context: string;
+  optics: MasterOptics;
+  audience: MasterAudience;
+  status: LifecycleStatus;
+  questionCount: number;
+  scenarioCount: number;
+  clients: ClientInfo[];
+}
+
+export interface MasterTopicFull extends Omit<MasterTopicInput, 'questions'> {
+  id: string;
+  status: LifecycleStatus;
+  questions: MasterQuestion[];
+  scenarios: MasterScenarioFull[];
+}
+
 export interface UserSession {
   userId: string;
   email: string;

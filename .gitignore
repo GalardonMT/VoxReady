@@ -3,13 +3,16 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 1. Variables de Entorno y Secretos (NUNCA SUBIR A GIT)
+# 1. Configuración local y secretos: mantener fuera del historial
 # ------------------------------------------------------------------------------
 .env
+.env.*
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+!.env.example
+!.env.*.example
 *.pem
 *.key
 *.cert
@@ -64,6 +67,8 @@ venv.bak/
 # Testing, Cobertura y Linters
 .pytest_cache/
 **/.pytest_cache/
+pytest-cache-files-*/
+**/pytest-cache-files-*/
 .coverage
 htmlcov/
 .tox/
@@ -128,3 +133,20 @@ Thumbs.db
 *.log
 -
 scratch/
+
+# Datos y configuración exclusiva de pruebas locales
+*.db
+*.sqlite
+*.sqlite3
+backend/storage/
+backend/local_scenario_test/
+worker/local.settings.json
+
+# Material local histórico: se conserva en disco, fuera del repositorio
+docker-compose.local.yml
+docker-compose.scenario-test.yml
+backend/Dockerfile.local
+frontend/Dockerfile.local
+LOCAL_DOCKER.md
+lab-worker/
+discurso_prueba_entrevista.txt

@@ -8,28 +8,31 @@ function Show-Menu {
     Write-Host "==========================================================" -ForegroundColor Cyan
     Write-Host "       VOXREADY - ENTORNO DE PRUEBAS Y LOGS EN VIVO       " -ForegroundColor Yellow
     Write-Host "==========================================================" -ForegroundColor Cyan
-    Write-Host " 1. Iniciar Frontend Local (http://localhost:3000)" -ForegroundColor Green
+    Write-Host " 1. Iniciar Docker + Azure SQL (http://localhost:3000)" -ForegroundColor Green
     Write-Host " 2. Ver Logs en Vivo del Worker (ca-analysis-worker)" -ForegroundColor Magenta
     Write-Host " 3. Ver Logs en Vivo del Backend API (ca-backend-api)" -ForegroundColor Blue
     Write-Host " 4. Ver Logs en Vivo de Visión (ca-vision-service)" -ForegroundColor DarkYellow
-    Write-Host " 5. Salir" -ForegroundColor Gray
+    Write-Host " 5. Verificar Azure SQL desde Docker" -ForegroundColor Green
+    Write-Host " 6. Ejecutar pruebas desde Docker" -ForegroundColor Green
+    Write-Host " 7. Salir" -ForegroundColor Gray
     Write-Host "==========================================================" -ForegroundColor Cyan
-    $choice = Read-Host "Seleccione una opción [1-5]"
+    $choice = Read-Host "Seleccione una opción [1-7]"
 
     switch ($choice) {
         "1" { Start-Frontend }
         "2" { Stream-Worker-Logs }
         "3" { Stream-Backend-Logs }
         "4" { Stream-Vision-Logs }
-        "5" { exit }
+        "5" { & "$PSScriptRoot\docker.ps1" verify }
+        "6" { & "$PSScriptRoot\docker.ps1" test }
+        "7" { exit }
         default { Write-Host "Opción inválida."; Start-Sleep -Seconds 1; Show-Menu }
     }
 }
 
 function Start-Frontend {
-    Write-Host "`nIniciando Frontend en http://localhost:3000..." -ForegroundColor Green
-    Set-Location "$PSScriptRoot\frontend"
-    npm.cmd run dev
+    Write-Host "`nIniciando contenedores conectados a Azure SQL..." -ForegroundColor Green
+    & "$PSScriptRoot\docker.ps1" up
 }
 
 function Stream-Worker-Logs {
@@ -52,6 +55,9 @@ function Stream-Vision-Logs {
 
 switch ($Action.ToLower()) {
     "frontend" { Start-Frontend }
+    "azure"    { Start-Frontend }
+    "verify"   { & "$PSScriptRoot\docker.ps1" verify }
+    "test"     { & "$PSScriptRoot\docker.ps1" test }
     "worker"   { Stream-Worker-Logs }
     "backend"  { Stream-Backend-Logs }
     "vision"   { Stream-Vision-Logs }

@@ -2,6 +2,10 @@ node_modules
 .next
 .git
 npm-debug.log*
-.env*.local
+.env
+.env.*
 *.tsbuildinfo
-tests
+out
+build
+Dockerfile.local
+*.log
