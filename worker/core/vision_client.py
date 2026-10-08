@@ -3,7 +3,10 @@ import time
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from utils.logger import get_logger
+try:
+    from utils.logger import get_logger
+except (ImportError, ValueError):
+    from worker.utils.logger import get_logger
 
 try:
     import httpx

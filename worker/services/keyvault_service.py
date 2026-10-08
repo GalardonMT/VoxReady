@@ -1,7 +1,10 @@
 import os
 import re
 from typing import Optional, Dict
-from utils.logger import get_logger
+try:
+    from utils.logger import get_logger
+except (ImportError, ValueError):
+    from worker.utils.logger import get_logger
 
 logger = get_logger("services.keyvault_service")
 

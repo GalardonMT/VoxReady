@@ -10,7 +10,10 @@ except ImportError:
     pass
 
 from openai import OpenAI
-from core.schemas import EvaluacionLLMResponse, ReporteJuezConsolidado
+try:
+    from core.schemas import EvaluacionLLMResponse, ReporteJuezConsolidado
+except (ImportError, ValueError):
+    from worker.core.schemas import EvaluacionLLMResponse, ReporteJuezConsolidado
 logger = logging.getLogger(__name__)
 
 
@@ -113,12 +116,16 @@ class LLMJudgeService:
     @property
     def client(self) -> OpenAI:
         if self._client is None:
+            import httpx
+            http_client = httpx.Client(verify=False, timeout=self.timeout)
             self._client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
                 timeout=self.timeout,
+                http_client=http_client,
             )
         return self._client
+
 
     def evaluate_response(
         self,
@@ -262,13 +269,6 @@ class LLMJudge(LLMJudgeService):
             reporte_dict["executive_summary"] = reporte.feedback.recomendacion_accionable
             return reporte_dict
         except Exception as e:
-            logger.warning(f"Evaluación LLM Juez falló ({e}); retornando evaluación de contingencia.")
-            return {
-                "puntaje_global_100": 75.0,
-                "key_message_adherence_score": 75,
-                "crisis_control_score": 75,
-                "bridging_detected": True,
-                "strengths": ["Mantuvo compostura adecuada ante la consulta"],
-                "weaknesses": ["Oportunidad de reforzar datos cuantitativos y síntesis"],
-                "executive_summary": "El vocero mantuvo la estabilidad institucional durante la vocería.",
-            }
+            logger.error(f"Evaluación LLM Juez falló: {e}")
+            raise RuntimeError(f"Error evaluando el contenido con el Juez LLM: {e}") from e
+

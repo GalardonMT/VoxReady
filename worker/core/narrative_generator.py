@@ -162,44 +162,4 @@ def generate_visum_report(
         return parsed
     except Exception as e:
         logger.error(f"Fallo en la generación del informe VISUM ({type(e).__name__}): {str(e)}")
-        # Fallback estructurado en caso de indisponibilidad temporal de la red o del modelo
-        return {
-            "sintesis_ejecutiva": {
-                "diagnostico_general": f"El vocero demostró compostura y solvencia general ante el escenario de contingencia, obteniendo un puntaje global de {score_global}/100.",
-                "fortaleza_principal": "Mantuvo la calma expositiva y apego a las directrices institucionales prioritarias.",
-                "foco_desarrollo": "Transicionar desde una postura reactiva de respuestas técnicas hacia la conducción activa de la conversación.",
-                "continuidad_recomendada": "Profundizar en entrenamientos de bridging bajo preguntas periodísticas agresivas."
-            },
-            "desempeno_observado": {
-                "evaluacion_general": "Interacción sobria con adecuado autocontrol ante la presión mediática.",
-                "fortalezas": [
-                    "Aplomo no verbal y estabilidad postural durante toda la exposición.",
-                    "Ritmo de locución controlado y adecuado manejo de pausas reflexivas.",
-                    "Respeto por las líneas rojas institucionales sin incurrir en especulaciones."
-                ],
-                "oportunidades_desarrollo": [
-                    "Priorizar la empatía hacia los afectados antes de desglosar explicaciones operativas.",
-                    "Estructurar los mensajes complejos en secuencias pedagógicas de tres puntos clave.",
-                    "Reforzar el contacto visual en los momentos de mayor énfasis declarativo."
-                ],
-                "formula_practica_recomendada": "Reconocer el impacto en la comunidad -> Explicar las certezas verificadas -> Detallar las medidas inmediatas en curso."
-            },
-            "hallazgos_transversales": [
-                {
-                    "prioridad": "Empatía como primera señal",
-                    "descripcion": "Ante crisis de impacto humano, el primer párrafo debe conectar emocionalmente con la audiencia antes de recurrir a tecnicismos."
-                },
-                {
-                    "prioridad": "Conducción estratégica",
-                    "descripcion": "Aplicar técnicas de bridging fluidas para redirigir preguntas hipotéticas hacia compromisos de acción verificables."
-                }
-            ],
-            "recomendaciones_proximas_vocerias": [
-                "Regla 1: Iniciar siempre declarando lo que sí está bajo control y verificado.",
-                "Regla 2: Evitar muletillas de duda al conectar argumentos (usar pausas en silencio).",
-                "Regla 3: No emitir promesas con plazos específicos hasta contar con validación técnica.",
-                "Regla 4: Concluir reiterando el canal oficial de actualización para los medios."
-            ],
-            "consideracion_final": "Comunicar bien no es un talento innato: es una disciplina que se perfecciona mediante la práctica sistemática y la retroalimentación objetiva.",
-            "observacion_senal_cruzada": "El vocero mantuvo contacto visual firme al declarar el compromiso institucional, proyectando congruencia con el mensaje de responsabilidad."
-        }
+        raise RuntimeError(f"Error generando el informe ejecutivo VISUM con NVIDIA NIM: {e}") from e

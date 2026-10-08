@@ -775,6 +775,35 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
 
     final_report = report_data or sql_report
 
+    # Si no hay reporte, verificar si la sesión o el job falló en Azure SQL
+    if not final_report and SQL_CONN_STR:
+        try:
+            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+            with pyodbc.connect(conn_str, timeout=10) as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT TOP 1 s.status, aj.status, aj.failure_reason
+                    FROM session s
+                    LEFT JOIN analysis_job aj ON s.id = aj.session_id
+                    WHERE s.id = ?
+                    ORDER BY aj.created_at DESC
+                """, valid_uuid)
+                row = cur.fetchone()
+                if row:
+                    sess_status, job_status, failure_reason = row
+                    if sess_status == "failed" or job_status == "failed":
+                        err_msg = failure_reason or "El análisis no pudo completarse debido a información insuficiente o error de procesamiento."
+                        return {
+                            "sessionId": session_id,
+                            "session_id": session_id,
+                            "status": "failed",
+                            "error": err_msg,
+                            "message": err_msg
+                        }
+        except Exception as sqle:
+            logger.warning(f"Aviso al consultar estado de falla en Azure SQL ({session_id}): {sqle}")
+
     if not final_report:
         return {
             "sessionId": session_id,
