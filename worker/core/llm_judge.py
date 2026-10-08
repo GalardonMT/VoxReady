@@ -154,7 +154,7 @@ REGLA CRÍTICA PARA 'pertinencia_respuesta':
 
 Genera el análisis en formato JSON estricto con las claves:
 - evaluacion_dimensiones (pertinencia_respuesta, tecnicas_control, alineacion_mensaje_clave, capacidad_sintesis, claridad_mensaje, consistencia_institucional, asertividad_hostilidad)
-  Cada dimensión debe contener: 'nivel' (entero 1 a 5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta).
+  Cada dimensión debe contener: 'nivel' (entero de 1 a 5, donde 1 es deficiente/no observado y 5 es excelente; NUNCA uses 0 ni valores fuera de 1-5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta o texto vacío).
 - feedback_pedagogico (fortaleza_principal, brecha_critica, recomendacion_accionable)
 """
 

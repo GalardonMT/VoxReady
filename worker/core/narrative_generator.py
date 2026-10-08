@@ -64,11 +64,16 @@ Responde EXCLUSIVAMENTE un objeto JSON válido con la siguiente estructura:
 
 
 def _clean_json_markdown(text: str) -> str:
-    """Elimina delimitadores markdown tipo ```json ... ``` si el LLM los incluye."""
+    """Elimina delimitadores markdown tipo ```json ... ``` si el LLM los incluye y extrae el JSON."""
     clean = text.strip()
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean, re.IGNORECASE)
     if match:
         clean = match.group(1).strip()
+    if not clean.startswith("{"):
+        start_idx = clean.find("{")
+        end_idx = clean.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            clean = clean[start_idx : end_idx + 1].strip()
     return clean
 
 
