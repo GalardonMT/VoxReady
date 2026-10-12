@@ -180,6 +180,33 @@ class DatabaseService:
                 "rubric_areas": areas,
             }
 
+    def _resolve_session_id(self, cur, session_id: str) -> str:
+        """
+        Resuelve el id interno (UUID) de la sesión en Azure SQL buscando por:
+        1. external_session_id = ?
+        2. id = ? (si es un UUID válido)
+        3. Fallback a UUID5 determinista si no existe en la base de datos.
+        """
+        try:
+            cur.execute("SELECT id FROM session WHERE external_session_id = ?", str(session_id))
+            row = cur.fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except Exception:
+            pass
+
+        try:
+            valid_uuid = str(uuid.UUID(str(session_id)))
+            cur.execute("SELECT id FROM session WHERE id = ?", valid_uuid)
+            row = cur.fetchone()
+            if row and row[0]:
+                return str(row[0])
+            return valid_uuid
+        except Exception:
+            pass
+
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id)))
+
     def ensure_session_exists(
         self,
         session_id: str,
@@ -190,35 +217,60 @@ class DatabaseService:
         Garantiza que la sesión exista en la tabla 'session' con clave foránea válida.
         Si no existe, la crea con estado 'processing'.
         """
-        try:
-            uuid_obj = uuid.UUID(session_id)
-            valid_session_uuid = str(uuid_obj)
-        except Exception:
-            valid_session_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
-
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id FROM session WHERE id = ?", valid_session_uuid)
-            row = cur.fetchone()
-            if row:
-                return True
+            # 1. Comprobar si ya existe por external_session_id o id
+            try:
+                cur.execute("SELECT id FROM session WHERE external_session_id = ?", str(session_id))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return True
+            except Exception:
+                pass
+
+            valid_uuid = None
+            try:
+                valid_uuid = str(uuid.UUID(str(session_id)))
+                cur.execute("SELECT id FROM session WHERE id = ?", valid_uuid)
+                row = cur.fetchone()
+                if row and row[0]:
+                    return True
+            except Exception:
+                pass
+
+            valid_session_uuid = valid_uuid or str(uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id)))
 
             logger.info(f"Creando registro inicial en tabla 'session' para {valid_session_uuid}...")
+            resolved_client_id = self.DEFAULT_CLIENT_ID
+            resolved_user_id = self.DEFAULT_USER_ID
+            try:
+                cur.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
+                crow = cur.fetchone()
+                if crow:
+                    resolved_client_id = str(crow[0])
+                cur.execute("SELECT TOP 1 id FROM app_user WHERE is_deleted = 0")
+                urow = cur.fetchone()
+                if urow:
+                    resolved_user_id = str(urow[0])
+            except Exception:
+                pass
+
             cur.execute("""
                 INSERT INTO session (
                     id, client_id, user_id, scenario_id, rubric_version_id,
-                    language, status, started_at, created_at, updated_at, is_deleted
+                    external_session_id, language, status, started_at, created_at, updated_at, is_deleted
                 )
                 VALUES (
                     ?, ?, ?, ?, ?,
-                    'es', 'processing', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME(), 0
+                    ?, 'es', 'processing', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME(), 0
                 )
             """, (
                 valid_session_uuid,
-                self.DEFAULT_CLIENT_ID,
-                self.DEFAULT_USER_ID,
+                resolved_client_id,
+                resolved_user_id,
                 scenario_id,
                 rubric_version_id,
+                str(session_id) if str(session_id) != valid_session_uuid else None,
             ))
             conn.commit()
             return True
@@ -236,12 +288,6 @@ class DatabaseService:
         Persiste atómicamente el informe en 'report' y los 4 puntajes en 'area_score',
         y actualiza la sesión a 'completed'.
         """
-        try:
-            uuid_obj = uuid.UUID(session_id)
-            valid_session_uuid = str(uuid_obj)
-        except Exception:
-            valid_session_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
-
         report_id = str(uuid.uuid4())
         strengths_list = visum_report.get("desempeno_observado", {}).get("fortalezas", [])
         improvements_list = visum_report.get("desempeno_observado", {}).get("oportunidades_desarrollo", [])
@@ -251,8 +297,10 @@ class DatabaseService:
         improvements_json = json.dumps(improvements_list, ensure_ascii=False)
 
         conn = self._get_connection()
+        valid_session_uuid = session_id
         try:
             cur = conn.cursor()
+            valid_session_uuid = self._resolve_session_id(cur, session_id)
 
             # 1. Insertar en report
             cur.execute("""
@@ -298,7 +346,7 @@ class DatabaseService:
             return report_id
         except Exception as e:
             conn.rollback()
-            logger.error(f"Error persistiendo informe en SQL para {valid_session_uuid}: {e}")
+            logger.error(f"Error persistiendo informe en SQL para {session_id} ({valid_session_uuid}): {e}")
             try:
                 cur.execute("""
                     UPDATE session
@@ -322,14 +370,9 @@ class DatabaseService:
         """
         Actualiza el estado de la sesión ('processing', 'completed', 'failed').
         """
-        try:
-            uuid_obj = uuid.UUID(session_id)
-            valid_session_uuid = str(uuid_obj)
-        except Exception:
-            valid_session_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
-
         with self._get_connection() as conn:
             cur = conn.cursor()
+            valid_session_uuid = self._resolve_session_id(cur, session_id)
             cur.execute("""
                 UPDATE session
                 SET status = ?, updated_at = SYSUTCDATETIME()

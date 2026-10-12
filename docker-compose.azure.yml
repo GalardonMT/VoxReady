@@ -1,51 +1,84 @@
-# Use from the repository root: docker compose -f docker-compose.azure.yml up --build
-# Compose reads the existing root .env for interpolation. No demo database or users.
+﻿name: voxready-azure
+
+x-api-build: &api-build
+  context: ./backend
+  dockerfile: Dockerfile
+  target: runtime
+
+x-api-env: &api-env
+  SQL_CONNECTION_STRING: ${SQL_CONNECTION_STRING:?Define SQL_CONNECTION_STRING en .env con la conexion ODBC de Azure SQL}
+  ENVIRONMENT: production
+  DEV_AUTH: ${DEV_AUTH:-false}
+  JWKS_URL: ${JWKS_URL:?Define JWKS_URL en .env}
+  JWT_ISSUER: ${JWT_ISSUER:?Define JWT_ISSUER en .env}
+  JWT_AUDIENCE: ${JWT_AUDIENCE:?Define JWT_AUDIENCE en .env}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  STORAGE_CONNECTION_STRING: ${STORAGE_CONNECTION_STRING:?Define STORAGE_CONNECTION_STRING para grabaciones y reportes en Azure}
+  STORAGE_CONTAINER_NAME: ${STORAGE_CONTAINER_NAME:-${BLOB_CONTAINER_NAME:-recordings}}
+  SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:?Define SERVICE_BUS_CONNECTION_STRING para el worker de Azure}
+  SERVICE_BUS_QUEUE_NAME: ${SERVICE_BUS_QUEUE_NAME:-analysis-queue}
+
 services:
-  api:
-    build: ./backend
+  init:
+    image: voxready-api:${VOXREADY_IMAGE_TAG:-latest}
+    build: *api-build
     environment:
-      DATABASE_URL: ${SQL_CONNECTION_STRING:-${DATABASE_URL:?Set SQL_CONNECTION_STRING in the root .env}}
-      SQL_CONNECTION_STRING: ${SQL_CONNECTION_STRING:-${DATABASE_URL:?Set SQL_CONNECTION_STRING in the root .env}}
-      ENVIRONMENT: production
-      DEV_AUTH: "false"
-      JWKS_URL: ${JWKS_URL:?Set JWKS_URL in the root .env}
-      JWT_ISSUER: ${JWT_ISSUER:?Set JWT_ISSUER in the root .env}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:?Set JWT_AUDIENCE in the root .env}
-      AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Set NEXT_PUBLIC_AZURE_TENANT_ID in the root .env}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      UPLOAD_SIGNING_SECRET: ${UPLOAD_SIGNING_SECRET:?Set UPLOAD_SIGNING_SECRET in the root .env}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?Set WEBHOOK_SECRET in the root .env}
-      STORAGE_DIR: /data/storage
+      SQL_CONNECTION_STRING: ${SQL_CONNECTION_STRING:?Define SQL_CONNECTION_STRING en .env}
+    command: ["python", "scripts/prepare_azure_database.py"]
+    healthcheck:
+      disable: true
+    restart: "no"
+
+  api:
+    image: voxready-api:${VOXREADY_IMAGE_TAG:-latest}
+    build: *api-build
+    environment: *api-env
     ports:
-      - "8000:8000"
-    volumes:
-      - storage:/data/storage
+      - "${VOXREADY_API_PORT:-8000}:8000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   client:
+    image: voxready-client:${VOXREADY_IMAGE_TAG:-latest}
     build:
       context: ./frontend
+      dockerfile: Dockerfile
+      target: runtime
       args:
         NEXT_PUBLIC_AUTH_MODE: azure
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL in the root .env}
-        NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Set NEXT_PUBLIC_AZURE_TENANT_ID in the root .env}
-        NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:?Set NEXT_PUBLIC_AZURE_CLIENT_ID in the root .env}
-        NEXT_PUBLIC_AZURE_AUTHORITY: ${NEXT_PUBLIC_AZURE_AUTHORITY:?Set NEXT_PUBLIC_AZURE_AUTHORITY in the root .env}
-        NEXT_PUBLIC_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
-        NEXT_PUBLIC_AZURE_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
-        NEXT_PUBLIC_AZURE_API_SCOPE: ${NEXT_PUBLIC_AZURE_API_SCOPE:?Set NEXT_PUBLIC_AZURE_API_SCOPE in the root .env}
-    depends_on:
-      - api
-    environment:
-      NEXT_PUBLIC_AUTH_MODE: azure
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL in the root .env}
-      NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Set NEXT_PUBLIC_AZURE_TENANT_ID in the root .env}
-      NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:?Set NEXT_PUBLIC_AZURE_CLIENT_ID in the root .env}
-      NEXT_PUBLIC_AZURE_AUTHORITY: ${NEXT_PUBLIC_AZURE_AUTHORITY:?Set NEXT_PUBLIC_AZURE_AUTHORITY in the root .env}
-      NEXT_PUBLIC_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
-      NEXT_PUBLIC_AZURE_REDIRECT_URI: ${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:?Set NEXT_PUBLIC_REDIRECT_URI in the root .env}}
-      NEXT_PUBLIC_AZURE_API_SCOPE: ${NEXT_PUBLIC_AZURE_API_SCOPE:?Set NEXT_PUBLIC_AZURE_API_SCOPE in the root .env}
+        NEXT_PUBLIC_DEV_AUTH: ${NEXT_PUBLIC_DEV_AUTH:-false}
+        NEXT_PUBLIC_API_URL: ${VOXREADY_DOCKER_API_URL:-http://localhost:8000/v1}
+        NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Define NEXT_PUBLIC_AZURE_TENANT_ID en .env}
+        NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:?Define NEXT_PUBLIC_AZURE_CLIENT_ID en .env}
+        NEXT_PUBLIC_AZURE_AUTHORITY: ${NEXT_PUBLIC_AZURE_AUTHORITY:?Define NEXT_PUBLIC_AZURE_AUTHORITY en .env}
+        NEXT_PUBLIC_REDIRECT_URI: ${VOXREADY_DOCKER_REDIRECT_URI:-${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:-http://localhost:3000}}}
+        NEXT_PUBLIC_AZURE_REDIRECT_URI: ${VOXREADY_DOCKER_REDIRECT_URI:-${NEXT_PUBLIC_REDIRECT_URI:-${NEXT_PUBLIC_AZURE_REDIRECT_URI:-http://localhost:3000}}}
+        NEXT_PUBLIC_AZURE_API_SCOPE: ${NEXT_PUBLIC_AZURE_API_SCOPE:?Define NEXT_PUBLIC_AZURE_API_SCOPE en .env}
     ports:
-      - "3000:3000"
+      - "${VOXREADY_WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
-volumes:
-  storage:
+  test-api:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: test
+    environment:
+      <<: *api-env
+      VOXREADY_TEST_AZURE_SQL: "1"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  test-client:
+    profiles: ["test"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: test

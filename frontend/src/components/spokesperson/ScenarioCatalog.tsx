@@ -5,6 +5,7 @@ import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
 import { sessionFlowService, type CatalogScenario, type SessionSetup } from '../../services/sessionFlowService';
 import type { VoceroScreen } from './HomePracticeView';
+import { masterTopicLabels } from '../../services/masterTopicService';
 
 const categories = [
   { value: '', label: 'Todos' },
@@ -87,8 +88,8 @@ export const ScenarioCatalog: React.FC<Props> = ({ onSelected }) => {
           <span className="tagm">{categories.find((item) => item.value === scenario.category)?.label}</span>
           <span className="tagm">≈ {scenario.estimatedMinutes} min</span>
           <span className="tagm">{scenario.questionCount} preguntas</span>
-          <span className="tagm">{scenario.difficulty}</span>
-          <span className="tagm">{scenario.audience}</span>
+          <span className="tagm">{masterTopicLabels.difficulty[scenario.difficulty]}</span>
+          <span className="tagm">{masterTopicLabels.audience[scenario.audience as keyof typeof masterTopicLabels.audience] || scenario.audience}</span>
         </div>
         <button type="button" className="btn pri" disabled={pendingId !== null}
           onClick={() => void selectScenario(scenario)}>
