@@ -2,12 +2,13 @@
 
 Este es el flujo habitual del proyecto. Backend y frontend se ejecutan en
 contenedores; temas, preguntas, escenarios, usuarios y sesiones se guardan en
-Azure SQL. Grabaciones e informes usan Azure Blob Storage y el worker existente
-recibe los eventos por Azure Service Bus.
+Azure SQL. Grabaciones e informes usan Azure Blob Storage. El backend actual
+llama al worker por HTTP y usa Azure Service Bus como contingencia si falla.
 
 No se necesita instalar Python, Node, ODBC ni crear un entorno virtual en el
 equipo. Docker instala las dependencias dentro de las imágenes. Se requiere
-Docker Desktop con contenedores Linux y Compose 2.20 o posterior.
+Docker Desktop con contenedores Linux y Compose 2.24.4 o posterior
+(el modo Dev Auth local usa `!override` para limitar los puertos).
 
 ## Configuración
 
@@ -37,9 +38,10 @@ Para desplegar las imágenes en un servidor, configura la URL pública de la API
 y del frontend antes de construirlas. No uses `http://api:8000` como URL del
 frontend: quien realiza las peticiones es el navegador del usuario.
 La URI de retorno debe estar registrada en Microsoft Entra y el origen del
-frontend debe estar autorizado en `CORS_ORIGINS`. `DEV_AUTH` y
-`NEXT_PUBLIC_DEV_AUTH` respetan `.env`; esta entrega conserva los valores
-actuales acordados para las pruebas de la rama.
+frontend debe estar autorizado en `CORS_ORIGINS`. El perfil normal fija
+`DEV_AUTH=false` y `NEXT_PUBLIC_DEV_AUTH=false`, aunque `.env` contenga otros
+valores. Para usar Dev Auth en este equipo, selecciona el modo local explícito
+indicado abajo; no se debe usar ese modo en un servidor compartido.
 
 ## Arranque
 
@@ -65,9 +67,33 @@ automáticamente: funciona también después de editar o archivar los temas.
 - Estado: `docker compose ps`
 - Logs: `docker compose logs -f --tail 100 api client`
 
-`docker-compose.yml` incluye la configuración Azure para que `docker compose`
-sin argumentos adicionales use este flujo. También se puede especificar
-`-f docker-compose.azure.yml` explícitamente.
+`docker-compose.yml` incluye `docker-compose.azure.yml`; ambos comandos usan
+Azure SQL y autenticación Microsoft Entra. El Compose predeterminado no usa
+SQLite, bind mounts de código ni `uvicorn --reload`.
+
+### Dev Auth local
+
+Configura `DEV_AUTH_TEST_EMAIL` en el `.env` de la raíz con el correo de una
+cuenta activa ya preasignada en `app_user`. La API consulta Azure SQL para el
+identificador, rol y empresa; rechaza las cuentas ausentes y no crea usuarios.
+El valor no se incluye en las imágenes ni en Git.
+
+Para conservar el acceso de desarrollo en este equipo, ejecuta:
+
+```powershell
+.\docker.ps1 up -LocalDevAuth
+```
+
+Equivalente con Compose:
+
+```bash
+docker compose -f docker-compose.azure.yml -f docker-compose.local-auth.yml up --build -d --wait --wait-timeout 240
+```
+
+El override activa Dev Auth sólo con `ENVIRONMENT=development` y publica API
+y frontend en `127.0.0.1`. Sigue usando Azure SQL y Blob Storage; no crea una
+base local. Para ver logs o detener ese mismo proyecto, usa
+`.\docker.ps1 logs -LocalDevAuth` o `.\docker.ps1 stop -LocalDevAuth`.
 
 ## Verificación y pruebas dentro de Docker
 
@@ -124,8 +150,8 @@ puerto 3000. Los tests están en etapas separadas de las imágenes finales.
 
 Para desplegar la API por separado, aplica primero la preparación de Azure SQL
 con su imagen y las variables de ejecución. Compose ya automatiza este paso.
-El worker de Azure se mantiene en su despliegue actual; este Compose levanta
-backend y frontend y conecta con sus servicios existentes.
+Este Compose levanta backend y frontend; el despliegue del worker se gestiona
+por separado.
 
 ## Detener
 

@@ -60,7 +60,7 @@ def rows(cursor):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-def resolve_user(cursor, claims, master=False):
+def resolve_user(cursor, claims, master=False, allow_unassigned_master=False):
     """El rol y cliente vienen de app_user, nunca del payload o de localStorage."""
     row = None
     identity = claims.get("oid") or claims.get("sub")
@@ -84,7 +84,7 @@ def resolve_user(cursor, claims, master=False):
     profile = {"id": str(row[0]), "client_id": str(row[1]) if row[1] else None, "role": row[2]}
     if master and profile["role"] != "master_config":
         raise HTTPException(403, "Se requiere el rol master_config.")
-    if not master and not profile["client_id"]:
+    if not master and not profile["client_id"] and not (allow_unassigned_master and profile["role"] == "master_config"):
         raise HTTPException(403, "El usuario no tiene una empresa asignada.")
     return profile
 

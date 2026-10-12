@@ -24,6 +24,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS application
 COPY main.py master_topics.py spokesperson_store.py ./
+COPY schemas ./schemas
+COPY services ./services
 COPY scripts ./scripts
 
 FROM application AS test

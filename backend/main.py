@@ -61,6 +61,8 @@ JWKS_URL = os.getenv("JWKS_URL", "")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "")
 DEV_AUTH = os.getenv("DEV_AUTH", "false").lower() == "true"
+if DEV_AUTH and os.getenv("ENVIRONMENT", "production").lower() != "development":
+    raise RuntimeError("DEV_AUTH solo se permite con ENVIRONMENT=development.")
 
 # 3. Dependencia de validación de JWT (Microsoft Entra External ID)
 _jwks_client: PyJWKClient | None = None
@@ -78,12 +80,14 @@ def verify_token(authorization: str = Header(None)):
 
     # 1. Si no hay token o es token explícito de dev local:
     if (not token or token.startswith("dev-")) and DEV_AUTH:
+        dev_email = os.getenv("DEV_AUTH_TEST_EMAIL", "").strip()
+        if not dev_email:
+            raise HTTPException(status_code=503, detail="DEV_AUTH_TEST_EMAIL no está configurado")
         return {
             "sub": "dev-user-001",
             "oid": "dev-user-001",
             "name": "Dev User",
-            "email": "dev@voxready.io",
-            "role": "spokesperson",
+            "email": dev_email,
         }
 
     if not token:
@@ -113,20 +117,15 @@ def verify_token(authorization: str = Header(None)):
                 )
                 return payload
             except Exception as e_jwks:
-                logger.warning(f"Validación con firma JWKS falló ({e_jwks}).")
-                if not DEV_AUTH:
-                    raise e_jwks
-
-        # Si DEV_AUTH está activo y falló JWKS, o en desarrollo local:
-        # decodificamos el payload de Microsoft para extraer los datos reales del usuario
-        if DEV_AUTH:
-            payload = jwt.decode(token, options={"verify_signature": False})
-            return payload
+                logger.warning("Validación con firma JWKS falló: %s", type(e_jwks).__name__)
+                raise HTTPException(status_code=401, detail="Token inválido") from None
 
         raise HTTPException(status_code=401, detail="Error validando token con Microsoft")
-    except Exception as e:
-        logger.error(f"JWT Verification failed: {e}")
-        raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning("JWT verification failed: %s", type(error).__name__)
+        raise HTTPException(status_code=401, detail="Token inválido") from None
 
 
 # 4. Esquemas de petición
@@ -174,118 +173,49 @@ def sync_or_get_user(
     client_id: str | None,
     token_role: str | None
 ) -> dict:
-    """
-    Sincroniza el usuario autenticado con la base de datos Azure SQL (tabla app_user).
-    - Si existe, devuelve su perfil con el rol asignado en base de datos.
-    - Si no existe, lo registra automáticamente con rol 'spokesperson'.
-    - Permite cambiar roles directamente en Azure SQL y ver el cambio reflejado.
-    - Es resiliente: ante caídas de BD o cold-starts, no interrumpe el acceso.
-    """
+    """Resuelve únicamente usuarios activos y preasignados en app_user."""
     if not SQL_CONN_STR:
-        return {}
+        raise HTTPException(status_code=503, detail="Azure SQL no está configurado")
 
     user_uuid = _safe_uuid(user_id)
     clean_email = email.strip() if email else ""
+    if not user_uuid and not clean_email:
+        raise HTTPException(status_code=403, detail="Usuario no registrado en VoxReady")
 
     try:
         conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
         with pyodbc.connect(conn_str, timeout=10) as conn:
             cursor = conn.cursor()
-
-            # 1. Asegurar tabla app_user si no existiese
-            try:
-                cursor.execute("""
-                    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'app_user')
-                    BEGIN
-                        CREATE TABLE app_user (
-                            id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
-                            client_id UNIQUEIDENTIFIER NULL,
-                            email NVARCHAR(256) NULL,
-                            display_name NVARCHAR(150) NULL,
-                            role NVARCHAR(50) DEFAULT 'spokesperson',
-                            preferred_language CHAR(2) DEFAULT 'es',
-                            created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                            updated_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                            is_deleted BIT DEFAULT 0,
-                            deleted_at DATETIME2 NULL
-                        );
-                        CREATE INDEX idx_app_user_email ON app_user(email);
-                    END
-                """)
-                conn.commit()
-            except Exception as e_tbl:
-                logger.debug(f"Verificación de tabla app_user: {e_tbl}")
-
-            # 2. Buscar si el usuario ya existe en app_user (por UUID o por email)
             row = None
-            cols = []
             if user_uuid:
                 cursor.execute(
-                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
+                    "SELECT id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
                     (user_uuid,)
                 )
                 row = cursor.fetchone()
-                if row:
-                    cols = [c[0].lower() for c in cursor.description]
-
             if not row and clean_email:
                 cursor.execute(
-                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
+                    "SELECT TOP 2 id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
                     (clean_email,)
                 )
-                row = cursor.fetchone()
-                if row:
-                    cols = [c[0].lower() for c in cursor.description]
-
-            # 3. Si ya existe, retornar sus datos de la base de datos (con su rol asignado)
-            if row:
-                user_data = dict(zip(cols, row))
-                logger.info(f"Usuario '{clean_email}' resuelto desde Azure SQL con rol: '{user_data.get('role')}'.")
-                return user_data
-
-            # 4. Auto-provisioning: Registrar usuario nuevo en app_user
-            resolved_id = user_uuid or str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id or clean_email or "default-user"))
-
-            # Asociar al cliente activo si existe
-            db_client_id = None
-            try:
-                cursor.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
-                c_row = cursor.fetchone()
-                if not c_row:
-                    cursor.execute("SELECT TOP 1 id FROM client")
-                    c_row = cursor.fetchone()
-                if c_row:
-                    db_client_id = c_row[0]
-            except Exception:
-                pass
-
-            if not db_client_id:
-                db_client_id = _safe_uuid(client_id)
-
-            initial_role = token_role if token_role and token_role != "None" else "spokesperson"
-
-            cursor.execute(
-                """
-                INSERT INTO app_user (id, client_id, email, display_name, role, preferred_language, is_deleted)
-                VALUES (?, ?, ?, ?, ?, 'es', 0)
-                """,
-                (resolved_id, db_client_id, clean_email, display_name or "Vocero", initial_role)
-            )
-            conn.commit()
-            logger.info(f"Usuario '{clean_email}' auto-registrado en Azure SQL (app_user) con rol: '{initial_role}'.")
-
-            return {
-                "id": resolved_id,
-                "client_id": db_client_id,
-                "email": clean_email,
-                "display_name": display_name,
-                "role": initial_role,
-                "preferred_language": "es"
-            }
-
-    except Exception as e:
-        logger.warning(f"No se pudo sincronizar usuario en Azure SQL: {e}. Continuando con datos del token.")
-        return {}
+                matches = cursor.fetchall()
+                if len(matches) == 1:
+                    row = matches[0]
+            if row is None:
+                raise HTTPException(status_code=403, detail="Usuario no registrado en VoxReady")
+            user_data = dict(zip((c[0].lower() for c in cursor.description), row))
+            if clean_email and user_data.get("email") and user_data["email"].lower() != clean_email.lower():
+                raise HTTPException(status_code=403, detail="La identidad no coincide con el usuario preasignado")
+            if user_data.get("role") not in ("spokesperson", "client_admin", "master_config"):
+                raise HTTPException(status_code=403, detail="El usuario no tiene un rol válido")
+            if user_data["role"] != "master_config" and not user_data.get("client_id"):
+                raise HTTPException(status_code=403, detail="El usuario no tiene una empresa asignada")
+            return user_data
+    except HTTPException:
+        raise
+    except pyodbc.Error:
+        logger.exception("Azure SQL no disponible al resolver app_user")
+        raise HTTPException(status_code=503, detail="No se pudo consultar el usuario en Azure SQL") from None
 
 # 6. Endpoints
 @app.get("/health")
@@ -299,7 +229,7 @@ def dev_token():
 @app.get("/me")
 @app.get("/v1/me")
 def get_current_user_profile(user: dict = Depends(verify_token)):
-    """Obtiene el perfil del usuario autenticado y sincroniza roles con Azure SQL."""
+    """Obtiene el perfil preasignado; rol y empresa provienen de Azure SQL."""
     user_id = user.get("oid") or user.get("sub", "")
     email = (
         user.get("email")
@@ -314,27 +244,20 @@ def get_current_user_profile(user: dict = Depends(verify_token)):
         or (f"{user.get('given_name', '')} {user.get('family_name', '')}".strip())
         or (email.split("@")[0] if email else "Vocero")
     )
-    token_role = user.get("role") or user.get("extension_role") or "spokesperson"
-    client_id = user.get("clientId") or user.get("client_id") or user.get("tid")
-
-    # Sincronización con Azure SQL (auto-provisioning y lectura de roles en base de datos)
     db_user = sync_or_get_user(
         user_id=str(user_id),
         email=email or "",
         display_name=display_name,
-        client_id=str(client_id) if client_id else None,
-        token_role=token_role,
+        client_id=None,
+        token_role=None,
     )
 
-    role = db_user.get("role") or token_role or "spokesperson"
-    resolved_client_id = db_user.get("client_id") or (str(client_id) if client_id else "client-default")
-
     return {
-        "userId": str(user_id),
-        "email": email,
+        "userId": str(db_user["id"]),
+        "email": db_user.get("email") or email,
         "displayName": db_user.get("display_name") or display_name,
-        "role": role,
-        "clientId": str(resolved_client_id) if resolved_client_id else None,
+        "role": db_user["role"],
+        "clientId": str(db_user["client_id"]) if db_user.get("client_id") else None,
         "preferredLanguage": db_user.get("preferred_language") or user.get("preferredLanguage", "es"),
     }
 
@@ -370,6 +293,7 @@ def get_session(session_id: str, user: dict = Depends(verify_token)):
 @app.post("/v1/sessions/{session_id}/consent")
 @app.post("/api/sessions/{session_id}/consent")
 def grant_consent(session_id: str, payload: ConsentRequest, user: dict = Depends(verify_token)):
+    spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
     return {
         "sessionId": session_id,
         "status": "consented",
@@ -400,6 +324,7 @@ def mock_upload(session_id: str):
 @app.post("/v1/api/sessions/{session_id}/upload-url")
 def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal para subida directa desde el navegador (PUT)"""
+    spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
     if not STORAGE_CONN_STR:
         mock_url = f"http://localhost:8000/v1/sessions/{session_id}/mock-upload"
         return {
@@ -434,6 +359,7 @@ def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
 @app.get("/v1/api/sessions/{session_id}/recording-url")
 def get_playback_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal de LECTURA para reproducir la grabación desde el navegador"""
+    spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id, read_only=True)
     blob_name = f"recordings/{session_id}.webm"
 
     if not STORAGE_CONN_STR:
@@ -482,12 +408,13 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
     Finaliza la grabación de la sesión, registra el job de análisis en Azure SQL
     y dispara la inferencia asíncrona en ca-analysis-worker vía HTTP interno (escalado 0 a 1).
     """
-    session_uuid = _safe_uuid(session_id) or session_id
+    access = spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
+    session_uuid = access['id']
     job_id = str(uuid.uuid4())
     rubric_version_id = None
-    blob_path = payload.blobPath or payload.video_blob_name or f"recordings/{session_id}.webm"
-    if not blob_path.startswith("recordings/"):
-        blob_path = f"recordings/{blob_path.lstrip('/')}"
+    blob_path = f"recordings/{session_id}.webm"
+    if any(path and path != blob_path for path in (payload.blobPath, payload.video_blob_name)):
+        raise HTTPException(422, "La ruta de grabación no corresponde a la sesión.")
 
     # 1. Gestionar estado y job en Azure SQL si está configurado
     if SQL_CONN_STR:
@@ -495,31 +422,13 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
-                # Resolver sesión por external_session_id o id
-                session_row = None
-                try:
-                    cur.execute("SELECT id, status, rubric_version_id FROM session WHERE external_session_id = ?", session_id)
-                    session_row = cur.fetchone()
-                except Exception:
-                    pass
-
-                if not session_row:
-                    valid_uuid = _safe_uuid(session_id)
-                    if valid_uuid:
-                        try:
-                            cur.execute("SELECT id, status, rubric_version_id FROM session WHERE id = ?", valid_uuid)
-                            session_row = cur.fetchone()
-                        except Exception:
-                            pass
-
-                if session_row:
-                    session_uuid = str(session_row[0])
-                    if session_row[2]:
-                        rubric_version_id = session_row[2]
-                else:
-                    cur.execute("SELECT TOP 1 id FROM rubric_version WHERE status = 'published'")
-                    rub_row = cur.fetchone()
-                    rubric_version_id = rub_row[0] if rub_row else None
+                cur.execute("""SELECT id, status, rubric_version_id FROM session
+                               WHERE id=? AND user_id=? AND client_id=? AND is_deleted=0""",
+                            session_uuid, access['profile']['id'], access['profile']['client_id'])
+                session_row = cur.fetchone()
+                if session_row is None:
+                    raise HTTPException(404, "Sesión no encontrada.")
+                rubric_version_id = session_row[2]
 
                 # Crear registro en analysis_job
                 cur.execute("""
@@ -531,10 +440,12 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
                 cur.execute("""
                     UPDATE session 
                     SET status = 'analyzing', finished_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, session_uuid)
+                    WHERE id = ? AND user_id = ? AND client_id = ? AND is_deleted = 0
+                """, session_uuid, access['profile']['id'], access['profile']['client_id'])
                 conn.commit()
                 logger.info(f"Sesión {session_uuid} actualizada a 'analyzing' (Job: {job_id}) en Azure SQL.")
+        except HTTPException:
+            raise
         except Exception as e_sql:
             logger.warning(f"Aviso actualizando estado en Azure SQL ({session_id}): {e_sql}")
 
@@ -576,9 +487,9 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
                         "session_id": session_id,
                         "job_id": job_id,
                         "rubric_version_id": str(rubric_version_id) if rubric_version_id else None,
-                        "user_id": user.get("sub", "anonymous"),
-                        "scenario_id": payload.scenario_id,
-                        "tenant_id": payload.tenant_id,
+                        "user_id": access['profile']['id'],
+                        "scenario_id": access['scenario_id'],
+                        "tenant_id": access['profile']['client_id'],
                         "media": {
                             "video_blob_name": blob_path,
                             "storage_container": CONTAINER_NAME
@@ -609,6 +520,7 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
 @app.get("/v1/api/sessions/{session_id}/report")
 def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     """Obtiene el reporte consolidado normalizado desde Blob Storage y Azure SQL"""
+    access = spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id, read_only=True)
     report_data = None
 
     # 1. Intentar leer desde Azure Blob Storage
@@ -630,7 +542,6 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     if SQL_CONN_STR and not report_data:
         try:
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            valid_uuid = _safe_uuid(session_id)
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
                 cur.execute("""
@@ -638,8 +549,8 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
                            r.cross_signal_observation, r.generated_at, s.status as session_status
                     FROM report r
                     JOIN session s ON r.session_id = s.id
-                    WHERE (s.external_session_id = ? OR s.id = ?) AND r.is_current = 1
-                """, (session_id, valid_uuid))
+                    WHERE s.id = ? AND r.is_current = 1
+                """, access['id'])
                 row = cur.fetchone()
                 if row:
                     report_id, overall_score, strengths_raw, improvements_raw, cross_signal, gen_at, sess_status = row

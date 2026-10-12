@@ -18,9 +18,6 @@ class DatabaseService:
     manejar el cold-start cuando la base de datos se encuentra auto-pausada.
     """
 
-    DEFAULT_CLIENT_ID = "7D8C0575-196C-40D1-AD7C-08AA2843B4C3"
-    DEFAULT_USER_ID = "4CC52B91-3A9C-5659-8363-4F069CC39F9B"
-
     def __init__(
         self,
         connection_string: Optional[str] = None,
@@ -119,161 +116,84 @@ class DatabaseService:
         )
         raise last_error
 
-    def get_active_scenario_and_rubric(self) -> Dict[str, Any]:
-        """
-        Obtiene el escenario activo, los metadatos de su tópico (contexto, óptica),
-        sus mensajes clave oficiales y la versión de rúbrica publicada activa.
-        """
+    def get_session_context(self, session_id: str, job_id: str) -> Dict[str, Any]:
+        """Carga solo la sesion y el job persistidos, con su escenario y rubrica."""
+        if not session_id or not job_id:
+            raise ValueError("La sesion y el job son obligatorios.")
+        try:
+            internal_id = str(uuid.UUID(str(session_id)))
+        except (TypeError, ValueError, AttributeError):
+            internal_id = None
+
         with self._get_connection() as conn:
             cur = conn.cursor()
-
-            # Escenario y tópico
             cur.execute("""
-                SELECT TOP 1 s.id, s.title, t.context, t.optics, t.audience, s.topic_id
-                FROM scenario s
-                LEFT JOIN topic t ON s.topic_id = t.id
-                WHERE s.status = 'active'
-            """)
-            scen_row = cur.fetchone()
+                SELECT s.id, s.client_id, s.user_id, s.scenario_id,
+                       s.rubric_version_id, sc.title, t.context, t.optics,
+                       t.audience, t.id, j.rubric_version_id, s.external_session_id
+                FROM dbo.analysis_job j
+                JOIN dbo.session s ON s.id = j.session_id
+                JOIN dbo.app_user u ON u.id = s.user_id
+                                   AND u.client_id = s.client_id
+                                   AND (u.is_deleted IS NULL OR u.is_deleted = 0)
+                JOIN dbo.scenario sc ON sc.id = s.scenario_id
+                                     AND sc.client_id = s.client_id
+                JOIN dbo.topic t ON t.id = sc.topic_id
+                                AND (t.client_id IS NULL OR t.client_id = s.client_id)
+                WHERE j.id = ? AND (s.external_session_id = ? OR s.id = ?)
+                  AND s.is_deleted = 0 AND sc.is_deleted = 0 AND t.is_deleted = 0
+            """, job_id, str(session_id), internal_id)
+            row = cur.fetchone()
+            if row is None:
+                raise LookupError("Job o sesion no encontrada para este cliente.")
+            if any(row[index] is None for index in (1, 2, 3, 4)):
+                raise ValueError("La sesion carece de cliente, usuario, escenario o rubrica.")
+            if row[10] is not None and str(row[10]).lower() != str(row[4]).lower():
+                raise ValueError("La rubrica del job no coincide con la sesion.")
 
-            key_messages = []
-            scenario_data = {}
-            if scen_row:
-                scenario_data = {
-                    "scenario_id": str(scen_row.id),
-                    "title": scen_row.title,
-                    "context": scen_row.context or "Crisis institucional con impacto en la comunidad.",
-                    "optics": scen_row.optics or "empathetic",
-                    "audience": scen_row.audience or "Medios de comunicación y opinión pública",
-                }
-                if scen_row.topic_id:
-                    cur.execute(
-                        "SELECT text FROM topic_key_message WHERE topic_id = ? ORDER BY sort_order",
-                        scen_row.topic_id,
-                    )
-                    key_messages = [r[0] for r in cur.fetchall()]
-
-            scenario_data["key_messages"] = key_messages
-
-            # Rúbrica publicada activa
             cur.execute("""
-                SELECT TOP 1 id, version_label
-                FROM rubric_version
-                WHERE status = 'published'
-            """)
-            rubric_row = cur.fetchone()
-            rubric_version_id = str(rubric_row.id) if rubric_row else None
-
-            # Áreas de rúbrica
-            areas = {}
-            if rubric_version_id:
-                cur.execute(
-                    "SELECT id, area_key, weight FROM rubric_area WHERE rubric_version_id = ?",
-                    rubric_version_id,
-                )
-                for r in cur.fetchall():
-                    areas[r.area_key] = {"id": str(r.id), "weight": r.weight}
-
+                SELECT text FROM dbo.topic_key_message
+                WHERE topic_id = ? AND status = 'active' ORDER BY sort_order
+            """, row[9])
+            key_messages = [message[0] for message in cur.fetchall()]
+            cur.execute("""
+                SELECT id, area_key, weight FROM dbo.rubric_area
+                WHERE rubric_version_id = ?
+            """, row[4])
+            areas = {area[1]: {"id": str(area[0]), "weight": area[2]}
+                     for area in cur.fetchall()}
             return {
-                "scenario": scenario_data,
-                "rubric_version_id": rubric_version_id,
+                "session_id": str(row[0]),
+                "external_session_id": row[11],
+                "client_id": str(row[1]),
+                "user_id": str(row[2]),
+                "scenario": {
+                    "scenario_id": str(row[3]),
+                    "title": row[5],
+                    "context": row[6],
+                    "optics": row[7],
+                    "audience": row[8],
+                    "key_messages": key_messages,
+                },
+                "rubric_version_id": str(row[4]),
                 "rubric_areas": areas,
             }
 
     def _resolve_session_id(self, cur, session_id: str) -> str:
-        """
-        Resuelve el id interno (UUID) de la sesión en Azure SQL buscando por:
-        1. external_session_id = ?
-        2. id = ? (si es un UUID válido)
-        3. Fallback a UUID5 determinista si no existe en la base de datos.
-        """
+        """Resuelve una sesion existente; nunca fabrica un identificador."""
+        cur.execute("SELECT id FROM dbo.session WHERE external_session_id=? AND is_deleted=0", str(session_id))
+        row = cur.fetchone()
+        if row:
+            return str(row[0])
         try:
-            cur.execute("SELECT id FROM session WHERE external_session_id = ?", str(session_id))
-            row = cur.fetchone()
-            if row and row[0]:
-                return str(row[0])
-        except Exception:
-            pass
-
-        try:
-            valid_uuid = str(uuid.UUID(str(session_id)))
-            cur.execute("SELECT id FROM session WHERE id = ?", valid_uuid)
-            row = cur.fetchone()
-            if row and row[0]:
-                return str(row[0])
-            return valid_uuid
-        except Exception:
-            pass
-
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id)))
-
-    def ensure_session_exists(
-        self,
-        session_id: str,
-        scenario_id: Optional[str] = None,
-        rubric_version_id: Optional[str] = None,
-    ) -> bool:
-        """
-        Garantiza que la sesión exista en la tabla 'session' con clave foránea válida.
-        Si no existe, la crea con estado 'processing'.
-        """
-        with self._get_connection() as conn:
-            cur = conn.cursor()
-            # 1. Comprobar si ya existe por external_session_id o id
-            try:
-                cur.execute("SELECT id FROM session WHERE external_session_id = ?", str(session_id))
-                row = cur.fetchone()
-                if row and row[0]:
-                    return True
-            except Exception:
-                pass
-
-            valid_uuid = None
-            try:
-                valid_uuid = str(uuid.UUID(str(session_id)))
-                cur.execute("SELECT id FROM session WHERE id = ?", valid_uuid)
-                row = cur.fetchone()
-                if row and row[0]:
-                    return True
-            except Exception:
-                pass
-
-            valid_session_uuid = valid_uuid or str(uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id)))
-
-            logger.info(f"Creando registro inicial en tabla 'session' para {valid_session_uuid}...")
-            resolved_client_id = self.DEFAULT_CLIENT_ID
-            resolved_user_id = self.DEFAULT_USER_ID
-            try:
-                cur.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
-                crow = cur.fetchone()
-                if crow:
-                    resolved_client_id = str(crow[0])
-                cur.execute("SELECT TOP 1 id FROM app_user WHERE is_deleted = 0")
-                urow = cur.fetchone()
-                if urow:
-                    resolved_user_id = str(urow[0])
-            except Exception:
-                pass
-
-            cur.execute("""
-                INSERT INTO session (
-                    id, client_id, user_id, scenario_id, rubric_version_id,
-                    external_session_id, language, status, started_at, created_at, updated_at, is_deleted
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?,
-                    ?, 'es', 'processing', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME(), 0
-                )
-            """, (
-                valid_session_uuid,
-                resolved_client_id,
-                resolved_user_id,
-                scenario_id,
-                rubric_version_id,
-                str(session_id) if str(session_id) != valid_session_uuid else None,
-            ))
-            conn.commit()
-            return True
+            internal_id = str(uuid.UUID(str(session_id)))
+        except (TypeError, ValueError, AttributeError):
+            raise LookupError("Sesion no encontrada.") from None
+        cur.execute("SELECT id FROM dbo.session WHERE id=? AND is_deleted=0", internal_id)
+        row = cur.fetchone()
+        if row:
+            return str(row[0])
+        raise LookupError("Sesion no encontrada.")
 
     def finalize_session_analysis(
         self,

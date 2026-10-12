@@ -8,7 +8,7 @@ x-api-build: &api-build
 x-api-env: &api-env
   SQL_CONNECTION_STRING: ${SQL_CONNECTION_STRING:?Define SQL_CONNECTION_STRING en .env con la conexion ODBC de Azure SQL}
   ENVIRONMENT: production
-  DEV_AUTH: ${DEV_AUTH:-false}
+  DEV_AUTH: "false"
   JWKS_URL: ${JWKS_URL:?Define JWKS_URL en .env}
   JWT_ISSUER: ${JWT_ISSUER:?Define JWT_ISSUER en .env}
   JWT_AUDIENCE: ${JWT_AUDIENCE:?Define JWT_AUDIENCE en .env}
@@ -48,7 +48,7 @@ services:
       target: runtime
       args:
         NEXT_PUBLIC_AUTH_MODE: azure
-        NEXT_PUBLIC_DEV_AUTH: ${NEXT_PUBLIC_DEV_AUTH:-false}
+        NEXT_PUBLIC_DEV_AUTH: "false"
         NEXT_PUBLIC_API_URL: ${VOXREADY_DOCKER_API_URL:-http://localhost:8000/v1}
         NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Define NEXT_PUBLIC_AZURE_TENANT_ID en .env}
         NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:?Define NEXT_PUBLIC_AZURE_CLIENT_ID en .env}

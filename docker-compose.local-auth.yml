@@ -1,0 +1,17 @@
+# Solo para desarrollo local con .\docker.ps1 up -LocalDevAuth.
+# Mantiene Azure SQL y limita los puertos al equipo local.
+services:
+  api:
+    environment:
+      ENVIRONMENT: development
+      DEV_AUTH: "true"
+      DEV_AUTH_TEST_EMAIL: ${DEV_AUTH_TEST_EMAIL:?Define DEV_AUTH_TEST_EMAIL en .env con un usuario preasignado}
+    ports: !override
+      - "127.0.0.1:${VOXREADY_API_PORT:-8000}:8000"
+
+  client:
+    build:
+      args:
+        NEXT_PUBLIC_DEV_AUTH: "true"
+    ports: !override
+      - "127.0.0.1:${VOXREADY_WEB_PORT:-3000}:3000"

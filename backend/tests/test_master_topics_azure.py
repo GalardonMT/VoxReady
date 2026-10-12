@@ -35,7 +35,7 @@ def azure_api(monkeypatch):
         cursor.execute("INSERT INTO dbo.app_user(id,client_id,email,display_name,role) VALUES(?,?,?,?,?)", user_id,
                        other_client if label == 'outsider' else seed.DEMO_CLIENT_ID,
                        user_id + '@example.invalid', 'Prueba transaccional', 'master_config' if label == 'master' else 'spokesperson')
-    current = {'label': 'master'}
+    current = {'label': 'master', 'users': users}
 
     @contextmanager
     def transactional_database(_):
@@ -157,8 +157,14 @@ def test_company_visibility_persistent_sessions_and_snapshot(azure_api):
     setup = client.get(f"/sessions/{session['sessionId']}").json()
     assert [q['id'] for q in setup['questions']] == selected
     assert [q['sequenceNo'] for q in setup['questions']] == [1, 2, 3, 4]
-    cursor.execute('SELECT COUNT(*) FROM dbo.session WHERE external_session_id=?', session['sessionId'])
-    assert cursor.fetchone()[0] == 1
+    cursor.execute('SELECT id,user_id,client_id,scenario_id FROM dbo.session WHERE external_session_id=?', session['sessionId'])
+    persisted_session = cursor.fetchone()
+    assert persisted_session is not None
+    assert str(persisted_session[1]).lower() == current['users']['speaker'].lower()
+    assert str(persisted_session[2]).lower() == seed.DEMO_CLIENT_ID.lower()
+    assert str(persisted_session[3]).lower() == scenario['id'].lower()
+    cursor.execute('SELECT COUNT(*) FROM dbo.session_question WHERE session_id=?', persisted_session[0])
+    assert cursor.fetchone()[0] == 4
     current['label'] = 'colleague'
     assert client.get('/v1/scenarios').json() == catalog
     assert client.get(f"/sessions/{session['sessionId']}").status_code == 404

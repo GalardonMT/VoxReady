@@ -86,6 +86,36 @@ def owned_session(cursor, profile, session_id):
     return session
 
 
+def require_session_access(connection_string, claims, session_id, *, read_only=False):
+    """Resuelve la sesión y su actor en app_user antes de acceder a medios o informes."""
+    with store.database(connection_string) as cursor:
+        profile = store.resolve_user(cursor, claims, allow_unassigned_master=read_only)
+        role = profile['role']
+        if role not in ('spokesperson', 'client_admin', 'master_config'):
+            raise HTTPException(403, 'Rol no autorizado para sesiones.')
+
+        if not read_only or role == 'spokesperson':
+            session = owned_session(cursor, profile, session_id)
+        else:
+            try:
+                internal_id = str(uuid.UUID(session_id))
+            except ValueError:
+                internal_id = None
+            sql = """SELECT id,scenario_id,status,external_session_id FROM dbo.session
+                     WHERE (external_session_id=? OR id=?) AND is_deleted=0"""
+            params = [session_id, internal_id]
+            if role == 'client_admin':
+                sql += ' AND client_id=?'
+                params.append(profile['client_id'])
+            cursor.execute(sql, tuple(params))
+            session = cursor.fetchone()
+            if session is None:
+                raise HTTPException(404, 'Sesión no encontrada.')
+
+        return {'id': str(session[0]), 'scenario_id': str(session[1]),
+                'status': session[2], 'external_session_id': session[3], 'profile': profile}
+
+
 def session_response(cursor, session):
     cursor.execute("SELECT COUNT(*) FROM dbo.session_question WHERE session_id=?", session[0])
     return {'sessionId': session[3] or str(session[0]), 'session_id': session[3] or str(session[0]),
