@@ -7,3 +7,5 @@ pytest-cache-files-*
 .git
 tests
 *.db
+.env
+*.env
