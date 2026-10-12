@@ -495,11 +495,27 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
-                cur.execute("SELECT id, status, rubric_version_id FROM session WHERE id = ?", session_uuid)
-                session_row = cur.fetchone()
+                # Resolver sesión por external_session_id o id
+                session_row = None
+                try:
+                    cur.execute("SELECT id, status, rubric_version_id FROM session WHERE external_session_id = ?", session_id)
+                    session_row = cur.fetchone()
+                except Exception:
+                    pass
 
-                if session_row and session_row[2]:
-                    rubric_version_id = session_row[2]
+                if not session_row:
+                    valid_uuid = _safe_uuid(session_id)
+                    if valid_uuid:
+                        try:
+                            cur.execute("SELECT id, status, rubric_version_id FROM session WHERE id = ?", valid_uuid)
+                            session_row = cur.fetchone()
+                        except Exception:
+                            pass
+
+                if session_row:
+                    session_uuid = str(session_row[0])
+                    if session_row[2]:
+                        rubric_version_id = session_row[2]
                 else:
                     cur.execute("SELECT TOP 1 id FROM rubric_version WHERE status = 'published'")
                     rub_row = cur.fetchone()
@@ -614,7 +630,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     if SQL_CONN_STR and not report_data:
         try:
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+            valid_uuid = _safe_uuid(session_id)
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
                 cur.execute("""
@@ -622,8 +638,8 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
                            r.cross_signal_observation, r.generated_at, s.status as session_status
                     FROM report r
                     JOIN session s ON r.session_id = s.id
-                    WHERE s.id = ? AND r.is_current = 1
-                """, valid_uuid)
+                    WHERE (s.external_session_id = ? OR s.id = ?) AND r.is_current = 1
+                """, (session_id, valid_uuid))
                 row = cur.fetchone()
                 if row:
                     report_id, overall_score, strengths_raw, improvements_raw, cross_signal, gen_at, sess_status = row
