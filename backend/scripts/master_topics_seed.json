@@ -1,0 +1,95 @@
+[
+  {
+    "key": "topic-1",
+    "name": "Retiro de producto del mercado",
+    "context": "Detección de una bacteria inocua pero no declarada en un lote masivo de bebidas infantiles distribuido a nivel nacional. Se activaron los protocolos sanitarios preventivos.",
+    "optics": "empathetic",
+    "audience": "leadership",
+    "keyMessages": [
+      "La salud y seguridad de las familias es nuestra prioridad intransable.",
+      "Hemos habilitado canales de canje, reembolso inmediato y asistencia médica telefónica 24/7."
+    ],
+    "redLines": [
+      "No admitir culpabilidad civil o penal antes de que concluya el peritaje técnico oficial.",
+      "No culpar ni minimizar las preocupaciones de las asociaciones de consumidores."
+    ],
+    "questions": [
+      "¿Cuál es el riesgo real para la salud de los niños que consumieron el producto?",
+      "¿Por qué la alerta se emitió tres días después de conocerse el problema en fábrica?",
+      "¿Cuántos lotes y unidades afectadas están actualmente en circulación?",
+      "¿Qué compensación económica directa recibirán las familias afectadas?",
+      "¿Hay sospechas de negligencia por parte de los supervisores de la planta?",
+      "¿Qué impacto financiero proyectan para la empresa debido a este retiro masivo?",
+      "¿Qué controles adicionales están implementando para garantizar que no vuelva a ocurrir?",
+      "Para cerrar, ¿qué mensaje directo le transmite la presidencia a los padres de familia?"
+    ],
+    "scenario": {
+      "title": "Conferencia de prensa: Retiro masivo de lote infantil",
+      "category": "health",
+      "difficulty": "hard",
+      "estimatedMinutes": 15
+    }
+  },
+  {
+    "key": "topic-2",
+    "name": "Filtración de datos de usuarios",
+    "context": "Detección de una intrusión en servidores auxiliares con presunta extracción de credenciales y registros financieros de clientes.",
+    "optics": "technical",
+    "audience": "frontline",
+    "keyMessages": [
+      "Los cortafuegos principales aislaron la base de datos crítica en menos de 15 minutos.",
+      "Se activó el protocolo SOC nivel 3 y se impuso restablecimiento obligatorio de claves."
+    ],
+    "redLines": [
+      "No especular sobre el origen geopolítico ni la identidad del atacante.",
+      "No comprometer plazos de restauración de sistemas antes del informe del equipo forense."
+    ],
+    "questions": [
+      "¿Cuántos clientes vieron comprometida su información personal y bancaria?",
+      "¿El equipo de seguridad descubrió la brecha o fueron advertidos por un tercero?",
+      "¿Se pagó o se contempla pagar algún rescate a los atacantes?",
+      "¿Por qué no se aplicó el doble factor de autenticación en esos servidores?",
+      "¿La empresa ya notificó al Consejo de Defensa del Estado y al regulador financiero?",
+      "¿Cuándo volverán a operar con normalidad las sucursales y la banca en línea?",
+      "¿Qué garantías de indemnización tendrán los clientes ante fraudes derivados?",
+      "¿Van a contratar una auditoría externa para transparentar la magnitud del fallo?"
+    ],
+    "scenario": {
+      "title": "Punto de prensa: Contención de ciberataque y protección al usuario",
+      "category": "operational",
+      "difficulty": "intermediate",
+      "estimatedMinutes": 10
+    }
+  },
+  {
+    "key": "topic-3",
+    "name": "Denuncia por vertimiento en cuenca hidrográfica",
+    "context": "Vecinos y organizaciones ambientales denuncian alteración en la calidad del agua cercana a la planta de procesamiento tras intensas lluvias.",
+    "optics": "formal",
+    "audience": "leadership",
+    "keyMessages": [
+      "Operamos en estricto apego a la Resolución de Calificación Ambiental vigente.",
+      "Instalamos una mesa de diálogo permanente y monitoreo conjunto con las comunidades."
+    ],
+    "redLines": [
+      "No descalificar las afirmaciones ni los análisis independientes presentados por la comunidad.",
+      "No atribuir toda la responsabilidad exclusivamente al fenómeno climático sin peritaje."
+    ],
+    "questions": [
+      "¿Qué sustancias químicas fueron vertidas al río durante la madrugada del martes?",
+      "¿Por qué la empresa no suspendió preventivamente las faenas ante las fuertes lluvias?",
+      "¿Qué medidas de mitigación inmediatas se están desplegando para abastecer de agua potable a la zona?",
+      "¿Existen sanciones previas de la Superintendencia del Medio Ambiente contra esta instalación?",
+      "¿Están dispuestos a paralizar la operación hasta que se aclare el impacto ecológico?",
+      "¿Cómo van a compensar las pérdidas económicas de los agricultores y pescadores locales?",
+      "¿Qué validez le dan a los análisis de laboratorio presentados por las agrupaciones vecinales?",
+      "¿Asumirá la alta dirección la responsabilidad personal si se comprueba daño ambiental?"
+    ],
+    "scenario": {
+      "title": "Entrevista en vivo: Denuncia ambiental y respuesta de la compañía",
+      "category": "reputational",
+      "difficulty": "intermediate",
+      "estimatedMinutes": 12
+    }
+  }
+]
