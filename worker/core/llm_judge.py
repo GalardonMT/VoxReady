@@ -10,23 +10,51 @@ except ImportError:
     pass
 
 from openai import OpenAI
-from core.schemas import EvaluacionLLMResponse, ReporteJuezConsolidado
+try:
+    from core.schemas import EvaluacionLLMResponse, ReporteJuezConsolidado
+except (ImportError, ValueError):
+    from worker.core.schemas import EvaluacionLLMResponse, ReporteJuezConsolidado
 logger = logging.getLogger(__name__)
 
 
 def _clean_and_parse_json(content: str) -> dict:
+    if not content or not content.strip():
+        raise ValueError("El contenido devuelto por el LLM está vacío.")
+
     text = content.strip()
     # 1. Quitar markdown fences si existen
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
     if match:
         text = match.group(1).strip()
 
-    # 2. Extraer el bloque delimitado por las llaves exteriores si hay texto adyacente
-    if not text.startswith("{"):
-        start_idx = text.find("{")
-        end_idx = text.rfind("}")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            text = text[start_idx : end_idx + 1].strip()
+    # 2. Intento directo
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # 3. Intentar raw_decode desde el primer '{' para ignorar 'Extra data'
+    start_idx = text.find("{")
+    if start_idx != -1:
+        try:
+            decoder = json.JSONDecoder()
+            parsed, _ = decoder.raw_decode(text[start_idx:])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # 4. Extraer el bloque delimitado por las llaves exteriores si hay texto adyacente
+    end_idx = text.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        try:
+            parsed = json.loads(text[start_idx : end_idx + 1].strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
 
     return json.loads(text)
 
@@ -113,12 +141,16 @@ class LLMJudgeService:
     @property
     def client(self) -> OpenAI:
         if self._client is None:
+            import httpx
+            http_client = httpx.Client(verify=False, timeout=self.timeout)
             self._client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
                 timeout=self.timeout,
+                http_client=http_client,
             )
         return self._client
+
 
     def evaluate_response(
         self,
@@ -147,7 +179,7 @@ REGLA CRÍTICA PARA 'pertinencia_respuesta':
 
 Genera el análisis en formato JSON estricto con las claves:
 - evaluacion_dimensiones (pertinencia_respuesta, tecnicas_control, alineacion_mensaje_clave, capacidad_sintesis, claridad_mensaje, consistencia_institucional, asertividad_hostilidad)
-  Cada dimensión debe contener: 'nivel' (entero 1 a 5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta).
+  Cada dimensión debe contener: 'nivel' (entero de 1 a 5, donde 1 es deficiente/no observado y 5 es excelente; NUNCA uses 0 ni valores fuera de 1-5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta o texto vacío).
 - feedback_pedagogico (fortaleza_principal, brecha_critica, recomendacion_accionable)
 """
 
@@ -262,13 +294,6 @@ class LLMJudge(LLMJudgeService):
             reporte_dict["executive_summary"] = reporte.feedback.recomendacion_accionable
             return reporte_dict
         except Exception as e:
-            logger.warning(f"Evaluación LLM Juez falló ({e}); retornando evaluación de contingencia.")
-            return {
-                "puntaje_global_100": 75.0,
-                "key_message_adherence_score": 75,
-                "crisis_control_score": 75,
-                "bridging_detected": True,
-                "strengths": ["Mantuvo compostura adecuada ante la consulta"],
-                "weaknesses": ["Oportunidad de reforzar datos cuantitativos y síntesis"],
-                "executive_summary": "El vocero mantuvo la estabilidad institucional durante la vocería.",
-            }
+            logger.error(f"Evaluación LLM Juez falló: {e}")
+            raise RuntimeError(f"Error evaluando el contenido con el Juez LLM: {e}") from e
+

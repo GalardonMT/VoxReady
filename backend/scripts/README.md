@@ -109,6 +109,14 @@ el orden y texto de cada entrevista iniciada. La rúbrica publicada se asigna
 al crear la sesión. El identificador público sigue `session-{scenarioId}-{epoch}`;
 si coincide con otra sesión del mismo segundo, recibe un sufijo único.
 
-Las tres migraciones ya se aplicaron y verificaron contra Azure SQL en este
+La migración de Mi Progreso agrega `schedule.session_id` como vínculo nullable
+y verificado con `session`, un índice único filtrado para impedir que una sesión
+cierre más de una agenda, el índice de consulta por cliente/usuario/fecha y la
+unicidad del resumen por usuario/área. Su backfill toma solo sesiones completadas
+con el reporte vigente, calcula cada cambio contra la puntuación anterior del
+mismo `area_key` y actualiza `user_area_progress` sin borrar filas. Si ya existen
+duplicados que impiden garantizar la unicidad, la transacción falla y se revierte.
+
+Estas migraciones ya se aplicaron y verificaron contra Azure SQL en este
 entorno. El detalle de validación y los límites de E2E están en
 `IMPLEMENTACION_GESTION_TEMAS_ESCENARIOS.md`, en la raíz del proyecto.

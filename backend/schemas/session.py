@@ -1,13 +1,14 @@
 # backend/schemas/session.py
 from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, AliasChoices, field_validator
 
 
 class TurnInterval(BaseModel):
-    questionId: str = "q"
-    sequenceNo: int = 1
-    startMs: int = 0
-    endMs: int = 0
+    questionId: str = Field(default="q", validation_alias=AliasChoices('questionId', 'question_id'))
+    sequenceNo: int = Field(default=1, validation_alias=AliasChoices('sequenceNo', 'sequence_no'))
+    startMs: int = Field(default=0, validation_alias=AliasChoices('startMs', 'startOffsetMs', 'start_ms', 'start_offset_ms'))
+    endMs: int = Field(default=0, validation_alias=AliasChoices('endMs', 'endOffsetMs', 'end_ms', 'end_offset_ms'))
+    questionText: Optional[str] = Field(default=None, validation_alias=AliasChoices('questionText', 'question_text', 'text'))
 
     @field_validator("startMs", mode="before")
     @classmethod

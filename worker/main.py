@@ -6,9 +6,11 @@ _worker_dir = os.path.dirname(os.path.abspath(__file__))
 if _worker_dir not in sys.path:
     sys.path.insert(0, _worker_dir)
 
-from fastapi import FastAPI, BackgroundTasks, status
-from pydantic import BaseModel, field_validator
+import uuid
 from typing import List, Optional
+from fastapi import FastAPI, BackgroundTasks, status
+from pydantic import BaseModel, Field, AliasChoices, field_validator
+
 try:
     from core.pipeline_orchestrator import process_session_pipeline
 except (ImportError, ValueError):
@@ -22,16 +24,17 @@ logger = logging.getLogger("ca-analysis-worker")
 
 app = FastAPI(
     title="ca-analysis-worker",
-    version="2.2.0",
+    version="2.3.0",
     description="Servicio interno de inferencia multimodal y evaluación VISUM para VoxReady"
 )
 
 
 class TurnInterval(BaseModel):
-    questionId: str = "q"
-    sequenceNo: int = 1
-    startMs: int = 0
-    endMs: int = 0
+    questionId: str = Field(default="", validation_alias=AliasChoices('questionId', 'question_id'))
+    sequenceNo: int = Field(default=1, validation_alias=AliasChoices('sequenceNo', 'sequence_no'))
+    startMs: int = Field(default=0, validation_alias=AliasChoices('startMs', 'startOffsetMs', 'start_ms', 'start_offset_ms'))
+    endMs: int = Field(default=0, validation_alias=AliasChoices('endMs', 'endOffsetMs', 'end_ms', 'end_offset_ms'))
+    questionText: Optional[str] = Field(default=None, validation_alias=AliasChoices('questionText', 'question_text', 'text'))
 
     @field_validator("startMs", mode="before")
     @classmethod
@@ -56,7 +59,7 @@ class TurnInterval(BaseModel):
 
 class JobRequest(BaseModel):
     sessionId: str
-    jobId: str
+    jobId: Optional[str] = None
     rubricVersionId: Optional[str] = None
     blobPath: str
     turns: Optional[List[TurnInterval]] = []
@@ -67,7 +70,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "ca-analysis-worker",
-        "version": "2.2.0"
+        "version": "2.3.0"
     }
 
 
@@ -78,13 +81,14 @@ async def trigger_analysis(job: JobRequest, background_tasks: BackgroundTasks):
     y procesa la inferencia multimodal en segundo plano (BackgroundTasks).
     Permite el autoescalado de 0 a 1 réplica en Azure Container Apps Express.
     """
-    logger.info(f"Trabajo de análisis recibido para sesión: {job.sessionId} (Job ID: {job.jobId})")
+    resolved_job_id = job.jobId or str(uuid.uuid4())
+    logger.info(f"Trabajo de análisis recibido para sesión: {job.sessionId} (Job ID: {resolved_job_id})")
     
     # Delegar la ejecución pesada en segundo plano
     background_tasks.add_task(
         process_session_pipeline,
         session_id=job.sessionId,
-        job_id=job.jobId,
+        job_id=resolved_job_id,
         rubric_version_id=job.rubricVersionId,
         blob_path=job.blobPath,
         turns=[t.model_dump() for t in (job.turns or [])]
@@ -93,7 +97,7 @@ async def trigger_analysis(job: JobRequest, background_tasks: BackgroundTasks):
     return {
         "status": "accepted",
         "sessionId": job.sessionId,
-        "jobId": job.jobId
+        "jobId": resolved_job_id
     }
 
 

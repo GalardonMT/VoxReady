@@ -8,6 +8,7 @@ pytest-cache-files-*
 .git
 *.db
 .env
+*.env
 .env.*
 local_scenario_test
 Dockerfile.local
@@ -17,3 +18,4 @@ scratch
 tests/.tmp
 *.webm
 *.mp4
+

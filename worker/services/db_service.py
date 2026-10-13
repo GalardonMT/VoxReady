@@ -5,10 +5,113 @@ import json
 import uuid
 import datetime
 from typing import Optional, Dict, Any, Tuple, List
-from utils.logger import get_logger
-from services.keyvault_service import get_secret
+try:
+    from utils.logger import get_logger
+    from services.keyvault_service import get_secret
+except (ImportError, ValueError):
+    from worker.utils.logger import get_logger
+    from worker.services.keyvault_service import get_secret
 
 logger = get_logger("services.db_service")
+
+
+USER_AREA_PROGRESS_REFRESH_DML = """
+;WITH target_actor AS (
+    SELECT user_id,client_id
+    FROM dbo.session
+    WHERE id=? AND is_deleted=0
+),
+current_reports AS (
+    SELECT r.id,r.session_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY r.session_id
+               ORDER BY r.generated_at DESC,r.id DESC
+           ) AS report_position
+    FROM dbo.report r
+    JOIN dbo.session s ON s.id=r.session_id
+    JOIN target_actor actor
+      ON actor.user_id=s.user_id AND actor.client_id=s.client_id
+    WHERE r.is_current=1 AND s.status='completed' AND s.is_deleted=0
+),
+ranked_area_scores AS (
+    SELECT a.report_id,a.rubric_area_id,ra.area_key,a.value,
+           ROW_NUMBER() OVER (
+               PARTITION BY a.report_id,ra.area_key
+               ORDER BY a.id DESC
+           ) AS score_position
+    FROM dbo.area_score a
+    JOIN dbo.rubric_area ra ON ra.id=a.rubric_area_id
+),
+scored_sessions AS (
+    SELECT s.user_id,a.rubric_area_id,a.area_key,a.value,
+           COALESCE(s.finished_at,s.updated_at,s.created_at) AS session_at,
+           ROW_NUMBER() OVER (
+               PARTITION BY s.user_id,a.area_key
+               ORDER BY COALESCE(s.finished_at,s.updated_at,s.created_at) DESC,s.id DESC
+           ) AS area_position,
+           LEAD(a.value) OVER (
+               PARTITION BY s.user_id,a.area_key
+               ORDER BY COALESCE(s.finished_at,s.updated_at,s.created_at) DESC,s.id DESC
+           ) AS previous_value
+    FROM dbo.session s
+    JOIN target_actor actor
+      ON actor.user_id=s.user_id AND actor.client_id=s.client_id
+    JOIN current_reports r ON r.session_id=s.id AND r.report_position=1
+    JOIN ranked_area_scores a ON a.report_id=r.id AND a.score_position=1
+    WHERE s.status='completed' AND s.is_deleted=0
+),
+session_totals AS (
+    SELECT s.user_id,COUNT_BIG(DISTINCT s.id) AS sessions_count,
+           MAX(COALESCE(s.finished_at,s.updated_at,s.created_at)) AS last_session_at
+    FROM dbo.session s
+    JOIN target_actor actor
+      ON actor.user_id=s.user_id AND actor.client_id=s.client_id
+    WHERE s.status='completed' AND s.is_deleted=0
+      AND EXISTS (
+          SELECT 1 FROM current_reports r
+          WHERE r.session_id=s.id AND r.report_position=1
+      )
+    GROUP BY s.user_id
+),
+latest AS (
+    SELECT scored.user_id,scored.rubric_area_id,scored.value AS current_value,
+           CASE WHEN scored.previous_value IS NULL THEN NULL
+                ELSE scored.value-scored.previous_value END AS delta_value,
+           CONVERT(INT,totals.sessions_count) AS sessions_count,
+           totals.last_session_at
+    FROM scored_sessions scored
+    JOIN session_totals totals ON totals.user_id=scored.user_id
+    WHERE scored.area_position=1
+)
+MERGE dbo.user_area_progress WITH (HOLDLOCK) AS target
+USING latest AS source
+   ON target.user_id=source.user_id
+  AND target.rubric_area_id=source.rubric_area_id
+WHEN MATCHED THEN UPDATE SET
+    current_value=source.current_value,
+    [delta]=source.delta_value,
+    sessions_count=source.sessions_count,
+    last_session_at=source.last_session_at,
+    updated_at=SYSUTCDATETIME()
+WHEN NOT MATCHED THEN INSERT (
+    id,user_id,rubric_area_id,current_value,[delta],sessions_count,
+    last_session_at,created_at,updated_at
+) VALUES (
+    NEWID(),source.user_id,source.rubric_area_id,source.current_value,
+    source.delta_value,source.sessions_count,source.last_session_at,
+    SYSUTCDATETIME(),SYSUTCDATETIME()
+);
+"""
+
+LINKED_SCHEDULE_COMPLETE_DML = """
+UPDATE sch
+SET sch.status = 'completed', sch.updated_at = SYSUTCDATETIME()
+FROM dbo.schedule sch
+JOIN dbo.session s ON s.id = sch.session_id
+WHERE sch.session_id = ?
+  AND sch.user_id = s.user_id AND sch.client_id = s.client_id
+  AND sch.status = 'scheduled'
+"""
 
 
 class DatabaseService:
@@ -17,9 +120,6 @@ class DatabaseService:
     Implementa reintentos con retroceso exponencial (exponential backoff) para
     manejar el cold-start cuando la base de datos se encuentra auto-pausada.
     """
-
-    DEFAULT_CLIENT_ID = "7D8C0575-196C-40D1-AD7C-08AA2843B4C3"
-    DEFAULT_USER_ID = "4CC52B91-3A9C-5659-8363-4F069CC39F9B"
 
     def __init__(
         self,
@@ -119,161 +219,84 @@ class DatabaseService:
         )
         raise last_error
 
-    def get_active_scenario_and_rubric(self) -> Dict[str, Any]:
-        """
-        Obtiene el escenario activo, los metadatos de su tópico (contexto, óptica),
-        sus mensajes clave oficiales y la versión de rúbrica publicada activa.
-        """
+    def get_session_context(self, session_id: str, job_id: str) -> Dict[str, Any]:
+        """Carga solo la sesion y el job persistidos, con su escenario y rubrica."""
+        if not session_id or not job_id:
+            raise ValueError("La sesion y el job son obligatorios.")
+        try:
+            internal_id = str(uuid.UUID(str(session_id)))
+        except (TypeError, ValueError, AttributeError):
+            internal_id = None
+
         with self._get_connection() as conn:
             cur = conn.cursor()
-
-            # Escenario y tópico
             cur.execute("""
-                SELECT TOP 1 s.id, s.title, t.context, t.optics, t.audience, s.topic_id
-                FROM scenario s
-                LEFT JOIN topic t ON s.topic_id = t.id
-                WHERE s.status = 'active'
-            """)
-            scen_row = cur.fetchone()
+                SELECT s.id, s.client_id, s.user_id, s.scenario_id,
+                       s.rubric_version_id, sc.title, t.context, t.optics,
+                       t.audience, t.id, j.rubric_version_id, s.external_session_id
+                FROM dbo.analysis_job j
+                JOIN dbo.session s ON s.id = j.session_id
+                JOIN dbo.app_user u ON u.id = s.user_id
+                                   AND u.client_id = s.client_id
+                                   AND (u.is_deleted IS NULL OR u.is_deleted = 0)
+                JOIN dbo.scenario sc ON sc.id = s.scenario_id
+                                     AND sc.client_id = s.client_id
+                JOIN dbo.topic t ON t.id = sc.topic_id
+                                AND (t.client_id IS NULL OR t.client_id = s.client_id)
+                WHERE j.id = ? AND (s.external_session_id = ? OR s.id = ?)
+                  AND s.is_deleted = 0 AND sc.is_deleted = 0 AND t.is_deleted = 0
+            """, job_id, str(session_id), internal_id)
+            row = cur.fetchone()
+            if row is None:
+                raise LookupError("Job o sesion no encontrada para este cliente.")
+            if any(row[index] is None for index in (1, 2, 3, 4)):
+                raise ValueError("La sesion carece de cliente, usuario, escenario o rubrica.")
+            if row[10] is not None and str(row[10]).lower() != str(row[4]).lower():
+                raise ValueError("La rubrica del job no coincide con la sesion.")
 
-            key_messages = []
-            scenario_data = {}
-            if scen_row:
-                scenario_data = {
-                    "scenario_id": str(scen_row.id),
-                    "title": scen_row.title,
-                    "context": scen_row.context or "Crisis institucional con impacto en la comunidad.",
-                    "optics": scen_row.optics or "empathetic",
-                    "audience": scen_row.audience or "Medios de comunicación y opinión pública",
-                }
-                if scen_row.topic_id:
-                    cur.execute(
-                        "SELECT text FROM topic_key_message WHERE topic_id = ? ORDER BY sort_order",
-                        scen_row.topic_id,
-                    )
-                    key_messages = [r[0] for r in cur.fetchall()]
-
-            scenario_data["key_messages"] = key_messages
-
-            # Rúbrica publicada activa
             cur.execute("""
-                SELECT TOP 1 id, version_label
-                FROM rubric_version
-                WHERE status = 'published'
-            """)
-            rubric_row = cur.fetchone()
-            rubric_version_id = str(rubric_row.id) if rubric_row else None
-
-            # Áreas de rúbrica
-            areas = {}
-            if rubric_version_id:
-                cur.execute(
-                    "SELECT id, area_key, weight FROM rubric_area WHERE rubric_version_id = ?",
-                    rubric_version_id,
-                )
-                for r in cur.fetchall():
-                    areas[r.area_key] = {"id": str(r.id), "weight": r.weight}
-
+                SELECT text FROM dbo.topic_key_message
+                WHERE topic_id = ? AND status = 'active' ORDER BY sort_order
+            """, row[9])
+            key_messages = [message[0] for message in cur.fetchall()]
+            cur.execute("""
+                SELECT id, area_key, weight FROM dbo.rubric_area
+                WHERE rubric_version_id = ?
+            """, row[4])
+            areas = {area[1]: {"id": str(area[0]), "weight": area[2]}
+                     for area in cur.fetchall()}
             return {
-                "scenario": scenario_data,
-                "rubric_version_id": rubric_version_id,
+                "session_id": str(row[0]),
+                "external_session_id": row[11],
+                "client_id": str(row[1]),
+                "user_id": str(row[2]),
+                "scenario": {
+                    "scenario_id": str(row[3]),
+                    "title": row[5],
+                    "context": row[6],
+                    "optics": row[7],
+                    "audience": row[8],
+                    "key_messages": key_messages,
+                },
+                "rubric_version_id": str(row[4]),
                 "rubric_areas": areas,
             }
 
     def _resolve_session_id(self, cur, session_id: str) -> str:
-        """
-        Resuelve el id interno (UUID) de la sesión en Azure SQL buscando por:
-        1. external_session_id = ?
-        2. id = ? (si es un UUID válido)
-        3. Fallback a UUID5 determinista si no existe en la base de datos.
-        """
+        """Resuelve una sesion existente; nunca fabrica un identificador."""
+        cur.execute("SELECT id FROM dbo.session WHERE external_session_id=? AND is_deleted=0", str(session_id))
+        row = cur.fetchone()
+        if row:
+            return str(row[0])
         try:
-            cur.execute("SELECT id FROM session WHERE external_session_id = ?", str(session_id))
-            row = cur.fetchone()
-            if row and row[0]:
-                return str(row[0])
-        except Exception:
-            pass
-
-        try:
-            valid_uuid = str(uuid.UUID(str(session_id)))
-            cur.execute("SELECT id FROM session WHERE id = ?", valid_uuid)
-            row = cur.fetchone()
-            if row and row[0]:
-                return str(row[0])
-            return valid_uuid
-        except Exception:
-            pass
-
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id)))
-
-    def ensure_session_exists(
-        self,
-        session_id: str,
-        scenario_id: Optional[str] = None,
-        rubric_version_id: Optional[str] = None,
-    ) -> bool:
-        """
-        Garantiza que la sesión exista en la tabla 'session' con clave foránea válida.
-        Si no existe, la crea con estado 'processing'.
-        """
-        with self._get_connection() as conn:
-            cur = conn.cursor()
-            # 1. Comprobar si ya existe por external_session_id o id
-            try:
-                cur.execute("SELECT id FROM session WHERE external_session_id = ?", str(session_id))
-                row = cur.fetchone()
-                if row and row[0]:
-                    return True
-            except Exception:
-                pass
-
-            valid_uuid = None
-            try:
-                valid_uuid = str(uuid.UUID(str(session_id)))
-                cur.execute("SELECT id FROM session WHERE id = ?", valid_uuid)
-                row = cur.fetchone()
-                if row and row[0]:
-                    return True
-            except Exception:
-                pass
-
-            valid_session_uuid = valid_uuid or str(uuid.uuid5(uuid.NAMESPACE_DNS, str(session_id)))
-
-            logger.info(f"Creando registro inicial en tabla 'session' para {valid_session_uuid}...")
-            resolved_client_id = self.DEFAULT_CLIENT_ID
-            resolved_user_id = self.DEFAULT_USER_ID
-            try:
-                cur.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
-                crow = cur.fetchone()
-                if crow:
-                    resolved_client_id = str(crow[0])
-                cur.execute("SELECT TOP 1 id FROM app_user WHERE is_deleted = 0")
-                urow = cur.fetchone()
-                if urow:
-                    resolved_user_id = str(urow[0])
-            except Exception:
-                pass
-
-            cur.execute("""
-                INSERT INTO session (
-                    id, client_id, user_id, scenario_id, rubric_version_id,
-                    external_session_id, language, status, started_at, created_at, updated_at, is_deleted
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?,
-                    ?, 'es', 'processing', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME(), 0
-                )
-            """, (
-                valid_session_uuid,
-                resolved_client_id,
-                resolved_user_id,
-                scenario_id,
-                rubric_version_id,
-                str(session_id) if str(session_id) != valid_session_uuid else None,
-            ))
-            conn.commit()
-            return True
+            internal_id = str(uuid.UUID(str(session_id)))
+        except (TypeError, ValueError, AttributeError):
+            raise LookupError("Sesion no encontrada.") from None
+        cur.execute("SELECT id FROM dbo.session WHERE id=? AND is_deleted=0", internal_id)
+        row = cur.fetchone()
+        if row:
+            return str(row[0])
+        raise LookupError("Sesion no encontrada.")
 
     def finalize_session_analysis(
         self,
@@ -283,11 +306,18 @@ class DatabaseService:
         area_scores: Dict[str, int],
         rubric_version_id: str,
         rubric_areas: Dict[str, Any],
+        job_id: Optional[str] = None,
     ) -> str:
         """
-        Persiste atómicamente el informe en 'report' y los 4 puntajes en 'area_score',
-        y actualiza la sesión a 'completed'.
+        Persiste atómicamente el informe y sus áreas, completa la sesión,
+        refresca ``user_area_progress`` y completa su agenda vinculada.
         """
+        valid_job_uuid = None
+        if job_id:
+            try:
+                valid_job_uuid = str(uuid.UUID(str(job_id)))
+            except Exception:
+                valid_job_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(job_id)))
         report_id = str(uuid.uuid4())
         strengths_list = visum_report.get("desempeno_observado", {}).get("fortalezas", [])
         improvements_list = visum_report.get("desempeno_observado", {}).get("oportunidades_desarrollo", [])
@@ -302,17 +332,18 @@ class DatabaseService:
             cur = conn.cursor()
             valid_session_uuid = self._resolve_session_id(cur, session_id)
 
-            # 1. Insertar en report
+            # 1. Insertar en report con analysis_job_id
             cur.execute("""
                 INSERT INTO report (
-                    id, session_id, rubric_version_id, overall_score,
+                    id, session_id, analysis_job_id, rubric_version_id, overall_score,
                     narrative_strengths, narrative_improvements, cross_signal_observation,
                     version_no, is_current, generated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, SYSUTCDATETIME())
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, SYSUTCDATETIME())
             """, (
                 report_id,
                 valid_session_uuid,
+                valid_job_uuid,
                 rubric_version_id,
                 int(round(overall_score)),
                 strengths_json,
@@ -341,8 +372,14 @@ class DatabaseService:
                 WHERE id = ?
             """, valid_session_uuid)
 
+            # 4. Refrescar el resumen de progreso del mismo vocero/cliente.
+            cur.execute(USER_AREA_PROGRESS_REFRESH_DML, valid_session_uuid)
+
+            # 5. Completar únicamente la cita desde la que nació esta sesión.
+            cur.execute(LINKED_SCHEDULE_COMPLETE_DML, valid_session_uuid)
+
             conn.commit()
-            logger.info(f"Sesión {valid_session_uuid} finalizada y persistida con Report ID: {report_id}")
+            logger.info(f"Sesión {valid_session_uuid} finalizada y persistida con Report ID: {report_id} (Job: {valid_job_uuid})")
             return report_id
         except Exception as e:
             conn.rollback()
@@ -359,6 +396,85 @@ class DatabaseService:
             raise e
         finally:
             conn.close()
+
+    def update_question_responses(
+        self,
+        session_id: str,
+        turn_responses: List[Dict[str, Any]]
+    ):
+        """
+        Actualiza el texto transcrito de la respuesta (response_text) para cada pregunta
+        en la tabla session_question.
+        """
+        if not turn_responses:
+            return
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            valid_session_uuid = self._resolve_session_id(cur, session_id)
+            for tr in turn_responses:
+                q_id = tr.get("questionId") or tr.get("question_id") or ""
+                seq = tr.get("sequenceNo") or tr.get("sequence_no") or 1
+                resp_text = (tr.get("transcript") or tr.get("response_text") or "").strip()
+                q_text = tr.get("questionText") or tr.get("question_text")
+
+                try:
+                    q_uuid = str(uuid.UUID(str(q_id)))
+                except Exception:
+                    q_uuid = None
+
+                # 1. Intentar actualizar response_text en fila existente
+                if q_uuid:
+                    cur.execute("""
+                        UPDATE session_question
+                        SET response_text = ?, updated_at = SYSUTCDATETIME()
+                        WHERE session_id = ? AND (question_id = ? OR sequence_no = ?)
+                    """, (resp_text, valid_session_uuid, q_uuid, seq))
+                else:
+                    cur.execute("""
+                        UPDATE session_question
+                        SET response_text = ?, updated_at = SYSUTCDATETIME()
+                        WHERE session_id = ? AND sequence_no = ?
+                    """, (resp_text, valid_session_uuid, seq))
+
+                # 2. Si no existía la fila, resolver question_id válido y crearla (sin question_text)
+                if cur.rowcount == 0:
+                    real_q_uuid = q_uuid
+                    if real_q_uuid:
+                        cur.execute("SELECT id FROM question WHERE id = ?", real_q_uuid)
+                        if not cur.fetchone():
+                            real_q_uuid = None
+
+                    if not real_q_uuid:
+                        cur.execute("""
+                            SELECT sq.question_id 
+                            FROM scenario_question sq
+                            JOIN session s ON s.scenario_id = sq.scenario_id
+                            WHERE s.id = ? AND sq.sequence_no = ?
+                        """, (valid_session_uuid, seq))
+                        sq_row = cur.fetchone()
+                        if sq_row:
+                            real_q_uuid = str(sq_row[0])
+
+                    if not real_q_uuid:
+                        cur.execute("SELECT TOP 1 id FROM question")
+                        any_q = cur.fetchone()
+                        real_q_uuid = str(any_q[0]) if any_q else None
+
+                    if real_q_uuid:
+                        cur.execute("""
+                            INSERT INTO session_question (
+                                id, session_id, question_id, sequence_no, asked_at, response_text, created_at, updated_at
+                            )
+                            VALUES (NEWID(), ?, ?, ?, SYSUTCDATETIME(), ?, SYSUTCDATETIME(), SYSUTCDATETIME())
+                        """, (
+                            valid_session_uuid,
+                            real_q_uuid,
+                            seq,
+                            resp_text
+                        ))
+            conn.commit()
+            logger.info(f"Respuestas transcritas de {len(turn_responses)} preguntas actualizadas en session_question para sesión {valid_session_uuid}")
 
     save_analysis_report = finalize_session_analysis
 

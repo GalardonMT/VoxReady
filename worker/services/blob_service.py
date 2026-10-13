@@ -1,8 +1,12 @@
 import os
 from pathlib import Path
 from typing import Optional
-from utils.logger import get_logger
-from services.keyvault_service import get_secret
+try:
+    from utils.logger import get_logger
+    from services.keyvault_service import get_secret
+except (ImportError, ValueError):
+    from worker.utils.logger import get_logger
+    from worker.services.keyvault_service import get_secret
 
 logger = get_logger("services.blob_service")
 

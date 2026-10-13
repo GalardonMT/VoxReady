@@ -11,6 +11,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from master_topics import MASTER_SCHEMA_DDL
 from spokesperson_store import SESSION_SCHEMA_DDL, SESSION_INDEX_DDL
+from progress_migration import (
+    PROGRESS_SCHEMA_DDL,
+    PROGRESS_SCHEMA_STEPS,
+    USER_AREA_PROGRESS_BACKFILL_DML,
+)
 from seed_master_topics import connect, SeedError, SCENARIO_QUESTION_DDL, verify_link_schema
 
 REQUIRED = {
@@ -19,6 +24,35 @@ REQUIRED = {
     'scenario_question': ('status', 'sequence_no'),
     'session': ('external_session_id', 'idempotency_key'),
     'session_question': ('question_text',),
+    'schedule': ('session_id',),
+    'user_area_progress': (
+        'user_id', 'rubric_area_id', 'current_value', 'delta',
+        'sessions_count', 'last_session_at',
+    ),
+}
+
+REQUIRED_INDEXES = {
+    'session': {
+        'UQ_session_external_id': {'unique': True, 'filtered': True},
+        'UQ_session_idempotency': {'unique': True, 'filtered': True},
+    },
+    'schedule': {
+        'UQ_schedule_session': {
+            'unique': True, 'filtered': True, 'keys': ('session_id',),
+            'includes': (), 'filter': 'session_idisnotnull',
+        },
+        'IX_schedule_client_user_date': {
+            'unique': False, 'filtered': False,
+            'keys': ('client_id', 'user_id', 'scheduled_date', 'status'),
+            'includes': ('scenario_id', 'session_id', 'updated_at'),
+        },
+    },
+    'user_area_progress': {
+        'UQ_user_area_progress_user_area': {
+            'unique': True, 'filtered': False,
+            'keys': ('user_id', 'rubric_area_id'), 'includes': (),
+        },
+    },
 }
 
 
@@ -34,11 +68,66 @@ def verify(cursor):
         if not row or not row[0]:
             raise SeedError(f'dbo.{table}.client_id no admite los temas maestros globales.')
     verify_link_schema(cursor)
-    for index in ('UQ_session_external_id', 'UQ_session_idempotency'):
-        cursor.execute("SELECT is_unique,is_disabled FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.session') AND name=?", index)
-        row = cursor.fetchone()
-        if not row or not row[0] or row[1]:
-            raise SeedError(f'Falta el índice activo {index}.')
+    cursor.execute("""SELECT is_nullable, TYPE_NAME(user_type_id)
+                      FROM sys.columns
+                      WHERE object_id=OBJECT_ID(N'dbo.schedule') AND name=N'session_id'""")
+    session_column = cursor.fetchone()
+    if not session_column or not session_column[0] or session_column[1].lower() != 'uniqueidentifier':
+        raise SeedError('dbo.schedule.session_id debe ser UNIQUEIDENTIFIER NULL.')
+    for table, indexes in REQUIRED_INDEXES.items():
+        for index, expected in indexes.items():
+            cursor.execute("""SELECT is_unique,is_disabled,has_filter,filter_definition
+                              FROM sys.indexes
+                              WHERE object_id=OBJECT_ID(?) AND name=?""",
+                           'dbo.' + table, index)
+            row = cursor.fetchone()
+            if (not row or bool(row[0]) != expected['unique'] or row[1]
+                    or bool(row[2]) != expected['filtered']):
+                raise SeedError(f'Falta o no coincide el índice activo {index}.')
+            if 'keys' in expected:
+                cursor.execute("""SELECT c.name,ic.key_ordinal,ic.is_included_column,ic.index_column_id
+                                  FROM sys.indexes i
+                                  JOIN sys.index_columns ic
+                                    ON ic.object_id=i.object_id AND ic.index_id=i.index_id
+                                  JOIN sys.columns c
+                                    ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+                                  WHERE i.object_id=OBJECT_ID(?) AND i.name=?
+                                  ORDER BY ic.index_column_id""",
+                               'dbo.' + table, index)
+                columns = list(cursor.fetchall())
+                keys = tuple(
+                    column[0].lower()
+                    for column in sorted(
+                        (column for column in columns if not column[2]),
+                        key=lambda column: column[1],
+                    )
+                )
+                includes = tuple(column[0].lower() for column in columns if column[2])
+                if keys != expected['keys'] or includes != expected['includes']:
+                    raise SeedError(f'Las columnas del índice {index} no coinciden.')
+                expected_filter = expected.get('filter')
+                actual_filter = ''.join(
+                    str(row[3] or '').lower().replace('[', '').replace(']', '').split()
+                ).replace('(', '').replace(')', '')
+                if expected_filter and actual_filter != expected_filter:
+                    raise SeedError(f'El filtro del índice {index} no coincide.')
+    cursor.execute("""SELECT fk.is_disabled,fk.is_not_trusted,parent_col.name,referenced_col.name
+                      FROM sys.foreign_keys AS fk
+                      JOIN sys.foreign_key_columns AS fkc ON fkc.constraint_object_id=fk.object_id
+                      JOIN sys.columns AS parent_col
+                        ON parent_col.object_id=fkc.parent_object_id
+                       AND parent_col.column_id=fkc.parent_column_id
+                      JOIN sys.columns AS referenced_col
+                        ON referenced_col.object_id=fkc.referenced_object_id
+                       AND referenced_col.column_id=fkc.referenced_column_id
+                      WHERE fk.parent_object_id=OBJECT_ID(N'dbo.schedule')
+                        AND fk.referenced_object_id=OBJECT_ID(N'dbo.session')
+                        AND fk.name=N'FK_schedule_session'""")
+    foreign_key = cursor.fetchone()
+    if (not foreign_key or foreign_key[0] or foreign_key[1]
+            or foreign_key[2].lower() != 'session_id'
+            or foreign_key[3].lower() != 'id'):
+        raise SeedError('Falta la clave foránea activa y verificada FK_schedule_session.')
 
 
 def main(argv=None):
@@ -76,6 +165,9 @@ def main(argv=None):
                 ON assigned.question_id=q.id WHERE q.sort_order=0""")
             cursor.execute(SESSION_SCHEMA_DDL)
             cursor.execute(SESSION_INDEX_DDL)
+            for ddl in PROGRESS_SCHEMA_STEPS:
+                cursor.execute(ddl)
+            cursor.execute(USER_AREA_PROGRESS_BACKFILL_DML)
         verify(cursor)
         if args.verify_only:
             connection.rollback()

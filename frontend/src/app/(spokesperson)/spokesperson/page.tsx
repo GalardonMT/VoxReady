@@ -8,6 +8,7 @@ import { TechConsentView } from '../../../components/spokesperson/TechConsentVie
 import { LiveSessionView } from '../../../components/spokesperson/LiveSessionView';
 import { AnalyzingView } from '../../../components/spokesperson/AnalyzingView';
 import { CoachReportView } from '../../../components/spokesperson/CoachReportView';
+import { FullVisumReportView } from '../../../components/spokesperson/FullVisumReportView';
 import { ProgressView } from '../../../components/spokesperson/ProgressView';
 import { LessonView } from '../../../components/spokesperson/LessonView';
 import { CancelExerciseModal } from '../../../components/spokesperson/CancelExerciseModal';
@@ -58,10 +59,15 @@ function SpokespersonContent() {
     if (extra && screen === 'lesson') {
       setSelectedLesson(extra);
     }
+    if (extra && (screen === 'u8' || screen === 'u6')) {
+      setActiveSessionId(extra);
+    }
     if (screen === 'u3') {
       if (extra) setActiveScenarioId(extra);
-      const newSession = `session-${extra || 'crisis'}-${Date.now()}`;
-      setActiveSessionId(newSession);
+      if (!selectedSession) {
+        const newSession = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`;
+        setActiveSessionId(newSession);
+      }
     }
     setVoceroScreen(screen);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -204,11 +210,30 @@ function SpokespersonContent() {
         )}
         {voceroScreen === 'u6' && (
           <CoachReportView
+            key={activeSessionId}
             onNavigate={handleVoceroNavigate}
             sessionId={activeSessionId}
           />
         )}
-        {voceroScreen === 'u7' && <ProgressView onNavigate={handleVoceroNavigate} />}
+        {voceroScreen === 'u8' && (
+          <FullVisumReportView
+            key={activeSessionId}
+            onNavigate={handleVoceroNavigate}
+            sessionId={activeSessionId}
+          />
+        )}
+        {voceroScreen === 'u7' && (
+          <ProgressView
+            onNavigate={handleVoceroNavigate}
+            onSessionStart={(setup) => {
+              setSelectedSession({ setup, userId: user.userId, clientId: user.clientId });
+              setActiveSessionId(setup.sessionId);
+              setActiveScenarioId(setup.scenarioId);
+              setVoceroScreen('u3');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          />
+        )}
         {voceroScreen === 'lesson' && (
           <LessonView lessonTitle={selectedLesson} onNavigate={handleVoceroNavigate} />
         )}

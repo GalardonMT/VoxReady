@@ -1,391 +1,228 @@
-# PLAN DE IMPLEMENTACIÓN: DISPARO HTTP INTERNO, ESCALADO A CERO Y PIPELINE DEL WORKER (ENTORNOS EXPRESS)
+### Plan de Implementación Técnica: Métricas de Nivel 1 (Quick-Wins)
 
-Este plan de implementación define las especificaciones técnicas, modificaciones de código y comandos de infraestructura para adaptar la arquitectura de VoxReady a las restricciones de los entornos Express de Azure Container Apps (donde los disparadores KEDA de Service Bus no están soportados), garantizando el autoescalado estricto de 0 a 1 réplica mediante tráfico HTTP privado y la integración de marcas de tiempo (`turns`).
+**Destinatario:** Equipo de Ingeniería (*Antigravity*)
 
----
+**Módulos Afectados:** `ca-analysis-worker` (`audio_analyzer.py`, `llm_judge.py`, `report_builder.py`), `sqldb-voxready` (consultas de lectura sobre `red_line` y `scenario`).
 
-### ARQUITECTURA DE COMUNICACIÓN PRIVADA
-
-Dado que el entorno Express solo admite escalado por HTTP, CPU y Memoria, se sustituye el desacoplamiento por Service Bus por una invocación HTTP interna directa:
-
-```text
-[ Frontend ]
-     │
-     │ 1. POST /v1/sessions/{id}/finish { blobPath, turns }[cite: 5, 6]
-     ▼
-[ ca-backend-api ]
-     │
-     ├─► 2. Registra fin de sesión en Azure SQL (status = 'analyzing')[cite: 5, 7]
-     │
-     └─► 3. POST http://ca-analysis-worker/analyze (DNS privado interno en ACA)
-              │
-              ▼ (Azure despierta el worker de 0 a 1 réplica automáticamente)
-[ ca-analysis-worker ]
-     │
-     ├─► 4. Responde 202 Accepted de inmediato al backend[cite: 5]
-     ├─► 5. Ejecuta pipeline en BackgroundTasks (FFmpeg, Parakeet, MediaPipe, Llama)[cite: 2]
-     ├─► 6. Persiste reporte consolidado en Azure SQL (status = 'completed')[cite: 2, 7]
-     │
-     ▼ (Al terminar y expirar el tiempo de inactividad, ACA escala a 0 réplicas)
-
-```
+**Objetivo:** Incorporar al pipeline de análisis multimodal las tres métricas faltantes de Visum que no requieren nuevos modelos ni procesamiento pesado de señales: dicción fonética real, penalización estricta por líneas rojas y evaluación de reconocimiento explícito del afectado.
 
 ---
 
-### MÓDULO 1: ACTUALIZACIÓN DEL BACKEND (`ca-backend-api`)
+### 1. Resumen de Alcance e Impacto Arquitectónico
 
-El backend debe recibir los `turns` en el endpoint de finalización, registrar el inicio del análisis en base de datos y despachar la solicitud HTTP interna hacia el worker.
+Estas tres métricas operan sobre datos ya disponibles en memoria durante la ejecución del job de análisis, manteniendo el tiempo de cómputo en CPU por debajo de los límites del contenedor (1.0 vCPU) y sin alterar el esquema relacional de Azure SQL (`sqldb-voxready`):
 
-#### 1.1 Modelo de Datos Pydantic (`schemas/session.py`)
+| Métrica | Fuente de Entrada | Componente Receptor | Impacto en la Rúbrica |
+| --- | --- | --- | --- |
+| **Dicción y Claridad Fonética** | Metadatos de NVIDIA Parakeet (`word.confidence`)
 
-Actualizar los esquemas de petición para aceptar la lista opcional de intervalos de tiempo:
+ | `audio_analyzer.py` | Modula la nota del área **`voice`**.
+
+ |
+| **Detección de Líneas Rojas** | Tabla `red_line` en Azure SQL + Transcripción
+
+ | `llm_judge.py` | Penaliza severamente **`coherence`** y **`consistencia_institucional`**.
+
+ |
+| **Reconocimiento del Afectado** | Transcripción de la entrevista + Prompt estructurado
+
+ | `llm_judge.py` / `report_builder.py` | Modula el canal verbal de **`empathy`**.
+
+ |
+
+---
+
+### 2. Tarea 1: Cálculo Real de Dicción Fonética (`audio_analyzer.py`)
+
+#### Contexto del problema
+
+El reporte actual devuelve un valor estático fijado en `"score_diccion": 100.0` sin procesar la calidad acústica de las palabras.
+
+#### Implementación técnica
+
+1. **Extracción de confianza en Parakeet:**
+La respuesta estructurada de Parakeet-TDT expone para cada palabra transcrita su marca temporal y su nivel de certeza acústica ($\text{confidence} \in [0.0, 1.0]$).
+
+
+2. **Algoritmo de cálculo:**
+En `services/audio_analyzer.py`, sustituir el valor hardcodeado por el promedio aritmético de confianza escalado a base 100, descartando palabras vacías o símbolos de puntuación:
+$$\text{score\_diccion} = \left( \frac{1}{N} \sum_{i=1}^{N} \text{confidence}_i \right) \times 100$$
+
+
 
 ```python
-from typing import List, Optional
-from pydantic import BaseModel, Field
-
-class TurnInterval(BaseModel):
-    questionId: str
-    sequenceNo: int
-    startMs: int
-    endMs: int
-
-class FinishSessionRequest(BaseModel):
-    blobPath: str = Field(..., description="Ruta relativa del archivo WebM en el storage")
-    turns: Optional[List[TurnInterval]] = Field(default=[], description="Segmentación temporal por pregunta")
-
-class WorkerTriggerPayload(BaseModel):
-    sessionId: str
-    jobId: str
-    rubricVersionId: str
-    blobPath: str
-    turns: List[TurnInterval]
+def compute_diction_score(parakeet_words: list[dict]) -> float:
+    """
+    Calcula la claridad fonética basada en la confianza acústica de Parakeet.
+    Cada elemento en parakeet_words debe contener 'word' y 'confidence'.
+    """
+    valid_confidences = [
+        float(w["confidence"]) 
+        for w in parakeet_words 
+        if "confidence" in w and w.get("word", "").strip()
+    ]
+    
+    if not valid_confidences:
+        return 70.0  # Fallback defensivo si no hay palabras reconocibles
+    
+    mean_confidence = sum(valid_confidences) / len(valid_confidences)
+    return round(mean_confidence * 100, 1)
 
 ```
 
-#### 1.2 Cliente HTTP Interno para el Worker (`services/worker_client.py`)
+3. **Integración en la nota de Voz (`area_score.voice`):**
+En `report_builder.py`, ponderar el `score_diccion` dentro del cálculo del canal auditivo:
 
-Crear un cliente asíncrono basado en `httpx` para invocar al worker mediante su FQDN privado:
 
-```python
-import logging
-import httpx
-from schemas.session import WorkerTriggerPayload
+$$\text{Score Voz} = (\text{Puntaje WPM} \times 0.40) + (\text{Score Fluidez} \times 0.35) + (\text{Score Dicción} \times 0.25)$$
 
-logger = logging.getLogger(__name__)
 
-WORKER_INTERNAL_URL = "http://ca-analysis-worker/analyze"
 
-async def trigger_worker_analysis(payload: WorkerTriggerPayload) -> bool:
-    """
-    Envía la señal de inicio de análisis al worker mediante HTTP interno.
-    La llamada despertará el contenedor de 0 a 1 réplica.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                WORKER_INTERNAL_URL,
-                json=payload.model_dump(),
-                headers={"Content-Type": "application/json"}
-            )
-            if response.status_code == 202:
-                logger.info(f"Worker activado exitosamente para la sesión {payload.sessionId}")
-                return True
-            else:
-                logger.error(f"Worker respondió con estado inesperado {response.status_code}: {response.text}")
-                return False
-    except httpx.RequestError as exc:
-        logger.error(f"Error de red contactando al worker interno: {str(exc)}")
-        return False
+---
+
+### 3. Tarea 2: Extracción e Inyección de Líneas Rojas (`llm_judge.py`)
+
+#### Contexto del problema
+
+El catálogo del administrador permite configurar "Líneas Rojas" (frases, justificaciones o admisiones legales estrictamente prohibidas para el vocero). Actualmente, el Juez LLM evalúa apego a mensajes clave, pero no penaliza de forma determinista la transgresión de estas prohibiciones.
+
+#### Implementación técnica
+
+1. **Lectura desde base de datos (`database.py`):**
+Al inicio del pipeline, el worker debe consultar las líneas rojas vinculadas al escenario que se está analizando mediante su relación con `topic`:
+
+
+```sql
+SELECT rl.text 
+FROM red_line rl
+INNER JOIN topic t ON rl.topic_id = t.id
+INNER JOIN scenario s ON s.topic_id = t.id
+WHERE s.id = :scenario_id
+ORDER BY rl.sort_order ASC;
+```[cite: 7]
+
 
 ```
 
-#### 1.3 Endpoint `POST /v1/sessions/{sessionId}/finish` (`routers/sessions.py`)
 
-Reemplazar la publicación en Azure Service Bus por el despacho directo al worker:
+2. **Extensión del System Prompt del LLM Juez:**
+En `services/llm_judge.py`, inyectar la lista de líneas rojas en el bloque de instrucciones para `meta/llama-3.2-90b-vision-instruct`:
+
+
+
+```markdown
+LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS):
+{% for rl in red_lines %}
+- "{{ rl }}"
+{% endfor %}
+
+REGLA CRÍTICA DE EVALUACIÓN:
+Evalúa si en la transcripción el vocero admitió, mencionó o violó alguna de las líneas rojas anteriores.
+Si existe una violación de línea roja:
+1. Asigna inmediatamente nivel 1 (score 0.0) a "consistencia_institucional".
+2. Declara "infraccion_linea_roja": true en el JSON de salida.
+3. Detalla en "evidencia_infraccion" la frase exacta pronunciada y la línea roja vulnerada.
+4. Incluye la transgresión como la primera prioridad en "brecha_critica".
+
+```
+
+3. **Esquema de salida JSON requerido del modelo:**
+Actualizar la especificación del contrato de respuesta del LLM para capturar la detección:
+```json
+{
+  "infraccion_linea_roja": false,
+  "evidencia_infraccion": null,
+  "consistencia_institucional": 4
+}
+
+```
+
+
+4. **Penalización forzada en Python (`report_builder.py`):**
+Para evitar que una alucinación del LLM asigne un puntaje alto habiendo detectado una infracción, programar una salvaguarda determinista:
+
 
 ```python
-import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
-from schemas.session import FinishSessionRequest, WorkerTriggerPayload
-from services.worker_client import trigger_worker_analysis
-from db.connection import get_db_cursor
+if judge_result.get("infraccion_linea_roja") is True:
+    # Forzar nivel mínimo en consistencia y aplicar castigo a Coherencia
+    score_coherencia = min(score_coherencia, 20.0)
 
-router = APIRouter(prefix="/v1/sessions", tags=["Sessions"])
+```
 
-@router.post("/{sessionId}/finish", status_code=status.HTTP_202_ACCEPTED)
-async def finish_session(
-    sessionId: str,
-    payload: FinishSessionRequest,
-    cursor = Depends(get_db_cursor)
-):
-    # 1. Validar que la sesión exista y esté en estado compatible
-    cursor.execute("SELECT id, status, rubric_version_id FROM session WHERE id = ?", sessionId)
-    session = cursor.fetchone()
-    if not session:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    
-    # 2. Generar registro de analysis_job
-    job_id = str(uuid.uuid4())
-    cursor.execute("""
-        INSERT INTO analysis_job (id, session_id, rubric_version_id, status, started_at, created_at, updated_at)
-        VALUES (?, ?, ?, 'running', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME())
-    """, (job_id, sessionId, session.rubric_version_id))
 
-    # 3. Transicionar estado de la sesión
-    cursor.execute("""
-        UPDATE session 
-        SET status = 'analyzing', finished_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-        WHERE id = ?
-    """, sessionId)
-    cursor.commit()
 
-    # 4. Despachar llamada HTTP interna al worker
-    trigger_payload = WorkerTriggerPayload(
-        sessionId=sessionId,
-        jobId=job_id,
-        rubricVersionId=str(session.rubric_version_id),
-        blobPath=payload.blobPath,
-        turns=payload.turns or []
-    )
-    
-    worker_started = await trigger_worker_analysis(trigger_payload)
-    if not worker_started:
-        logger.warning(f"No se pudo confirmar el inicio del worker para job {job_id}. Reintentar vía polling.")
+---
 
-    return {
-        "sessionId": sessionId,
-        "status": "analyzing",
-        "analysisId": job_id,
-        "estimatedSeconds": 45
+### 4. Tarea 3: Reconocimiento Explícito del Afectado (`llm_judge.py`)
+
+#### Contexto del problema
+
+La rúbrica de crisis de Visum exige evaluar si el vocero coloca a las víctimas o clientes afectados como la primera prioridad comunicacional antes de presentar defensas corporativas o balances técnicos. En el esquema actual, la nota de Empatía depende casi exclusivamente de correlaciones matemáticas con la mirada y la postura.
+
+#### Implementación técnica
+
+1. **Nueva dimensión en el LLM Juez:**
+Incorporar en el prompt de evaluación la variable `reconocimiento_afectados` (escala 1 a 5):
+
+
+
+```markdown
+DIMENSIÓN ADICIONAL - RECONOCIMIENTO DEL AFECTADO:
+- Nivel 5: Prioriza inmediatamente el impacto humano, a los clientes perjudicados o a la comunidad antes de dar explicaciones técnicas o corporativas. Muestra empatía activa sin evasivas.
+- Nivel 3: Menciona a los afectados de forma tardía o como una formalidad secundaria.
+- Nivel 1: Ignora el impacto humano; se enfoca exclusivamente en justificaciones financieras, operacionales o en deslindar responsabilidades corporativas.
+
+```
+
+2. **Cálculo Híbrido de Empatía en `report_builder.py`:**
+Reestructurar el cálculo del área `empathy` combinando la señal no verbal (congruencia de mirada y estabilidad) con la señal verbal (reconocimiento evaluado por el LLM):
+
+
+$$\text{Score Empatía Verbal} = \left(\frac{\text{Nivel Reconocimiento} - 1}{4}\right) \times 100$$
+
+
+$$\text{Score Empatía Final} = (\text{Empatía No Verbal} \times 0.40) + (\text{Score Empatía Verbal} \times 0.60)$$
+
+
+
+
+---
+
+### 5. Tarea 4: Limpieza de Redundancias en el Objeto de Persistencia
+
+Alinear la serialización final en `analysis_pipeline_result.summary_json` asegurando que las nuevas métricas queden registradas sin duplicaciones:
+
+```json
+{
+  "metrics": {
+    "audio": {
+      "palabrasTotales": 111,
+      "wpmGlobal": 133.4,
+      "scoreDiccion": 94.2,
+      "densidadMuletillasPct": 1.8
+    },
+    "judge": {
+      "infraccionLineaRoja": false,
+      "dimensiones": {
+        "consistenciaInstitucional": { "nivel": 4, "score": 75.0 },
+        "reconocimientoAfectados": { "nivel": 2, "score": 25.0 }
+      }
     }
-
-```
-
----
-
-### MÓDULO 2: TRANSFORMACIÓN DEL WORKER A SERVIDOR FASTAPI (`ca-analysis-worker`)
-
-El worker deja de ser un script en bucle continuo y se transforma en un servicio FastAPI que expone un endpoint HTTP interno en el puerto 8000 con `BackgroundTasks`.
-
-#### 2.1 Dependencias adicionales (`requirements.txt`)
-
-Añadir al archivo existente:
-
-```text
-fastapi>=0.110.0
-uvicorn>=0.28.0
-httpx>=0.27.0
-
-```
-
-#### 2.2 Servidor Principal (`main.py`)
-
-Implementar la interfaz HTTP requerida para el autoescalado de ACA:
-
-```python
-import logging
-from fastapi import FastAPI, BackgroundTasks, status
-from pydantic import BaseModel
-from typing import List, Optional
-from core.pipeline_orchestrator import process_session_pipeline
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("analysis-worker")
-
-app = FastAPI(title="ca-analysis-worker", version="2.0.0")
-
-class TurnInterval(BaseModel):
-    questionId: str
-    sequenceNo: int
-    startMs: int
-    endMs: int
-
-class JobRequest(BaseModel):
-    sessionId: str
-    jobId: str
-    rubricVersionId: str
-    blobPath: str
-    turns: Optional[List[TurnInterval]] = []
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "service": "ca-analysis-worker"}
-
-@app.post("/analyze", status_code=status.HTTP_202_ACCEPTED)
-async def trigger_analysis(job: JobRequest, background_tasks: BackgroundTasks):
-    """
-    Recibe la orden de trabajo, responde 202 de inmediato para liberar al backend
-    y procesa la inferencia multimodal en segundo plano.
-    """
-    logger.info(f"Trabajo recibido para sesión {job.sessionId} (Job: {job.jobId})")
-    
-    # Delegar la ejecución pesada para no bloquear la conexión HTTP
-    background_tasks.add_task(
-        process_session_pipeline,
-        session_id=job.sessionId,
-        job_id=job.jobId,
-        rubric_version_id=job.rubricVersionId,
-        blob_path=job.blobPath,
-        turns=[t.model_dump() for t in job.turns]
-    )
-    
-    return {"status": "accepted", "sessionId": job.sessionId, "jobId": job.jobId}
-
-```
-
-#### 2.3 Orquestador de Pipeline con Filtro de Turnos (`core/pipeline_orchestrator.py`)
-
-Asegurar que el orquestador divida los análisis usando los `turns` recibidos:
-
-```python
-import os
-import logging
-import pyodbc
-from core.audio_analyzer import extract_and_analyze_audio
-from core.vision_client import send_frames_to_vision_service
-from core.llm_judge import evaluate_turns_content
-from core.report_builder import build_consolidated_report
-from core.narrative_generator import generate_visum_report
-
-logger = logging.getLogger(__name__)
-
-def process_session_pipeline(session_id: str, job_id: str, rubric_version_id: str, blob_path: str, turns: list):
-    db_conn = pyodbc.connect(os.environ["SQL_CONNECTION_STRING"])
-    cursor = db_conn.cursor()
-    
-    try:
-        logger.info(f"Iniciando pipeline multimodal para sesión {session_id}")
-        
-        # 1. Descargar video desde Azure Blob Storage con SAS interna
-        local_video_path = f"/tmp/{session_id}.webm"
-        # download_blob(blob_path, local_video_path)
-
-        # 2. Análisis de Voz (NVIDIA Parakeet + Métricas locales en Python)
-        # Retorna transcript completo, word_offsets y métricas de fluidez
-        voice_results = extract_and_analyze_audio(local_video_path, turns)
-
-        # 3. Análisis de Imagen (Muestreo a 0.5 FPS y envío a ca-vision-service)
-        vision_results = send_frames_to_vision_service(local_video_path, turns)
-
-        # 4. Evaluación de Contenido por Turno (LLM Juez con escala 1-5 de Visum)
-        content_results = evaluate_turns_content(voice_results["segmented_transcripts"], session_id)
-
-        # 5. Capa de Fusión Multivariable
-        consolidated_scores = build_consolidated_report(voice_results, vision_results, content_results)
-
-        # 6. Generación Narrativa Ejecutiva VISUM (Llamada 2 a LLM)
-        cursor.execute("""
-            SELECT s.title, s.context, t.optics 
-            FROM session ses
-            JOIN scenario s ON ses.scenario_id = s.id
-            JOIN topic t ON s.topic_id = t.id
-            WHERE ses.id = ?
-        """, session_id)
-        scen_row = cursor.fetchone()
-        scenario_meta = {"title": scen_row.title, "context": scen_row.context, "optics": scen_row.optics}
-        
-        visum_narrative = generate_visum_report(scenario_meta, consolidated_scores)
-
-        # 7. Persistencia Atómica en Azure SQL (report, area_score, analysis_pipeline_result)
-        persist_results(cursor, session_id, job_id, rubric_version_id, consolidated_scores, visum_narrative)
-        db_conn.commit()
-        logger.info(f"Pipeline completado exitosamente para sesión {session_id}")
-
-    except Exception as ex:
-        db_conn.rollback()
-        logger.error(f"Fallo en pipeline de sesión {session_id}: {str(ex)}")
-        cursor.execute("UPDATE analysis_job SET status = 'failed', failure_reason = ? WHERE id = ?", (str(ex)[:500], job_id))
-        cursor.execute("UPDATE session SET status = 'failed' WHERE id = ?", session_id)
-        db_conn.commit()
-    finally:
-        cursor.close()
-        db_conn.close()
-        if os.path.exists(local_video_path):
-            os.remove(local_video_path)
-
-```
-
-#### 2.4 Actualizar el Entrypoint del Contenedor (`Dockerfile`)
-
-Asegurar que el contenedor inicie Uvicorn en el puerto 8000:
-
-```dockerfile
-# Añadir al final del Dockerfile existente de voxready-worker
-EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-```
+  }
+}
+```[cite: 2]
 
 ---
 
-### MÓDULO 3: COMANDOS DE DESPLIEGUE Y CONFIGURACIÓN EN AZURE
+### 6. Criterios de Aceptación (DoD) para QA y Testing
 
-Ejecutar estos comandos en Git Bash para aplicar la configuración en la infraestructura activa:
-
-```bash
-export SUBSCRIPTION_NAME="Azure for Students"
-export RG_NAME="rg-voxready-dev"
-export ACR_NAME="crvoxreadyst"
-export WORKER_APP_NAME="ca-analysis-worker"
-export SQL_SERVER_NAME="sql-voxready-st"
-export SQL_DB_NAME="sqldb-voxready"
-
-az account set --subscription "$SUBSCRIPTION_NAME"
-
-# 1. Compilar y subir la nueva imagen del Worker con Uvicorn
-cd voxready-worker
-az acr build --registry "$ACR_NAME" --image analysis-worker:v2.2 .
-cd ..
-
-# 2. Actualizar ca-analysis-worker a Ingress Interno y Escala a Cero
-az containerapp update \
-  --name "$WORKER_APP_NAME" \
-  --resource-group "$RG_NAME" \
-  --image "$ACR_NAME.azurecr.io/analysis-worker:v2.2" \
-  --ingress internal \
-  --target-port 8000 \
-  --min-replicas 0 \
-  --max-replicas 1
-
-# 3. Configurar Auto-Pausa a 60 minutos en Azure SQL para detener consumo inactivo
-az sql db update \
-  --resource-group "$RG_NAME" \
-  --server "$SQL_SERVER_NAME" \
-  --name "$SQL_DB_NAME" \
-  --auto-pause-delay 60 \
-  --min-capacity 0.5
+1. **Prueba de Dicción Real (`audio_analyzer_test.py`):**  
+   Al inyectar un payload de Parakeet con confianza media de $0.85$, el campo `metrics.audio.scoreDiccion` debe registrar exactamente `85.0` (eliminando el valor fijo de `100.0`)[cite: 2].
+2. **Prueba de Transgresión de Línea Roja (`llm_judge_test.py`):**  
+   Ejecutar una evaluación con una transcripción que contenga deliberadamente una frase prohibida (ej. *"No habrá indemnizaciones"*)[cite: 7]. Verificar que `infraccionLineaRoja` sea `true`, que `consistencia_institucional` caiga a nivel 1 y que el puntaje final de Coherencia quede truncado a un máximo de 20 puntos[cite: 2, 7].
+3. **Prueba de Empatía Cruzada:**  
+   Verificar que una respuesta con 100% de contacto visual pero con omisión total de las víctimas no obtenga un puntaje de Empatía superior a 40 puntos[cite: 2].
+4. **Tiempo de Ejecución:**  
+   El pipeline completo debe mantenerse por debajo de los 60 segundos totales de procesamiento en Azure Container Apps[cite: 4, 5].
 
 ```
-
----
-
-### MÓDULO 4: PRUEBAS DE INTEGRACIÓN Y VERIFICACIÓN (SMOKE TESTS)
-
-Ejecutar esta secuencia de validación técnica:
-
-#### 1. Confirmar que el Worker escala a 0 réplicas en reposo
-
-```bash
-az containerapp replica list \
-  --name ca-analysis-worker \
-  --resource-group rg-voxready-dev \
-  -o table
-
-```
-
-*Criterio de aceptación:* Pasados 3 a 5 minutos del despliegue, la tabla no debe arrojar filas activas.
-
-#### 2. Probar la activación del Worker vía HTTP interno
-
-Conectarse por consola a `ca-backend-api` para emitir una petición interna de prueba hacia el worker:
-
-```bash
-az containerapp exec \
-  --name ca-backend-api \
-  --resource-group rg-voxready-dev \
-  --command "curl -s -X GET http://ca-analysis-worker/health"
-
-```
-
-*Criterio de aceptación:* Retorna `{"status":"ok","service":"ca-analysis-worker"}`. Al recibir la petición, el contenedor del worker levantará 1 réplica automáticamente y se apagará tras el tiempo de enfriamiento habitual de Container Apps.

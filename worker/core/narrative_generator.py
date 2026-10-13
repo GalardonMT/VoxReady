@@ -63,13 +63,50 @@ Responde EXCLUSIVAMENTE un objeto JSON válido con la siguiente estructura:
 """
 
 
-def _clean_json_markdown(text: str) -> str:
-    """Elimina delimitadores markdown tipo ```json ... ``` si el LLM los incluye."""
+def _parse_llm_json(text: str) -> dict:
+    """Extrae y parsea de forma robusta un objeto JSON devuelto por el LLM, tolerando extra data o markdown."""
+    if not text or not text.strip():
+        raise ValueError("El contenido devuelto por el LLM está vacío.")
+
     clean = text.strip()
+
+    # 1. Si viene envuelto en markdown ```json ... ```, extraer contenido del bloque
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean, re.IGNORECASE)
     if match:
         clean = match.group(1).strip()
-    return clean
+
+    # 2. Intento directo con json.loads
+    try:
+        parsed = json.loads(clean)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # 3. Intentar raw_decode desde el primer '{' para ignorar cualquier texto sobrante (Extra data)
+    start_idx = clean.find("{")
+    if start_idx != -1:
+        try:
+            decoder = json.JSONDecoder()
+            parsed, _ = decoder.raw_decode(clean[start_idx:])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # 4. Intentar recortar entre el primer '{' y el último '}'
+    start_idx = clean.find("{")
+    end_idx = clean.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        try:
+            parsed = json.loads(clean[start_idx : end_idx + 1].strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # 5. Si todo falla, intentar json.loads estándar para propagar la excepción informativa
+    return json.loads(clean)
 
 
 def generate_visum_report(
@@ -157,49 +194,8 @@ def generate_visum_report(
             response_format={"type": "json_object"}
         )
         raw_content = response.choices[0].message.content
-        cleaned_content = _clean_json_markdown(raw_content)
-        parsed = json.loads(cleaned_content)
+        parsed = _parse_llm_json(raw_content)
         return parsed
     except Exception as e:
         logger.error(f"Fallo en la generación del informe VISUM ({type(e).__name__}): {str(e)}")
-        # Fallback estructurado en caso de indisponibilidad temporal de la red o del modelo
-        return {
-            "sintesis_ejecutiva": {
-                "diagnostico_general": f"El vocero demostró compostura y solvencia general ante el escenario de contingencia, obteniendo un puntaje global de {score_global}/100.",
-                "fortaleza_principal": "Mantuvo la calma expositiva y apego a las directrices institucionales prioritarias.",
-                "foco_desarrollo": "Transicionar desde una postura reactiva de respuestas técnicas hacia la conducción activa de la conversación.",
-                "continuidad_recomendada": "Profundizar en entrenamientos de bridging bajo preguntas periodísticas agresivas."
-            },
-            "desempeno_observado": {
-                "evaluacion_general": "Interacción sobria con adecuado autocontrol ante la presión mediática.",
-                "fortalezas": [
-                    "Aplomo no verbal y estabilidad postural durante toda la exposición.",
-                    "Ritmo de locución controlado y adecuado manejo de pausas reflexivas.",
-                    "Respeto por las líneas rojas institucionales sin incurrir en especulaciones."
-                ],
-                "oportunidades_desarrollo": [
-                    "Priorizar la empatía hacia los afectados antes de desglosar explicaciones operativas.",
-                    "Estructurar los mensajes complejos en secuencias pedagógicas de tres puntos clave.",
-                    "Reforzar el contacto visual en los momentos de mayor énfasis declarativo."
-                ],
-                "formula_practica_recomendada": "Reconocer el impacto en la comunidad -> Explicar las certezas verificadas -> Detallar las medidas inmediatas en curso."
-            },
-            "hallazgos_transversales": [
-                {
-                    "prioridad": "Empatía como primera señal",
-                    "descripcion": "Ante crisis de impacto humano, el primer párrafo debe conectar emocionalmente con la audiencia antes de recurrir a tecnicismos."
-                },
-                {
-                    "prioridad": "Conducción estratégica",
-                    "descripcion": "Aplicar técnicas de bridging fluidas para redirigir preguntas hipotéticas hacia compromisos de acción verificables."
-                }
-            ],
-            "recomendaciones_proximas_vocerias": [
-                "Regla 1: Iniciar siempre declarando lo que sí está bajo control y verificado.",
-                "Regla 2: Evitar muletillas de duda al conectar argumentos (usar pausas en silencio).",
-                "Regla 3: No emitir promesas con plazos específicos hasta contar con validación técnica.",
-                "Regla 4: Concluir reiterando el canal oficial de actualización para los medios."
-            ],
-            "consideracion_final": "Comunicar bien no es un talento innato: es una disciplina que se perfecciona mediante la práctica sistemática y la retroalimentación objetiva.",
-            "observacion_senal_cruzada": "El vocero mantuvo contacto visual firme al declarar el compromiso institucional, proyectando congruencia con el mensaje de responsabilidad."
-        }
+        raise RuntimeError(f"Error generando el informe ejecutivo VISUM con NVIDIA NIM: {e}") from e

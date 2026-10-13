@@ -5,8 +5,12 @@ import string
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
-from utils.logger import get_logger
-from services.keyvault_service import get_secret
+try:
+    from utils.logger import get_logger
+    from services.keyvault_service import get_secret
+except (ImportError, ValueError):
+    from worker.utils.logger import get_logger
+    from worker.services.keyvault_service import get_secret
 
 logger = get_logger("core.audio_analyzer")
 
@@ -150,13 +154,13 @@ class AudioAnalyzer:
         """
         try:
             import riva.client
-        except ImportError:
-            logger.warning("riva.client no está instalado. Omitiendo llamada gRPC a Riva.")
-            return {"transcript": "", "words": []}
+        except ImportError as e:
+            logger.error("riva.client (nvidia-riva-client) no está instalado.")
+            raise ImportError("nvidia-riva-client es requerido para la transcripción ASR.") from e
 
         if not self.api_key:
-            logger.warning("NVIDIA_API_KEY no configurada. Omitiendo transcripción ASR en vivo.")
-            return {"transcript": "", "words": []}
+            logger.error("NVIDIA_API_KEY no configurada para transcripción Riva ASR.")
+            raise ValueError("NVIDIA_API_KEY no configurada para el servicio de transcripción Riva ASR.")
 
         auth = riva.client.Auth(
             use_ssl=True,

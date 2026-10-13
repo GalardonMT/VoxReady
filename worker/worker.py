@@ -193,33 +193,22 @@ def upload_report_to_blob(session_id: str, report_data: dict):
 
 def process_message(body: dict):
     payload = body.get("payload", body)
-    session_id = payload.get("session_id") or body.get("session_id", "default-session")
+    session_id = payload.get("session_id") or body.get("session_id")
+    job_id = payload.get("job_id") or body.get("job_id")
     media = payload.get("media", {})
-    blob_name = media.get("video_blob_name") or payload.get("blob_name") or "input.webm"
+    blob_name = media.get("video_blob_name") or payload.get("blob_name")
     container = media.get("storage_container") or payload.get("container_name") or "recordings"
-    scenario_id = payload.get("scenario_id", "crisis-general")
+    if not session_id or not job_id or blob_name != f"recordings/{session_id}.webm":
+        raise ValueError("El evento debe identificar un job, una sesion y su grabacion exacta.")
+
+    db_svc = DatabaseService()
+    db_metadata = db_svc.get_session_context(session_id, job_id)
+    scenario_id = db_metadata["scenario"]["scenario_id"]
 
     logging.info(f"Iniciando procesamiento para sesión: {session_id} con blob: {blob_name}")
     session_tmp_dir = os.path.join("/tmp", f"session_{session_id}")
     os.makedirs(session_tmp_dir, exist_ok=True)
     local_video = os.path.join(session_tmp_dir, "input.webm")
-
-    # Inicializar servicio de base de datos
-    db_svc = None
-    db_metadata = {}
-    try:
-        db_svc = DatabaseService()
-        db_metadata = db_svc.get_active_scenario_and_rubric()
-        active_scen = db_metadata.get("scenario", {})
-        rubric_version_id = db_metadata.get("rubric_version_id")
-        # Asegurar que la sesión exista en Azure SQL
-        db_svc.ensure_session_exists(
-            session_id=session_id,
-            scenario_id=active_scen.get("scenario_id"),
-            rubric_version_id=rubric_version_id
-        )
-    except Exception as dbe:
-        logging.warning(f"Aviso al inicializar metadata de base de datos: {dbe}")
 
     try:
         download_blob(container, blob_name, local_video)
@@ -249,18 +238,8 @@ def process_message(body: dict):
             or payload.get("pregunta_periodista")
             or "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
         )
-        mensajes = (
-            payload.get("key_messages")
-            or payload.get("mensajes_clave")
-            or active_scen.get("key_messages")
-            or ["Nuestra prioridad es la seguridad y el restablecimiento del servicio."]
-        )
-        contexto = (
-            payload.get("scenario_description")
-            or payload.get("contexto_crisis")
-            or active_scen.get("context")
-            or "Incidente corporativo y vocería de crisis."
-        )
+        mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el restablecimiento del servicio."]
+        contexto = active_scen.get("context") or "Incidente corporativo y vocería de crisis."
 
         try:
             judge_svc = LLMJudgeService()
@@ -328,7 +307,7 @@ def process_message(body: dict):
                 timeout=120.0
             )
             scenario_meta = {
-                "title": active_scen.get("title") or payload.get("scenario_title") or "Crisis Institucional",
+                "title": active_scen.get("title") or "Crisis Institucional",
                 "context": contexto,
                 "optics": active_scen.get("optics") or "empática, institucional y de control operativo",
                 "key_messages": mensajes,

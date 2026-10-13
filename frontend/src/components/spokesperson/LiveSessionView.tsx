@@ -6,6 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService, type QuestionMark } from '../../services/sessionService';
 import type { SessionSetup } from '../../services/sessionFlowService';
+import type { TurnInterval } from '../../types/api';
 import { InterviewerAvatar } from './InterviewerAvatar';
 import { CancelExerciseModal, type CancelModalReason } from './CancelExerciseModal';
 
@@ -79,7 +80,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
   const effectiveTenantId = tenantId || user?.clientId || 'tenant-voxready-dev';
 
-  const [generatedSessionId] = useState(() => `session-crisis-${Date.now()}`);
+  const [generatedSessionId] = useState(() => typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`);
   const activeSessionId = sessionId || setup?.sessionId || generatedSessionId;
   const activeScenarioId = scenarioId || setup?.scenarioId || 'crisis-voceria-01';
 

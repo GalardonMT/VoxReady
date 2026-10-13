@@ -38,11 +38,11 @@ voxready/
 ### 2. `backend/` (FastAPI - `ca-backend-api`)
 * **Gestión de Sesiones:** Creación de sesiones y catálogo de crisis.
 * **Generación de SAS Tokens:** Endpoint `/api/sessions/{id}/upload-url` para subida directa a Blob Storage sin sobrecargar el backend.
-* **Productor de Mensajería:** Publica el evento `SESSION_RECORDING_COMPLETED` en **Azure Service Bus** (`sb-voxready-dev`) para disparar el procesamiento del worker.
+* **Despacho de análisis:** Llama por HTTP a `/analyze` del worker; si esa llamada no se confirma, publica `SESSION_RECORDING_COMPLETED` en Azure Service Bus como contingencia. El despliegue del consumidor de la cola requiere verificación aparte.
 * **Consulta de Reportes:** Endpoint `/api/sessions/{id}/report` para entregar el reporte consolidado al frontend.
 
 ### 3. `worker/` (Python Serverless - `ca-analysis-worker`)
-* **Consumidor de Service Bus:** Escucha la cola `analysis-queue` de forma asíncrona.
+* **Entradas de análisis en el código:** `worker/main.py` ofrece `/analyze` por HTTP; `worker/worker.py` y `worker/function_app.py` contienen consumidores de `analysis-queue`. Su despliegue efectivo no se verifica desde Compose.
 * **Procesamiento Multimedia (FFmpeg):** Descarga el video a `/tmp`, extrae el audio en PCM 16-bit 16kHz mono y genera fotogramas clave muestreados a 0.5 FPS.
 * **Análisis de Voz y Acústica:** Evaluación de velocidad (WPM), pausas, silencios y dicción con NVIDIA Riva / Parakeet.
 * **Análisis de Visión:** Integración vía HTTP con `ca-vision-service` para calcular estabilidad postural, contacto visual y expresiones.
@@ -80,6 +80,8 @@ docker compose up --build -d --wait --wait-timeout 240
 
 En PowerShell: `./docker.ps1 up`, `./docker.ps1 verify` y `./docker.ps1 test`.
 No requiere entornos virtuales ni una base de datos local.
+Para conservar Dev Auth en localhost, usa `./docker.ps1 up -LocalDevAuth`;
+el arranque predeterminado exige Microsoft Entra y desactiva Dev Auth.
 
 ---
 
@@ -87,6 +89,7 @@ No requiere entornos virtuales ni una base de datos local.
 
 ### Prerrequisitos
 - **Docker Desktop** con motor Linux y Compose 2.20 o posterior.
+- **Compose 2.24.4 o posterior** si usas el modo Dev Auth local.
 - **`.env` local configurado** con las conexiones Azure y autenticación Microsoft Entra; no se incluye en Git.
 - **Azure CLI (`az`)** solo para consultar logs de Container Apps.
 
@@ -95,6 +98,11 @@ No requiere entornos virtuales ni una base de datos local.
 docker compose up --build -d --wait --wait-timeout 240
 ```
 Abre en tu navegador: [http://localhost:3000](http://localhost:3000).
+Si vas a usar el acceso de desarrollo local, inicia con
+`.\docker.ps1 up -LocalDevAuth` en vez del comando anterior.
+En ese modo, agrega `DEV_AUTH_TEST_EMAIL` al `.env` local con el correo de una
+cuenta activa ya preasignada en `app_user`; la API toma de Azure SQL su rol y
+empresa. Una cuenta desconocida no se registra automáticamente.
 
 ### 2. Verificar conexión y ejecutar pruebas
 ```powershell
@@ -124,6 +132,8 @@ SERVICE_BUS_CONNECTION_STRING="Endpoint=sb://sb-voxready-dev.servicebus.windows.
 BLOB_CONTAINER_NAME="recordings"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
 DEV_AUTH="false"
+# Solo para .\docker.ps1 up -LocalDevAuth; usa una cuenta preasignada en app_user
+DEV_AUTH_TEST_EMAIL="usuario-preasignado@example.invalid"
 CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestaticapps.net"
 ```
 

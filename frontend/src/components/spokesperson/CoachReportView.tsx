@@ -218,6 +218,25 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
         <button
           type="button"
           className="btn pri"
+          style={{
+            background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+            boxShadow: '0 4px 14px rgba(79, 70, 229, 0.35)',
+            color: '#ffffff',
+            fontWeight: 700,
+            padding: '10px 18px',
+            fontSize: '13.5px',
+            border: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+          onClick={() => onNavigate('u8')}
+        >
+          <span>📋</span> Ver Informe Completo y Correcciones de Visum ➔
+        </button>
+        <button
+          type="button"
+          className="btn"
           onClick={() => onNavigate('u2')}
         >
           🔁 {d.redo}

@@ -11,6 +11,7 @@ export type VoceroScreen =
   | 'u5'
   | 'u6'
   | 'u7'
+  | 'u8'
   | 'lesson';
 
 interface HomePracticeViewProps {

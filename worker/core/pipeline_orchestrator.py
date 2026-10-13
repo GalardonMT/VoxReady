@@ -10,20 +10,23 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 import requests
+import httpx
 from openai import OpenAI
 from azure.storage.blob import BlobServiceClient
 
 try:
+    from core.audio_analyzer import AudioAnalyzer
     from core.llm_judge import LLMJudgeService
     from core.narrative_generator import generate_visum_report
     from core.vision_client import VisionClient
-    from core.report_builder import calculate_expression_area_score
+    from core.report_builder import calculate_expression_area_score, sanitize_report_json
     from services.db_service import DatabaseService
 except (ImportError, ValueError):
+    from worker.core.audio_analyzer import AudioAnalyzer
     from worker.core.llm_judge import LLMJudgeService
     from worker.core.narrative_generator import generate_visum_report
     from worker.core.vision_client import VisionClient
-    from worker.core.report_builder import calculate_expression_area_score
+    from worker.core.report_builder import calculate_expression_area_score, sanitize_report_json
     from worker.services.db_service import DatabaseService
 
 logger = logging.getLogger("analysis-worker.orchestrator")
@@ -47,7 +50,6 @@ def download_blob(blob_path: str, local_path: str):
     clean_path = (blob_path or "").strip().lstrip("/")
     default_container = CONTAINER_NAME or "recordings"
 
-    # Generar tuplas candidatas (container, blob_name)
     candidates = []
 
     # 1. Si es URL completa (https://...)
@@ -65,13 +67,11 @@ def download_blob(blob_path: str, local_path: str):
     candidates.append((default_container, clean_path))
 
     # 3. Si clean_path empieza con f"{default_container}/", probar quitando el prefijo
-    # (ej: "recordings", "<id>.webm")
     if clean_path.startswith(f"{default_container}/"):
         stripped = clean_path[len(default_container) + 1:]
         candidates.append((default_container, stripped))
 
     # 4. Si clean_path NO empieza con f"{default_container}/", probar agregando el prefijo
-    # (ej: "recordings", "recordings/<id>.webm")
     if not clean_path.startswith(f"{default_container}/"):
         candidates.append((default_container, f"{default_container}/{clean_path}"))
 
@@ -80,7 +80,6 @@ def download_blob(blob_path: str, local_path: str):
         parts = clean_path.split("/", 1)
         candidates.append((parts[0], parts[1]))
 
-    # Eliminar duplicados preservando el orden
     seen = set()
     unique_candidates = []
     for c, b in candidates:
@@ -109,7 +108,6 @@ def download_blob(blob_path: str, local_path: str):
     raise last_error or RuntimeError(f"No se pudo descargar el blob: {blob_path}")
 
 
-
 def split_media(video_path: str, session_tmp_dir: str):
     """Extrae audio PCM 16kHz y fotogramas muestreados a 0.5 FPS."""
     audio_path = os.path.join(session_tmp_dir, "audio.wav")
@@ -129,12 +127,16 @@ def split_media(video_path: str, session_tmp_dir: str):
         text=True
     )
     if res_audio.returncode != 0:
-        logger.warning(f"Aviso en extracción de audio con FFmpeg: {res_audio.stderr[:300]}")
+        logger.error(f"Error en extracción de audio con FFmpeg: {res_audio.stderr[:400]}")
+        raise RuntimeError(f"FFmpeg no pudo extraer la pista de audio: {res_audio.stderr[:200]}")
 
-    # Extraer frames a 0.5 FPS (1 fotograma cada 2 segundos)
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+        raise ValueError("El archivo de audio generado está vacío o no contiene datos válidos.")
+
+    # Extraer frames a 2 FPS (1 fotograma cada 500 ms según especificación técnica)
     cmd_frames = [
         "ffmpeg", "-nostdin", "-y", "-i", video_path,
-        "-vf", "fps=0.5", "-q:v", "2", os.path.join(frames_dir, "frame_%04d.jpg")
+        "-vf", "fps=2", "-q:v", "2", os.path.join(frames_dir, "frame_%04d.jpg")
     ]
     res_frames = subprocess.run(
         cmd_frames,
@@ -144,16 +146,20 @@ def split_media(video_path: str, session_tmp_dir: str):
         text=True
     )
     if res_frames.returncode != 0:
-        logger.warning(f"Aviso extrayendo frames con FFmpeg: {res_frames.stderr[:500]}")
+        logger.error(f"Error extrayendo frames con FFmpeg: {res_frames.stderr[:400]}")
+        raise RuntimeError(f"FFmpeg no pudo extraer fotogramas del video: {res_frames.stderr[:200]}")
 
     frame_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
-    logger.info(f"Fotogramas extraídos: {len(frame_files)}")
+    logger.info(f"Fotogramas extraídos a 2 FPS: {len(frame_files)}")
 
-    # Muestrear a máximo 20 frames representativos para optimizar tiempo de inferencia
-    if len(frame_files) > 20:
-        step = len(frame_files) // 20
-        frame_files = frame_files[::step][:20]
-        logger.info(f"Muestreados {len(frame_files)} fotogramas para MediaPipe.")
+    if not frame_files:
+        raise ValueError("No se pudieron generar fotogramas a partir de la grabación.")
+
+    # Muestrear si la grabación es excesivamente larga para proteger tiempo de inferencia (< 60s)
+    if len(frame_files) > 120:
+        step = len(frame_files) // 120
+        frame_files = frame_files[::step][:120]
+        logger.info(f"Muestreados {len(frame_files)} fotogramas representativos para MediaPipe.")
 
     return audio_path, frame_files
 
@@ -166,10 +172,10 @@ def segment_audio_by_turns(audio_path: str, turns: list, output_dir: str) -> lis
     os.makedirs(output_dir, exist_ok=True)
     segmented = []
     for t in turns:
-        q_id = t.get("questionId", "q")
-        seq = t.get("sequenceNo", 0)
-        start_ms = t.get("startMs", 0)
-        end_ms = t.get("endMs", 0)
+        q_id = t.get("questionId") or t.get("question_id") or "q"
+        seq = t.get("sequenceNo") or t.get("sequence_no") or 0
+        start_ms = t.get("startMs") if t.get("startMs") is not None else t.get("startOffsetMs", 0)
+        end_ms = t.get("endMs") if t.get("endMs") is not None else t.get("endOffsetMs", 0)
         if end_ms <= start_ms:
             continue
 
@@ -195,25 +201,27 @@ def segment_audio_by_turns(audio_path: str, turns: list, output_dir: str) -> lis
 
 def analyze_vision(frame_files: list) -> dict:
     """Envía los fotogramas al microservicio ca-vision-service (MediaPipe)."""
-    default_metrics = {
-        "eye_contact_percentage": 75.0,
-        "average_posture_score": 85.0,
-        "frames_analyzed": len(frame_files) if frame_files else 0,
-        "hands_visible_pct": 20.0,
-        "hands_active_pct": 15.0,
-        "shoulder_stability_score": 85.0,
-        "body_sway_std": 0.02,
-    }
     if not frame_files:
-        return default_metrics
+        raise ValueError("No se encontraron fotogramas válidos para el análisis de visión.")
 
     try:
         client = VisionClient(base_url=VISION_URL)
         res = client.analyze_frames(frame_files)
-        return res or default_metrics
     except Exception as e:
-        logger.warning(f"Aviso al llamar a VisionClient ({e}); aplicando métricas de resguardo.")
-        return default_metrics
+        logger.error(f"Error conectando con el microservicio de visión (ca-vision-service): {e}")
+        raise RuntimeError(f"Fallo en microservicio de análisis visual: {e}") from e
+
+    if not res:
+        raise RuntimeError("El microservicio de visión (ca-vision-service) no devolvió datos para los fotogramas.")
+
+    if res.get("error"):
+        raise RuntimeError(f"Error devuelto por el microservicio de visión: {res.get('error')}")
+
+    frames_validos = res.get("frames_validos") or res.get("frames_analyzed") or 0
+    if frames_validos == 0:
+        raise ValueError("No se detectó la presencia de ningún rostro o postura en los fotogramas del video para evaluar.")
+
+    return res
 
 
 def upload_report_to_blob(session_id: str, report_data: dict):
@@ -281,34 +289,41 @@ def process_session_pipeline(
     turns: list
 ):
     """
-    Ejecuta el pipeline multimodal completo de inferencia:
+    Ejecuta el pipeline multimodal completo de inferencia sin fallbacks ficticios:
     1. Descarga del video desde Azure Blob Storage.
-    2. Extracción de audio y muestreo de fotogramas (0.5 FPS) + segmentación temporal de turns.
+    2. Extracción de audio PCM 16kHz y fotogramas (0.5 FPS).
     3. Análisis de Imagen con MediaPipe (ca-vision-service).
-    4. Análisis de Audio y Prosodia.
+    4. Análisis de Audio acústico (RMS VAD) y transcripción ASR con NVIDIA Riva.
     5. Evaluación de Contenido con NVIDIA LLM Judge.
     6. Fusión multivariable y cálculo de rúbrica ponderada (v0.4).
     7. Generación de Síntesis Ejecutiva VISUM (Llamada 2 a LLM).
     8. Persistencia atómica en Azure SQL (report, area_score, analysis_job, session, analysis_pipeline_result).
     9. Almacenamiento del JSON consolidado en Blob Storage.
+    Si cualquier paso no cuenta con información suficiente o falla, se lanza una excepción explícita.
     """
-    logger.info(f"=== Iniciando Pipeline Multimodal: Sesión {session_id} (Job: {job_id}) ===")
+    logger.info(f"=== Iniciando Pipeline Multimodal Estricto: Sesión {session_id} (Job: {job_id}) ===")
     session_tmp_dir = os.path.join("/tmp", f"session_{session_id}")
     os.makedirs(session_tmp_dir, exist_ok=True)
     local_video_path = os.path.join(session_tmp_dir, "input.webm")
 
     db_svc = None
+    session_verified = False
     try:
-        if SQL_CONN_STR:
-            db_svc = DatabaseService()
-            # Asegurar que la sesión exista en Azure SQL
-            db_svc.ensure_session_exists(session_id=session_id)
-    except Exception as dbe:
-        logger.warning(f"Aviso al inicializar db_svc: {dbe}")
+        if not SQL_CONN_STR:
+            raise RuntimeError("Azure SQL es obligatorio para resolver la sesion del analisis.")
+        db_svc = DatabaseService()
+        db_metadata = db_svc.get_session_context(session_id, job_id)
+        internal_session_id = str(db_metadata["session_id"])
+        if rubric_version_id and str(rubric_version_id).lower() != db_metadata["rubric_version_id"].lower():
+            raise ValueError("La rubrica solicitada no coincide con la sesion.")
+        if blob_path != f"recordings/{session_id}.webm" and not blob_path.endswith(f"{session_id}.webm") and not blob_path.endswith(f"{session_id}.mp4"):
+            raise ValueError("La grabacion solicitada no corresponde a la sesion.")
+        session_verified = True
 
-    try:
         # 1. Descargar video
         download_blob(blob_path, local_video_path)
+        if not os.path.exists(local_video_path) or os.path.getsize(local_video_path) == 0:
+            raise ValueError(f"El archivo de grabación descargado está vacío o no es válido: '{blob_path}'")
 
         # 2. Extraer audio y fotogramas
         audio_path, frame_files = split_media(local_video_path, session_tmp_dir)
@@ -323,72 +338,145 @@ def process_session_pipeline(
         logger.info("Enviando fotogramas a ca-vision-service...")
         vision_metrics = analyze_vision(frame_files)
 
-        # 4. Análisis de Audio / Acústica
-        logger.info("Calculando métricas acústicas de fluidez...")
-        audio_metrics = {
-            "wpm": 128,
-            "fillers_count": 2,
-            "silence_pauses": 1,
-            "audio_duration_sec": 5.0,
-            "score_fluidez": 75.0,
-            "score_diccion": 100.0,
-            "turns_count": len(turns) if turns else 0
-        }
+        # 4. Análisis de Audio y Transcripción ASR (NVIDIA Riva + VAD RMS)
+        logger.info("Ejecutando análisis acústico y transcripción de voz con NVIDIA Riva ASR...")
+        if not NVIDIA_API_KEY:
+            raise ValueError("NVIDIA_API_KEY no está configurada en el entorno.")
+
+        audio_analyzer = AudioAnalyzer(
+            api_key=NVIDIA_API_KEY,
+            server=os.getenv("NVIDIA_RIVA_SERVER", "grpc.nvcf.nvidia.com:443"),
+            function_id=os.getenv("NVIDIA_FUNCTION_ID", "71203149-d3b7-4460-8231-1be2543a1fca"),
+            language_code=os.getenv("NVIDIA_LANGUAGE_CODE", "es-US")
+        )
+        audio_res = audio_analyzer.process_audio(audio_path)
+
+        acustica = audio_res.get("acoustic_analysis", {})
+        total_duration = acustica.get("total_duration_sec", 0.0)
+        speech_time = acustica.get("speech_time_sec", 0.0)
+
+        if total_duration < 1.0:
+            raise ValueError(f"La duración de la grabación ({total_duration:.1f}s) es insuficiente para el análisis (mínimo 1.0s).")
+
+        if speech_time < 0.4:
+            raise ValueError(
+                f"No se detectó actividad vocal en la grabación (tiempo de fonación: {speech_time:.1f}s de {total_duration:.1f}s). "
+                "Grabación en silencio o micrófono inactivo."
+            )
+
+        transcript = (audio_res.get("transcription") or "").strip()
+        words = audio_res.get("words", [])
+
+        if not transcript or len(words) == 0:
+            raise ValueError("El servicio de transcripción (NVIDIA Riva ASR) no detectó palabras inteligibles en el audio.")
+
+        audio_metrics = audio_res.get("metrics", {})
+        score_fluidez = float(audio_metrics.get("score_fluidez") if audio_metrics.get("score_fluidez") is not None else 0.0)
+        score_diccion = float(audio_metrics.get("score_diccion") if audio_metrics.get("score_diccion") is not None else 100.0)
+        score_verbal = round((score_fluidez * 0.6) + (score_diccion * 0.4), 1)
+
+        # 4.1 Mapear transcripción a cada turno/pregunta y persistir respuesta en session_question
+        turn_responses = []
+        if turns:
+            for t in turns:
+                q_id = t.get("questionId") or t.get("question_id") or ""
+                seq = t.get("sequenceNo") or t.get("sequence_no") or 1
+                start_ms = t.get("startMs") if t.get("startMs") is not None else t.get("startOffsetMs", 0)
+                end_ms = t.get("endMs") if t.get("endMs") is not None else t.get("endOffsetMs", 0)
+                start_s = start_ms / 1000.0
+                end_s = end_ms / 1000.0
+
+                matched_words = []
+                for w in words:
+                    w_start = w.get("start", w.get("start_time", 0.0))
+                    w_end = w.get("end", w.get("end_time", w_start + 0.1))
+                    if (w_start < end_s and w_end > start_s) or (w_start >= start_s and w_start <= end_s):
+                        matched_words.append(w.get("word", ""))
+
+                turn_text = " ".join(matched_words).strip()
+                turn_responses.append({
+                    "questionId": q_id,
+                    "sequenceNo": seq,
+                    "transcript": turn_text,
+                })
+
+            # Si ningún turno capturó texto individual (o sólo hay 1 turno) pero hay transcripción global:
+            non_empty_turns = [tr for tr in turn_responses if tr.get("transcript")]
+            if not non_empty_turns and transcript and turn_responses:
+                turn_responses[0]["transcript"] = transcript
+
+            if db_svc and turn_responses:
+                try:
+                    db_svc.update_question_responses(internal_session_id, turn_responses)
+                except Exception as t_err:
+                    logger.error(f"Error actualizando respuestas en session_question: {t_err}", exc_info=True)
+        elif db_svc and transcript:
+            try:
+                with db_svc._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT question_id, sequence_no 
+                        FROM session_question 
+                        WHERE session_id = ? 
+                        ORDER BY sequence_no ASC
+                    """, internal_session_id)
+                    sq_rows = cur.fetchall()
+                    if sq_rows:
+                        turn_responses = [{
+                            "questionId": str(sq_rows[0][0]),
+                            "sequenceNo": sq_rows[0][1],
+                            "transcript": transcript
+                        }]
+                        db_svc.update_question_responses(internal_session_id, turn_responses)
+            except Exception as e_turns:
+                logger.warning(f"Aviso actualizando respuesta para sesión sin turnos explícitos: {e_turns}")
 
         # 5. Evaluación de Contenido con LLM Juez
-        logger.info("Evaluando adherencia y control de crisis con LLM Juez...")
-        db_metadata = db_svc.get_active_scenario_and_rubric() if db_svc else {}
-        active_scen = db_metadata.get("scenario", {}) if db_metadata else {}
+        logger.info("Evaluando adherencia y control de crisis con LLM Juez (NVIDIA NIM)...")
+        active_scen = db_metadata.get("scenario", {}) if isinstance(db_metadata, dict) else {}
         pregunta = "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
         mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el esclarecimiento de los hechos."]
         contexto = active_scen.get("context") or "Incidente corporativo y vocería institucional ante medios de comunicación."
-        transcript = "Mensaje institucional: Estamos abordando la contingencia con el máximo rigor y transparencia."
 
-        try:
-            judge_svc = LLMJudgeService()
-            reporte_juez = judge_svc.evaluate_response(
-                pregunta_periodista=pregunta,
-                mensajes_clave=mensajes,
-                contexto_crisis=contexto,
-                transcripcion_vocero=transcript
-            )
-            llm_metrics = reporte_juez.model_dump()
-            llm_metrics["key_message_adherence_score"] = int(
-                reporte_juez.dimensiones.get("alineacion_mensaje_clave", {}).get("score_100", 75)
-            )
-            llm_metrics["crisis_control_score"] = int(
-                reporte_juez.dimensiones.get("tecnicas_control", {}).get("score_100", 75)
-            )
-            llm_metrics["bridging_detected"] = len(
-                reporte_juez.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
-            ) > 0
-            llm_metrics["strengths"] = [reporte_juez.feedback.fortaleza_principal] if reporte_juez.feedback.fortaleza_principal else ["Claridad en las certezas comunicadas"]
-            llm_metrics["weaknesses"] = [reporte_juez.feedback.brecha_critica] if reporte_juez.feedback.brecha_critica else ["Mayor énfasis en las acciones preventivas"]
-            llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
-            score_estrategico = float(reporte_juez.puntaje_global_100)
-            score_empatia = float(reporte_juez.dimensiones.get("asertividad_hostilidad", {}).get("score_100", 75.0))
-        except Exception as ej:
-            logger.warning(f"Evaluación LLMJudgeService advirtió ({ej}); aplicando evaluación estructurada de resguardo.")
-            llm_metrics = {
-                "key_message_adherence_score": 80,
-                "crisis_control_score": 78,
-                "bridging_detected": True,
-                "strengths": ["Mantuvo templanza ante preguntas críticas"],
-                "weaknesses": ["Reiterar canales oficiales de verificación"],
-                "executive_summary": "El vocero mantuvo congruencia con los mensajes clave."
-            }
-            score_estrategico = 80.0
-            score_empatia = 75.0
+        judge_svc = LLMJudgeService(
+            api_key=NVIDIA_API_KEY,
+            base_url=NVIDIA_BASE_URL,
+            model=LLM_MODEL,
+            timeout=120.0
+        )
+        reporte_juez = judge_svc.evaluate_response(
+            pregunta_periodista=pregunta,
+            mensajes_clave=mensajes,
+            contexto_crisis=contexto,
+            transcripcion_vocero=transcript
+        )
+
+        llm_metrics = reporte_juez.model_dump()
+        llm_metrics["key_message_adherence_score"] = int(
+            reporte_juez.dimensiones.get("alineacion_mensaje_clave", {}).get("score_100", 0)
+        )
+        llm_metrics["crisis_control_score"] = int(
+            reporte_juez.dimensiones.get("tecnicas_control", {}).get("score_100", 0)
+        )
+        llm_metrics["bridging_detected"] = len(
+            reporte_juez.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
+        ) > 0
+        llm_metrics["strengths"] = [reporte_juez.feedback.fortaleza_principal] if reporte_juez.feedback.fortaleza_principal else []
+        llm_metrics["weaknesses"] = [reporte_juez.feedback.brecha_critica] if reporte_juez.feedback.brecha_critica else []
+        llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
+        score_estrategico = float(reporte_juez.puntaje_global_100)
+        score_empatia = float(reporte_juez.dimensiones.get("asertividad_hostilidad", {}).get("score_100", 0.0))
 
         # 6. Fusión Multivariable y Puntuaciones por Área (Rúbrica Ponderada v0.4)
         vision_summary = vision_metrics.get("summary") or vision_metrics
         if any(k in vision_summary for k in ["hands_visible_pct", "body_sway_std", "shoulder_stability_score"]):
             expression_eval = calculate_expression_area_score(vision_summary)
-            score_visual = expression_eval["score"]
+            score_visual = float(expression_eval["score"])
         else:
-            score_visual = round(float((vision_metrics.get("eye_contact_percentage", 75.0) * 0.6) + (vision_metrics.get("average_posture_score", 85.0) * 0.4)), 1)
+            eye_pct = float(vision_metrics.get("eye_contact_percentage", 0.0))
+            posture_score = float(vision_metrics.get("average_posture_score", 0.0))
+            score_visual = round((eye_pct * 0.6) + (posture_score * 0.4), 1)
 
-        score_verbal = 75.0
         # Ponderación general: Expresión 25%, Voz 25%, Coherencia/Contenido 35%, Empatía 15%
         score_global = round(
             (score_visual * 0.25) +
@@ -406,171 +494,122 @@ def process_session_pipeline(
         }
 
         # 7. Generación Narrativa Ejecutiva VISUM (Llamada 2 a LLM)
-        logger.info("Generando Síntesis Ejecutiva VISUM...")
-        visum_narrative = {}
-        try:
-            api_key = (NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY") or "").strip()
-            client_visum = OpenAI(
-                base_url=NVIDIA_BASE_URL.rstrip("/").rstrip("/chat/completions"),
-                api_key=api_key or "test-key",
-                timeout=120.0
-            )
-            scenario_meta = {
-                "title": active_scen.get("title") or "Incidente Corporativo y Vocería de Crisis",
-                "context": contexto,
-                "optics": active_scen.get("optics") or "empática, institucional y de control operativo",
-                "key_messages": mensajes,
-                "red_lines": ["No especular sobre causas no confirmadas ni evadir la responsabilidad institucional."]
-            }
-            consolidated_intermediate = {
-                "score_global": score_global,
-                "transcript": transcript,
-                "evaluacion_areas": {
-                    "expresion": {
-                        "score": score_visual,
-                        "contacto_visual_pct": vision_summary.get("eye_contact_pct", vision_metrics.get("eye_contact_percentage", 75.0)),
-                        "postura_score": vision_summary.get("shoulder_stability_score", vision_metrics.get("average_posture_score", 85.0)),
-                        "manos_visibles_pct": vision_summary.get("hands_visible_pct", 0.0),
-                        "gesticulacion_activa_pct": vision_summary.get("hands_active_pct", 0.0),
-                        "balanceo_torso_std": vision_summary.get("body_sway_std", 0.0),
-                    },
-                    "tono_voz": {
-                        "score": score_verbal,
-                        "wpm": audio_metrics.get("wpm", 128),
-                        "muletillas_count": audio_metrics.get("fillers_count", 0)
-                    },
-                    "contenido": {
-                        "score": score_estrategico,
-                        "adherencia_mensajes": llm_metrics.get("key_message_adherence_score", 80)
-                    },
-                    "empatia": {
-                        "score": score_empatia,
-                        "bridging_detectado": llm_metrics.get("bridging_detected", True)
-                    }
+        logger.info("Generando Síntesis Ejecutiva VISUM con NVIDIA NIM...")
+        http_client = httpx.Client(verify=False, timeout=120.0)
+        client_visum = OpenAI(
+            base_url=NVIDIA_BASE_URL.rstrip("/").rstrip("/chat/completions"),
+            api_key=NVIDIA_API_KEY,
+            timeout=120.0,
+            http_client=http_client
+        )
+        scenario_meta = {
+            "title": active_scen.get("title") or "Incidente Corporativo y Vocería de Crisis",
+            "context": contexto,
+            "optics": active_scen.get("optics") or "empática, institucional y de control operativo",
+            "key_messages": mensajes,
+            "red_lines": ["No especular sobre causas no confirmadas ni evadir la responsabilidad institucional."]
+        }
+        consolidated_intermediate = {
+            "score_global": score_global,
+            "transcript": transcript,
+            "evaluacion_areas": {
+                "expresion": {
+                    "score": score_visual,
+                    "contacto_visual_pct": vision_summary.get("eye_contact_pct", vision_metrics.get("eye_contact_percentage", 0.0)),
+                    "postura_score": vision_summary.get("shoulder_stability_score", vision_metrics.get("average_posture_score", 0.0)),
+                    "manos_visibles_pct": vision_summary.get("hands_visible_pct", 0.0),
+                    "gesticulacion_activa_pct": vision_summary.get("hands_active_pct", 0.0),
+                    "balanceo_torso_std": vision_summary.get("body_sway_std", 0.0),
+                },
+                "tono_voz": {
+                    "score": score_verbal,
+                    "wpm": audio_metrics.get("wpm_global", 0),
+                    "muletillas_count": len(audio_metrics.get("muletillas_detectadas", []))
+                },
+                "contenido": {
+                    "score": score_estrategico,
+                    "adherencia_mensajes": llm_metrics.get("key_message_adherence_score", 0)
+                },
+                "empatia": {
+                    "score": score_empatia,
+                    "bridging_detectado": llm_metrics.get("bridging_detected", False)
                 }
             }
-            visum_narrative = generate_visum_report(
-                client=client_visum,
-                model_name=LLM_MODEL,
-                scenario_info=scenario_meta,
-                consolidated_json=consolidated_intermediate
-            )
-            logger.info("Informe VISUM generado exitosamente.")
-        except Exception as ve:
-            logger.warning(f"Llamada a informe narrativo VISUM advirtió ({ve}); empleando estructura estructurada de respaldo.")
-            visum_narrative = {
-                "sintesis_ejecutiva": {
-                    "diagnostico_general": "Desempeño con control de crisis y apego a mensajes fundamentales.",
-                    "fortaleza_principal": "Seguridad en la postura y templanza en el tono comunicacional.",
-                    "foco_desarrollo": "Transitar de la respuesta defensiva a la conducción pedagógica de la entrevista.",
-                    "continuidad_recomendada": "Profundizar en técnicas de bridging y manejo de preguntas capciosas."
-                },
-                "desempeno_observado": {
-                    "evaluacion_general": "El vocero contuvo la presión del medio y transmitió tranquilidad institucional.",
-                    "fortalezas": llm_metrics.get("strengths", ["Control del mensaje"]),
-                    "oportunidades_desarrollo": llm_metrics.get("weaknesses", ["Agilidad en la respuesta"]),
-                    "formula_practica_recomendada": "Reconocer el impacto -> Explicar certezas -> Acciones en curso."
-                },
-                "hallazgos_transversales": [
-                    {"prioridad": "Conducción estratégica", "descripcion": "Mantener el foco en las soluciones operativas."}
-                ],
-                "recomendaciones_proximas_vocerias": [
-                    "Validar la empatía con los afectados antes de entregar detalles técnicos.",
-                    "Sostener contacto visual firme al declarar el compromiso institucional."
-                ],
-                "observacion_senal_cruzada": "Sinergia positiva entre el contacto visual directo y la afirmación de seguridad."
-            }
+        }
+        visum_narrative = generate_visum_report(
+            client=client_visum,
+            model_name=LLM_MODEL,
+            scenario_info=scenario_meta,
+            consolidated_json=consolidated_intermediate
+        )
+        logger.info("Informe VISUM generado exitosamente.")
 
         # 8. Persistencia Atómica en Azure SQL
         report_id = None
-        resolved_rubric_id = rubric_version_id or (db_metadata.get("rubric_version_id") if db_metadata else None)
-        if db_svc and not resolved_rubric_id:
-            try:
-                with db_svc._get_connection() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT TOP 1 id FROM rubric_version")
-                    row = cur.fetchone()
-                    if row:
-                        resolved_rubric_id = str(row[0])
-            except Exception as re:
-                logger.warning(f"Aviso al consultar rúbrica de respaldo: {re}")
+        resolved_rubric_id = db_metadata["rubric_version_id"]
+
+        processed_at_iso = datetime.now(timezone.utc).isoformat()
+        video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
+
+        # Construir JSON consolidado y saneado (Sección 1)
+        cleaned_report = sanitize_report_json(
+            session_id=session_id,
+            job_id=job_id,
+            report_id=None,
+            processed_at=processed_at_iso,
+            recording_url=video_blob_url,
+            overall_score=int(round(score_global)),
+            area_scores=area_scores_map,
+            visum_narrative=visum_narrative,
+            vision_metrics=vision_metrics,
+            audio_metrics=audio_metrics,
+            judge_metrics=llm_metrics,
+            transcript=transcript,
+            segmented_turns=segmented_turns
+        )
 
         if db_svc and resolved_rubric_id:
             try:
                 report_id = db_svc.finalize_session_analysis(
-                    session_id=session_id,
+                    session_id=internal_session_id,
                     overall_score=int(round(score_global)),
                     visum_report=visum_narrative,
                     area_scores=area_scores_map,
                     rubric_version_id=resolved_rubric_id,
-                    rubric_areas=db_metadata.get("rubric_areas", {})
+                    rubric_areas=db_metadata.get("rubric_areas", {}),
+                    job_id=job_id
                 )
                 logger.info(f"Reporte y puntajes persistidos en Azure SQL con ID: {report_id}")
+                cleaned_report["reportId"] = report_id
+                cleaned_report["report_id"] = report_id
 
-                # Guardar trazabilidad de los pipelines
+                # Trazabilidad integral en analysis_pipeline_result (incluyendo fusion consolidado)
                 pipeline_map = {
                     "vision": vision_metrics,
                     "voice": audio_metrics,
-                    "content_judge": llm_metrics
+                    "content_judge": llm_metrics,
+                    "fusion": cleaned_report
                 }
                 persist_pipeline_results(db_svc, job_id, pipeline_map)
-
-                # Actualizar analysis_job a 'completed'
                 update_analysis_job_status(db_svc, job_id, "completed")
             except Exception as dbe:
                 logger.error(f"Fallo en persistencia Azure SQL: {dbe}")
+                raise dbe
 
-        # 9. Subir JSON consolidado a Azure Blob Storage
-        video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
-        consolidated_report = {
-            "session_id": session_id,
-            "job_id": job_id,
-            "report_id": report_id,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
-            "recordingUrl": video_blob_url,
-            "overallScore": int(round(score_global)),
-
-            "puntuacion_global": {
-                "score_general": score_global,
-                "score_comunicacion_no_verbal": round(score_visual, 1),
-                "score_comunicacion_verbal": score_verbal,
-                "score_estrategia_crisis": round(score_estrategico, 1),
-                "score_empatia": round(score_empatia, 1),
-                "areas": area_scores_map
-            },
-            "areaScores": [
-                {"area": "expression", "value": area_scores_map["expression"]},
-                {"area": "voice", "value": area_scores_map["voice"]},
-                {"area": "coherence", "value": area_scores_map["coherence"]},
-                {"area": "empathy", "value": area_scores_map["empathy"]}
-            ],
-            "narrative": {
-                "strengths": visum_narrative.get("desempeno_observado", {}).get("fortalezas", []),
-                "improvements": visum_narrative.get("desempeno_observado", {}).get("oportunidades_desarrollo", []),
-                "crossSignal": visum_narrative.get("observacion_senal_cruzada", ""),
-                "visum": visum_narrative
-            },
-            "informe_ejecutivo_visum": visum_narrative,
-            "metrics": {
-                "vision": vision_metrics,
-                "audio": audio_metrics,
-                "judge": llm_metrics,
-                "turns_evaluated": len(segmented_turns)
-            },
-            "transcript": transcript
-        }
-
-        upload_report_to_blob(session_id, consolidated_report)
+        # 9. Subir JSON saneado a Azure Blob Storage
+        upload_report_to_blob(session_id, cleaned_report)
+        if session_id != internal_session_id:
+            upload_report_to_blob(internal_session_id, cleaned_report)
         logger.info(f"=== Pipeline Multimodal completado con éxito para sesión {session_id} ===")
 
     except Exception as ex:
         logger.error(f"Fallo crítico en pipeline de sesión {session_id}: {ex}", exc_info=True)
-        if db_svc:
+        if db_svc and session_verified:
             update_analysis_job_status(db_svc, job_id, "failed", failure_reason=str(ex))
             try:
                 db_svc.update_session_status(session_id, "failed")
-            except Exception:
-                pass
+            except Exception as dbe:
+                logger.warning(f"Aviso actualizando estado de sesión a 'failed': {dbe}")
         raise ex
     finally:
         shutil.rmtree(session_tmp_dir, ignore_errors=True)
