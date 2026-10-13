@@ -122,54 +122,72 @@ def session_response(cursor, session):
             'scenarioId': str(session[1]), 'scenario_id': str(session[1]), 'status': session[2], 'questionCount': cursor.fetchone()[0]}
 
 
-def create_session(connection_string, claims, scenario_id, language, idempotency_key=None):
+def create_session_in_transaction(cursor, profile, scenario_id, language, idempotency_key=None):
+    """Crea una sesión usando la transacción y el actor ya resueltos.
+
+    Se comparte con el inicio desde una cita para que la sesión y su vínculo con
+    ``schedule`` puedan confirmarse o revertirse como una sola unidad.
+    """
     if language not in ('es', 'en', 'pt'):
         raise HTTPException(422, 'Idioma no válido.')
     if idempotency_key and len(idempotency_key) > 150:
         raise HTTPException(422, 'La clave de idempotencia es demasiado larga.')
     scenario_id = scenario_uuid(scenario_id)
+    if idempotency_key:
+        resource = hashlib.sha256((profile['id'] + ':' + idempotency_key).encode()).hexdigest()
+        cursor.execute("""DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource=?,@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=15000;
+                          IF @r<0 THROW 51000,'No se pudo bloquear la creación de sesión',1;""", resource)
+        cursor.execute('SELECT id,scenario_id,status,external_session_id,language FROM dbo.session WHERE user_id=? AND idempotency_key=? AND is_deleted=0', profile['id'], idempotency_key)
+        existing = cursor.fetchone()
+        if existing:
+            if str(existing[1]).lower() != scenario_id or existing[4] != language:
+                raise HTTPException(409, 'La clave de idempotencia ya pertenece a otra solicitud.')
+            return session_response(cursor, existing), str(existing[0])
+    # Bloquear primero el tema, igual que la edición maestra, para evitar
+    # mezclar dos órdenes de preguntas o iniciar durante un archivado.
+    cursor.execute('SELECT topic_id FROM dbo.scenario WHERE id=? AND client_id=?', scenario_id, profile['client_id'])
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(404, 'Escenario no disponible para tu empresa.')
+    cursor.execute('SELECT id FROM dbo.topic WITH (UPDLOCK,HOLDLOCK) WHERE id=?', row[0])
+    if not visible_scenarios(cursor, profile, scenario_id):
+        raise HTTPException(404, 'Escenario no disponible para tu empresa.')
+    cursor.execute("""SELECT q.id,sq.sequence_no,q.text FROM dbo.scenario_question sq
+                      JOIN dbo.question q ON q.id=sq.question_id
+                      WHERE sq.scenario_id=? AND sq.status='active' ORDER BY sq.sequence_no""", scenario_id)
+    questions = cursor.fetchall()
+    if not questions:
+        raise HTTPException(409, 'Este escenario todavía no tiene preguntas configuradas.')
+    cursor.execute("SELECT TOP 1 id FROM dbo.rubric_version WHERE status='published' ORDER BY published_at DESC,created_at DESC")
+    rubric = cursor.fetchone()
+    if not rubric:
+        raise HTTPException(409, 'No hay una rúbrica publicada para iniciar la sesión.')
+    internal_id = str(uuid.uuid4())
+    public_id = f'session-{scenario_id}-{int(datetime.now(timezone.utc).timestamp())}'
+    cursor.execute('SELECT id FROM dbo.session WHERE external_session_id=?', public_id)
+    if cursor.fetchone():
+        public_id += '-' + internal_id[:8]
+    cursor.execute("""INSERT INTO dbo.session(id,user_id,client_id,scenario_id,language,status,rubric_version_id,external_session_id,idempotency_key)
+                      VALUES(?,?,?,?,?,'created',?,?,?)""", internal_id, profile['id'], profile['client_id'], scenario_id, language, rubric[0], public_id, idempotency_key)
+    for question in questions:
+        cursor.execute('INSERT INTO dbo.session_question(id,session_id,question_id,sequence_no,question_text) VALUES(NEWID(),?,?,?,?)', internal_id, question[0], question[1], question[2])
+    response = {'sessionId': public_id, 'session_id': public_id, 'scenarioId': scenario_id,
+                'scenario_id': scenario_id, 'status': 'created', 'questionCount': len(questions)}
+    return response, internal_id
+
+
+def create_session(connection_string, claims, scenario_id, language, idempotency_key=None):
+    if language not in ('es', 'en', 'pt'):
+        raise HTTPException(422, 'Idioma no válido.')
+    if idempotency_key and len(idempotency_key) > 150:
+        raise HTTPException(422, 'La clave de idempotencia es demasiado larga.')
     with store.database(connection_string) as cursor:
         profile = store.resolve_user(cursor, claims)
         cursor.execute('IF @@TRANCOUNT=0 BEGIN TRANSACTION;')
-        if idempotency_key:
-            resource = hashlib.sha256((profile['id'] + ':' + idempotency_key).encode()).hexdigest()
-            cursor.execute("""DECLARE @r int; EXEC @r=sys.sp_getapplock @Resource=?,@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=15000;
-                              IF @r<0 THROW 51000,'No se pudo bloquear la creación de sesión',1;""", resource)
-            cursor.execute('SELECT id,scenario_id,status,external_session_id,language FROM dbo.session WHERE user_id=? AND idempotency_key=? AND is_deleted=0', profile['id'], idempotency_key)
-            existing = cursor.fetchone()
-            if existing:
-                if str(existing[1]).lower() != scenario_id or existing[4] != language:
-                    raise HTTPException(409, 'La clave de idempotencia ya pertenece a otra solicitud.')
-                return session_response(cursor, existing)
-        # Bloquear primero el tema, igual que la edición maestra, para evitar
-        # mezclar dos órdenes de preguntas o iniciar durante un archivado.
-        cursor.execute('SELECT topic_id FROM dbo.scenario WHERE id=? AND client_id=?', scenario_id, profile['client_id'])
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(404, 'Escenario no disponible para tu empresa.')
-        cursor.execute('SELECT id FROM dbo.topic WITH (UPDLOCK,HOLDLOCK) WHERE id=?', row[0])
-        if not visible_scenarios(cursor, profile, scenario_id):
-            raise HTTPException(404, 'Escenario no disponible para tu empresa.')
-        cursor.execute("""SELECT q.id,sq.sequence_no,q.text FROM dbo.scenario_question sq
-                          JOIN dbo.question q ON q.id=sq.question_id
-                          WHERE sq.scenario_id=? AND sq.status='active' ORDER BY sq.sequence_no""", scenario_id)
-        questions = cursor.fetchall()
-        if not questions:
-            raise HTTPException(409, 'Este escenario todavía no tiene preguntas configuradas.')
-        cursor.execute("SELECT TOP 1 id FROM dbo.rubric_version WHERE status='published' ORDER BY published_at DESC,created_at DESC")
-        rubric = cursor.fetchone()
-        if not rubric:
-            raise HTTPException(409, 'No hay una rúbrica publicada para iniciar la sesión.')
-        internal_id = str(uuid.uuid4())
-        public_id = f'session-{scenario_id}-{int(datetime.now(timezone.utc).timestamp())}'
-        cursor.execute('SELECT id FROM dbo.session WHERE external_session_id=?', public_id)
-        if cursor.fetchone():
-            public_id += '-' + internal_id[:8]
-        cursor.execute("""INSERT INTO dbo.session(id,user_id,client_id,scenario_id,language,status,rubric_version_id,external_session_id,idempotency_key)
-                          VALUES(?,?,?,?,?,'created',?,?,?)""", internal_id, profile['id'], profile['client_id'], scenario_id, language, rubric[0], public_id, idempotency_key)
-        for question in questions:
-            cursor.execute('INSERT INTO dbo.session_question(id,session_id,question_id,sequence_no,question_text) VALUES(NEWID(),?,?,?,?)', internal_id, question[0], question[1], question[2])
-        return {'sessionId': public_id, 'session_id': public_id, 'scenarioId': scenario_id, 'scenario_id': scenario_id, 'status': 'created', 'questionCount': len(questions)}
+        response, _internal_id = create_session_in_transaction(
+            cursor, profile, scenario_id, language, idempotency_key,
+        )
+        return response
 
 
 def get_session(connection_string, claims, session_id):

@@ -82,3 +82,13 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: test
+
+  test-worker:
+    profiles: ["test"]
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+      target: test
+    environment:
+      SQL_CONNECTION_STRING: ${SQL_CONNECTION_STRING:?Define SQL_CONNECTION_STRING en .env}
+      VOXREADY_TEST_AZURE_SQL: "1"

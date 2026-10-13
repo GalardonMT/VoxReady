@@ -42,10 +42,11 @@ try {
             Invoke-Compose -Arguments @('run', '--rm', '--no-deps', 'init', 'python', 'scripts/prepare_azure_database.py', '--verify-only')
         }
         'test' {
-            Invoke-Compose -Arguments @('--profile', 'test', 'build', 'test-api', 'test-client')
+            Invoke-Compose -Arguments @('--profile', 'test', 'build', 'test-api', 'test-client', 'test-worker')
             Invoke-Compose -Arguments @('run', '--rm', '--no-deps', 'init', 'python', 'scripts/prepare_azure_database.py', '--verify-only')
             Invoke-Compose -Arguments @('--profile', 'test', 'run', '--rm', '--no-deps', 'test-api')
             Invoke-Compose -Arguments @('--profile', 'test', 'run', '--rm', '--no-deps', 'test-client')
+            Invoke-Compose -Arguments @('--profile', 'test', 'run', '--rm', '--no-deps', 'test-worker')
         }
         'seed' {
             Invoke-Compose -Arguments @('run', '--rm', '--no-deps', 'init', 'python', 'scripts/prepare_azure_database.py', '--verify-only')

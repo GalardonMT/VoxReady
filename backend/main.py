@@ -2,10 +2,10 @@ import os
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, field_validator
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
@@ -14,6 +14,8 @@ import jwt
 from jwt import PyJWKClient
 import pyodbc
 import master_topics as master_store
+import progress_store
+import schedule_store
 import spokesperson_store
 
 # Cargar variables de entorno locales si existen
@@ -144,9 +146,11 @@ class ConsentRequest(BaseModel):
 
 try:
     from schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
+    from schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from services.worker_client import trigger_worker_analysis
 except (ImportError, ValueError):
     from backend.schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
+    from backend.schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from backend.services.worker_client import trigger_worker_analysis
 
 # 5. Servicios de persistencia de usuarios (Azure SQL)
@@ -260,6 +264,65 @@ def get_current_user_profile(user: dict = Depends(verify_token)):
         "clientId": str(db_user["client_id"]) if db_user.get("client_id") else None,
         "preferredLanguage": db_user.get("preferred_language") or user.get("preferredLanguage", "es"),
     }
+
+
+@app.get("/me/progress")
+@app.get("/v1/me/progress")
+def get_my_progress(lastN: int = 5, user: dict = Depends(verify_token)):
+    return progress_store.get_progress(SQL_CONN_STR, user, lastN)
+
+
+@app.get("/me/schedule")
+@app.get("/v1/me/schedule")
+def get_my_schedule(
+    fromDate: date = Query(alias="fromDate"),
+    toDate: date = Query(alias="toDate"),
+    user: dict = Depends(verify_token),
+):
+    return schedule_store.list_calendar(SQL_CONN_STR, user, fromDate, toDate)
+
+
+@app.post("/me/schedule", status_code=201)
+@app.post("/v1/me/schedule", status_code=201)
+def create_my_schedule(
+    payload: ScheduleCreateRequest,
+    user: dict = Depends(verify_token),
+):
+    return schedule_store.create_schedule(
+        SQL_CONN_STR,
+        user,
+        payload.date,
+        payload.scenario_id,
+    )
+
+
+@app.patch("/me/schedule/{schedule_id}")
+@app.patch("/v1/me/schedule/{schedule_id}")
+def update_my_schedule(
+    schedule_id: str,
+    payload: ScheduleUpdateRequest,
+    user: dict = Depends(verify_token),
+):
+    return schedule_store.update_schedule(
+        SQL_CONN_STR,
+        user,
+        schedule_id,
+        scheduled_date=payload.date,
+        scenario_id=payload.scenario_id,
+    )
+
+
+@app.post("/me/schedule/{schedule_id}/cancel")
+@app.post("/v1/me/schedule/{schedule_id}/cancel")
+def cancel_my_schedule(schedule_id: str, user: dict = Depends(verify_token)):
+    return schedule_store.cancel_schedule(SQL_CONN_STR, user, schedule_id)
+
+
+@app.post("/me/schedule/{schedule_id}/start", status_code=201)
+@app.post("/v1/me/schedule/{schedule_id}/start", status_code=201)
+def start_my_scheduled_practice(schedule_id: str, user: dict = Depends(verify_token)):
+    return schedule_store.start_schedule(SQL_CONN_STR, user, schedule_id)
+
 
 @app.get("/scenarios")
 @app.get("/v1/scenarios")

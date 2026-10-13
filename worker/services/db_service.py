@@ -11,6 +11,105 @@ from services.keyvault_service import get_secret
 logger = get_logger("services.db_service")
 
 
+USER_AREA_PROGRESS_REFRESH_DML = """
+;WITH target_actor AS (
+    SELECT user_id,client_id
+    FROM dbo.session
+    WHERE id=? AND is_deleted=0
+),
+current_reports AS (
+    SELECT r.id,r.session_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY r.session_id
+               ORDER BY r.generated_at DESC,r.id DESC
+           ) AS report_position
+    FROM dbo.report r
+    JOIN dbo.session s ON s.id=r.session_id
+    JOIN target_actor actor
+      ON actor.user_id=s.user_id AND actor.client_id=s.client_id
+    WHERE r.is_current=1 AND s.status='completed' AND s.is_deleted=0
+),
+ranked_area_scores AS (
+    SELECT a.report_id,a.rubric_area_id,ra.area_key,a.value,
+           ROW_NUMBER() OVER (
+               PARTITION BY a.report_id,ra.area_key
+               ORDER BY a.id DESC
+           ) AS score_position
+    FROM dbo.area_score a
+    JOIN dbo.rubric_area ra ON ra.id=a.rubric_area_id
+),
+scored_sessions AS (
+    SELECT s.user_id,a.rubric_area_id,a.area_key,a.value,
+           COALESCE(s.finished_at,s.updated_at,s.created_at) AS session_at,
+           ROW_NUMBER() OVER (
+               PARTITION BY s.user_id,a.area_key
+               ORDER BY COALESCE(s.finished_at,s.updated_at,s.created_at) DESC,s.id DESC
+           ) AS area_position,
+           LEAD(a.value) OVER (
+               PARTITION BY s.user_id,a.area_key
+               ORDER BY COALESCE(s.finished_at,s.updated_at,s.created_at) DESC,s.id DESC
+           ) AS previous_value
+    FROM dbo.session s
+    JOIN target_actor actor
+      ON actor.user_id=s.user_id AND actor.client_id=s.client_id
+    JOIN current_reports r ON r.session_id=s.id AND r.report_position=1
+    JOIN ranked_area_scores a ON a.report_id=r.id AND a.score_position=1
+    WHERE s.status='completed' AND s.is_deleted=0
+),
+session_totals AS (
+    SELECT s.user_id,COUNT_BIG(DISTINCT s.id) AS sessions_count,
+           MAX(COALESCE(s.finished_at,s.updated_at,s.created_at)) AS last_session_at
+    FROM dbo.session s
+    JOIN target_actor actor
+      ON actor.user_id=s.user_id AND actor.client_id=s.client_id
+    WHERE s.status='completed' AND s.is_deleted=0
+      AND EXISTS (
+          SELECT 1 FROM current_reports r
+          WHERE r.session_id=s.id AND r.report_position=1
+      )
+    GROUP BY s.user_id
+),
+latest AS (
+    SELECT scored.user_id,scored.rubric_area_id,scored.value AS current_value,
+           CASE WHEN scored.previous_value IS NULL THEN NULL
+                ELSE scored.value-scored.previous_value END AS delta_value,
+           CONVERT(INT,totals.sessions_count) AS sessions_count,
+           totals.last_session_at
+    FROM scored_sessions scored
+    JOIN session_totals totals ON totals.user_id=scored.user_id
+    WHERE scored.area_position=1
+)
+MERGE dbo.user_area_progress WITH (HOLDLOCK) AS target
+USING latest AS source
+   ON target.user_id=source.user_id
+  AND target.rubric_area_id=source.rubric_area_id
+WHEN MATCHED THEN UPDATE SET
+    current_value=source.current_value,
+    [delta]=source.delta_value,
+    sessions_count=source.sessions_count,
+    last_session_at=source.last_session_at,
+    updated_at=SYSUTCDATETIME()
+WHEN NOT MATCHED THEN INSERT (
+    id,user_id,rubric_area_id,current_value,[delta],sessions_count,
+    last_session_at,created_at,updated_at
+) VALUES (
+    NEWID(),source.user_id,source.rubric_area_id,source.current_value,
+    source.delta_value,source.sessions_count,source.last_session_at,
+    SYSUTCDATETIME(),SYSUTCDATETIME()
+);
+"""
+
+LINKED_SCHEDULE_COMPLETE_DML = """
+UPDATE sch
+SET sch.status = 'completed', sch.updated_at = SYSUTCDATETIME()
+FROM dbo.schedule sch
+JOIN dbo.session s ON s.id = sch.session_id
+WHERE sch.session_id = ?
+  AND sch.user_id = s.user_id AND sch.client_id = s.client_id
+  AND sch.status = 'scheduled'
+"""
+
+
 class DatabaseService:
     """
     Servicio de conexión resiliente para Azure SQL Serverless (sqldb-voxready).
@@ -205,8 +304,8 @@ class DatabaseService:
         rubric_areas: Dict[str, Any],
     ) -> str:
         """
-        Persiste atómicamente el informe en 'report' y los 4 puntajes en 'area_score',
-        y actualiza la sesión a 'completed'.
+        Persiste atómicamente el informe y sus áreas, completa la sesión,
+        refresca ``user_area_progress`` y completa su agenda vinculada.
         """
         report_id = str(uuid.uuid4())
         strengths_list = visum_report.get("desempeno_observado", {}).get("fortalezas", [])
@@ -260,6 +359,12 @@ class DatabaseService:
                 SET status = 'completed', finished_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
                 WHERE id = ?
             """, valid_session_uuid)
+
+            # 4. Refrescar el resumen de progreso del mismo vocero/cliente.
+            cur.execute(USER_AREA_PROGRESS_REFRESH_DML, valid_session_uuid)
+
+            # 5. Completar únicamente la cita desde la que nació esta sesión.
+            cur.execute(LINKED_SCHEDULE_COMPLETE_DML, valid_session_uuid)
 
             conn.commit()
             logger.info(f"Sesión {valid_session_uuid} finalizada y persistida con Report ID: {report_id}")

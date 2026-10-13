@@ -58,6 +58,9 @@ function SpokespersonContent() {
     if (extra && screen === 'lesson') {
       setSelectedLesson(extra);
     }
+    if (extra && screen === 'u6') {
+      setActiveSessionId(extra);
+    }
     if (screen === 'u3') {
       if (extra) setActiveScenarioId(extra);
       const newSession = `session-${extra || 'crisis'}-${Date.now()}`;
@@ -208,7 +211,18 @@ function SpokespersonContent() {
             sessionId={activeSessionId}
           />
         )}
-        {voceroScreen === 'u7' && <ProgressView onNavigate={handleVoceroNavigate} />}
+        {voceroScreen === 'u7' && (
+          <ProgressView
+            onNavigate={handleVoceroNavigate}
+            onSessionStart={(setup) => {
+              setSelectedSession({ setup, userId: user.userId, clientId: user.clientId });
+              setActiveSessionId(setup.sessionId);
+              setActiveScenarioId(setup.scenarioId);
+              setVoceroScreen('u3');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          />
+        )}
         {voceroScreen === 'lesson' && (
           <LessonView lessonTitle={selectedLesson} onNavigate={handleVoceroNavigate} />
         )}
