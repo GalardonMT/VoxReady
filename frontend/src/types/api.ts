@@ -244,3 +244,14 @@ export interface TurnInterval {
   endOffsetMs: number;
   questionText?: string;
 }
+
+export interface SessionHistoryItem {
+  sessionId: string;
+  scenarioId: string;
+  scenarioTitle: string;
+  createdAt: string;
+  status: string;
+  overallScore: number;
+  hasReport: boolean;
+}
+

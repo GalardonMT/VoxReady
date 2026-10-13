@@ -51,6 +51,9 @@ function SpokespersonContent() {
     if (extra && screen === 'lesson') {
       setSelectedLesson(extra);
     }
+    if (extra && (screen === 'u8' || screen === 'u6')) {
+      setActiveSessionId(extra);
+    }
     if (screen === 'u3') {
       if (extra) setActiveScenarioId(extra);
       const newSession = `session-${extra || 'crisis'}-${Date.now()}`;
@@ -164,12 +167,14 @@ function SpokespersonContent() {
         )}
         {voceroScreen === 'u6' && (
           <CoachReportView
+            key={activeSessionId}
             onNavigate={handleVoceroNavigate}
             sessionId={activeSessionId}
           />
         )}
         {voceroScreen === 'u8' && (
           <FullVisumReportView
+            key={activeSessionId}
             onNavigate={handleVoceroNavigate}
             sessionId={activeSessionId}
           />
