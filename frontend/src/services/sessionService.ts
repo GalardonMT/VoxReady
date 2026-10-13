@@ -85,7 +85,7 @@ export const sessionService = {
    * Crea una nueva sesión en el backend
    */
   async createSession(scenarioId: string = 'crisis-voceria-01'): Promise<CreateSessionResponse> {
-    const defaultSessId = `session-${scenarioId}-${Date.now()}`;
+    const defaultSessId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`;
     try {
       const res = await apiFetch<{ session_id?: string; status?: string }>('/api/sessions', {
         method: 'POST',

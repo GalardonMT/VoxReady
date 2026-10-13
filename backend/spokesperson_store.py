@@ -163,10 +163,7 @@ def create_session_in_transaction(cursor, profile, scenario_id, language, idempo
     if not rubric:
         raise HTTPException(409, 'No hay una rúbrica publicada para iniciar la sesión.')
     internal_id = str(uuid.uuid4())
-    public_id = f'session-{scenario_id}-{int(datetime.now(timezone.utc).timestamp())}'
-    cursor.execute('SELECT id FROM dbo.session WHERE external_session_id=?', public_id)
-    if cursor.fetchone():
-        public_id += '-' + internal_id[:8]
+    public_id = internal_id
     cursor.execute("""INSERT INTO dbo.session(id,user_id,client_id,scenario_id,language,status,rubric_version_id,external_session_id,idempotency_key)
                       VALUES(?,?,?,?,?,'created',?,?,?)""", internal_id, profile['id'], profile['client_id'], scenario_id, language, rubric[0], public_id, idempotency_key)
     for question in questions:

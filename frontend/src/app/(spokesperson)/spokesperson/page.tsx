@@ -64,8 +64,10 @@ function SpokespersonContent() {
     }
     if (screen === 'u3') {
       if (extra) setActiveScenarioId(extra);
-      const newSession = `session-${extra || 'crisis'}-${Date.now()}`;
-      setActiveSessionId(newSession);
+      if (!selectedSession) {
+        const newSession = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`;
+        setActiveSessionId(newSession);
+      }
     }
     setVoceroScreen(screen);
     window.scrollTo({ top: 0, behavior: 'smooth' });

@@ -80,7 +80,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
   const effectiveTenantId = tenantId || user?.clientId || 'tenant-voxready-dev';
 
-  const [generatedSessionId] = useState(() => `session-crisis-${Date.now()}`);
+  const [generatedSessionId] = useState(() => typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`);
   const activeSessionId = sessionId || setup?.sessionId || generatedSessionId;
   const activeScenarioId = scenarioId || setup?.scenarioId || 'crisis-voceria-01';
 
