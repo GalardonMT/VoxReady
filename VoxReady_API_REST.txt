@@ -134,11 +134,13 @@ Parámetros de entrada
 Respuesta 200 OK
 Mensajes de error
 GET  /v1/me/progress
-Devuelve la evolución de las cuatro áreas de evaluación a lo largo de las últimas sesiones, junto con el valor actual y la variación, para alimentar el gráfico de tendencia y la tabla de avance.
+Devuelve la evolución de las áreas de la rúbrica a lo largo de las últimas sesiones completadas, junto con el valor actual y la variación respecto de la sesión inmediatamente anterior. Las áreas son dinámicas y se correlacionan por su código técnico.
 Rol requerido: Vocero    Scope: progress.read
-Parámetros de entrada
+Parámetros de entrada: lastN opcional (1–20, valor predeterminado 5).
 Respuesta 200 OK
+Incluye sessionsCount, trendSessions, areas y recentSessions. Un puntaje ausente o una variación que todavía no puede calcularse se devuelve como null.
 Mensajes de error
+422 lastN fuera de rango. 403 si el usuario no es vocero o no tiene empresa asignada.
 GET  /v1/me/recommendations
 Lista recomendaciones accionables generadas a partir del análisis del vocero (p. ej. contacto visual, muletillas, mensaje puente), cada una vinculada a una microlección.
 Rol requerido: Vocero    Scope: progress.read
@@ -152,13 +154,35 @@ Parámetros de entrada
 Respuesta 200 OK
 Mensajes de error
 POST  /v1/me/schedule
-Agenda la próxima sesión de práctica del vocero en una fecha elegida en el calendario.
+Agenda una sesión de práctica interna del vocero en una fecha elegida en el calendario. Se permiten varias agendas en un mismo día; no reserva una hora ni envía notificaciones externas.
 Rol requerido: Vocero    Scope: schedule.write
 Parámetros de entrada
 Ejemplo de cuerpo (request)
 { "date": "2026-07-02", "scenarioId": "c7d2..." }
 Respuesta 201 Created
 Mensajes de error
+422 fecha anterior a hoy o posterior a doce meses. 404 escenario inactivo, archivado, inexistente o perteneciente a otro cliente.
+GET  /v1/me/schedule?fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD
+Lista las agendas pendientes/completadas y las sesiones realizadas del propio vocero dentro del rango inclusivo. Las sesiones incluyen escenario, informe vigente y puntajes por área.
+Rol requerido: Vocero    Scope: schedule.read
+Respuesta 200 OK
+PATCH  /v1/me/schedule/{scheduleId}
+Modifica la fecha y/o escenario de una agenda pendiente que todavía no tiene una sesión vinculada.
+Rol requerido: Vocero    Scope: schedule.write
+Ejemplo de cuerpo (request)
+{ "date": "2026-07-08", "scenarioId": "c7d2..." }
+Respuesta 200 OK
+POST  /v1/me/schedule/{scheduleId}/cancel
+Cancela lógicamente una agenda pendiente. No elimina el registro.
+Rol requerido: Vocero    Scope: schedule.write
+Respuesta 200 OK
+POST  /v1/me/schedule/{scheduleId}/start
+Crea una sesión en español para el escenario de la cita y la vincula atómicamente. Puede iniciarse antes o después de la fecha agendada. Repetir la solicitud devuelve la misma sesión, evitando duplicados por doble clic.
+Rol requerido: Vocero    Scope: schedule.write
+Respuesta 201 Created
+El cliente continúa con el flujo existente de consentimiento, comprobación técnica, grabación y análisis usando sessionId.
+Mensajes de error comunes
+404 agenda ajena, inexistente o con escenario ya no disponible. 409 agenda cancelada o modificada durante el inicio.
 POST  /v1/me/deletion-requests
 Crea una solicitud de borrado de las grabaciones del propio vocero, conforme al derecho de supresión de datos biométricos (UK GDPR). La procesa el admin del cliente.
 Rol requerido: Vocero    Scope: privacy.write

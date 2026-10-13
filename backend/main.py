@@ -2,8 +2,10 @@ import os
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, HTTPException, Depends, Header
+from datetime import date, datetime, timedelta, timezone
+from typing import Annotated, Literal
+from pydantic import Field, StringConstraints, field_validator
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
@@ -11,6 +13,10 @@ from azure.servicebus import ServiceBusClient, ServiceBusMessage
 import jwt
 from jwt import PyJWKClient
 import pyodbc
+import master_topics as master_store
+import progress_store
+import schedule_store
+import spokesperson_store
 
 # Cargar variables de entorno locales si existen
 try:
@@ -57,6 +63,8 @@ JWKS_URL = os.getenv("JWKS_URL", "")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "")
 DEV_AUTH = os.getenv("DEV_AUTH", "false").lower() == "true"
+if DEV_AUTH and os.getenv("ENVIRONMENT", "production").lower() != "development":
+    raise RuntimeError("DEV_AUTH solo se permite con ENVIRONMENT=development.")
 
 # 3. Dependencia de validación de JWT (Microsoft Entra External ID)
 _jwks_client: PyJWKClient | None = None
@@ -74,12 +82,14 @@ def verify_token(authorization: str = Header(None)):
 
     # 1. Si no hay token o es token explícito de dev local:
     if (not token or token.startswith("dev-")) and DEV_AUTH:
+        dev_email = os.getenv("DEV_AUTH_TEST_EMAIL", "").strip()
+        if not dev_email:
+            raise HTTPException(status_code=503, detail="DEV_AUTH_TEST_EMAIL no está configurado")
         return {
             "sub": "dev-user-001",
             "oid": "dev-user-001",
             "name": "Dev User",
-            "email": "dev@voxready.io",
-            "role": "spokesperson",
+            "email": dev_email,
         }
 
     if not token:
@@ -109,20 +119,15 @@ def verify_token(authorization: str = Header(None)):
                 )
                 return payload
             except Exception as e_jwks:
-                logger.warning(f"Validación con firma JWKS falló ({e_jwks}).")
-                if not DEV_AUTH:
-                    raise e_jwks
-
-        # Si DEV_AUTH está activo y falló JWKS, o en desarrollo local:
-        # decodificamos el payload de Microsoft para extraer los datos reales del usuario
-        if DEV_AUTH:
-            payload = jwt.decode(token, options={"verify_signature": False})
-            return payload
+                logger.warning("Validación con firma JWKS falló: %s", type(e_jwks).__name__)
+                raise HTTPException(status_code=401, detail="Token inválido") from None
 
         raise HTTPException(status_code=401, detail="Error validando token con Microsoft")
-    except Exception as e:
-        logger.error(f"JWT Verification failed: {e}")
-        raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning("JWT verification failed: %s", type(error).__name__)
+        raise HTTPException(status_code=401, detail="Token inválido") from None
 
 
 # 4. Esquemas de petición
@@ -141,9 +146,11 @@ class ConsentRequest(BaseModel):
 
 try:
     from schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
+    from schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from services.worker_client import trigger_worker_analysis
 except (ImportError, ValueError):
     from backend.schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
+    from backend.schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from backend.services.worker_client import trigger_worker_analysis
 
 # 5. Servicios de persistencia de usuarios (Azure SQL)
@@ -170,118 +177,49 @@ def sync_or_get_user(
     client_id: str | None,
     token_role: str | None
 ) -> dict:
-    """
-    Sincroniza el usuario autenticado con la base de datos Azure SQL (tabla app_user).
-    - Si existe, devuelve su perfil con el rol asignado en base de datos.
-    - Si no existe, lo registra automáticamente con rol 'spokesperson'.
-    - Permite cambiar roles directamente en Azure SQL y ver el cambio reflejado.
-    - Es resiliente: ante caídas de BD o cold-starts, no interrumpe el acceso.
-    """
+    """Resuelve únicamente usuarios activos y preasignados en app_user."""
     if not SQL_CONN_STR:
-        return {}
+        raise HTTPException(status_code=503, detail="Azure SQL no está configurado")
 
     user_uuid = _safe_uuid(user_id)
     clean_email = email.strip() if email else ""
+    if not user_uuid and not clean_email:
+        raise HTTPException(status_code=403, detail="Usuario no registrado en VoxReady")
 
     try:
         conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
         with pyodbc.connect(conn_str, timeout=10) as conn:
             cursor = conn.cursor()
-
-            # 1. Asegurar tabla app_user si no existiese
-            try:
-                cursor.execute("""
-                    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'app_user')
-                    BEGIN
-                        CREATE TABLE app_user (
-                            id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
-                            client_id UNIQUEIDENTIFIER NULL,
-                            email NVARCHAR(256) NULL,
-                            display_name NVARCHAR(150) NULL,
-                            role NVARCHAR(50) DEFAULT 'spokesperson',
-                            preferred_language CHAR(2) DEFAULT 'es',
-                            created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                            updated_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                            is_deleted BIT DEFAULT 0,
-                            deleted_at DATETIME2 NULL
-                        );
-                        CREATE INDEX idx_app_user_email ON app_user(email);
-                    END
-                """)
-                conn.commit()
-            except Exception as e_tbl:
-                logger.debug(f"Verificación de tabla app_user: {e_tbl}")
-
-            # 2. Buscar si el usuario ya existe en app_user (por UUID o por email)
             row = None
-            cols = []
             if user_uuid:
                 cursor.execute(
-                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
+                    "SELECT id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
                     (user_uuid,)
                 )
                 row = cursor.fetchone()
-                if row:
-                    cols = [c[0].lower() for c in cursor.description]
-
             if not row and clean_email:
                 cursor.execute(
-                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
+                    "SELECT TOP 2 id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
                     (clean_email,)
                 )
-                row = cursor.fetchone()
-                if row:
-                    cols = [c[0].lower() for c in cursor.description]
-
-            # 3. Si ya existe, retornar sus datos de la base de datos (con su rol asignado)
-            if row:
-                user_data = dict(zip(cols, row))
-                logger.info(f"Usuario '{clean_email}' resuelto desde Azure SQL con rol: '{user_data.get('role')}'.")
-                return user_data
-
-            # 4. Auto-provisioning: Registrar usuario nuevo en app_user
-            resolved_id = user_uuid or str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id or clean_email or "default-user"))
-
-            # Asociar al cliente activo si existe
-            db_client_id = None
-            try:
-                cursor.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
-                c_row = cursor.fetchone()
-                if not c_row:
-                    cursor.execute("SELECT TOP 1 id FROM client")
-                    c_row = cursor.fetchone()
-                if c_row:
-                    db_client_id = c_row[0]
-            except Exception:
-                pass
-
-            if not db_client_id:
-                db_client_id = _safe_uuid(client_id)
-
-            initial_role = token_role if token_role and token_role != "None" else "spokesperson"
-
-            cursor.execute(
-                """
-                INSERT INTO app_user (id, client_id, email, display_name, role, preferred_language, is_deleted)
-                VALUES (?, ?, ?, ?, ?, 'es', 0)
-                """,
-                (resolved_id, db_client_id, clean_email, display_name or "Vocero", initial_role)
-            )
-            conn.commit()
-            logger.info(f"Usuario '{clean_email}' auto-registrado en Azure SQL (app_user) con rol: '{initial_role}'.")
-
-            return {
-                "id": resolved_id,
-                "client_id": db_client_id,
-                "email": clean_email,
-                "display_name": display_name,
-                "role": initial_role,
-                "preferred_language": "es"
-            }
-
-    except Exception as e:
-        logger.warning(f"No se pudo sincronizar usuario en Azure SQL: {e}. Continuando con datos del token.")
-        return {}
+                matches = cursor.fetchall()
+                if len(matches) == 1:
+                    row = matches[0]
+            if row is None:
+                raise HTTPException(status_code=403, detail="Usuario no registrado en VoxReady")
+            user_data = dict(zip((c[0].lower() for c in cursor.description), row))
+            if clean_email and user_data.get("email") and user_data["email"].lower() != clean_email.lower():
+                raise HTTPException(status_code=403, detail="La identidad no coincide con el usuario preasignado")
+            if user_data.get("role") not in ("spokesperson", "client_admin", "master_config"):
+                raise HTTPException(status_code=403, detail="El usuario no tiene un rol válido")
+            if user_data["role"] != "master_config" and not user_data.get("client_id"):
+                raise HTTPException(status_code=403, detail="El usuario no tiene una empresa asignada")
+            return user_data
+    except HTTPException:
+        raise
+    except pyodbc.Error:
+        logger.exception("Azure SQL no disponible al resolver app_user")
+        raise HTTPException(status_code=503, detail="No se pudo consultar el usuario en Azure SQL") from None
 
 # 6. Endpoints
 @app.get("/health")
@@ -295,7 +233,7 @@ def dev_token():
 @app.get("/me")
 @app.get("/v1/me")
 def get_current_user_profile(user: dict = Depends(verify_token)):
-    """Obtiene el perfil del usuario autenticado y sincroniza roles con Azure SQL."""
+    """Obtiene el perfil preasignado; rol y empresa provienen de Azure SQL."""
     user_id = user.get("oid") or user.get("sub", "")
     email = (
         user.get("email")
@@ -310,219 +248,108 @@ def get_current_user_profile(user: dict = Depends(verify_token)):
         or (f"{user.get('given_name', '')} {user.get('family_name', '')}".strip())
         or (email.split("@")[0] if email else "Vocero")
     )
-    token_role = user.get("role") or user.get("extension_role") or "spokesperson"
-    client_id = user.get("clientId") or user.get("client_id") or user.get("tid")
-
-    # Sincronización con Azure SQL (auto-provisioning y lectura de roles en base de datos)
     db_user = sync_or_get_user(
         user_id=str(user_id),
         email=email or "",
         display_name=display_name,
-        client_id=str(client_id) if client_id else None,
-        token_role=token_role,
+        client_id=None,
+        token_role=None,
     )
 
-    role = db_user.get("role") or token_role or "spokesperson"
-    resolved_client_id = db_user.get("client_id") or (str(client_id) if client_id else "client-default")
-
     return {
-        "userId": str(user_id),
-        "email": email,
+        "userId": str(db_user["id"]),
+        "email": db_user.get("email") or email,
         "displayName": db_user.get("display_name") or display_name,
-        "role": role,
-        "clientId": str(resolved_client_id) if resolved_client_id else None,
+        "role": db_user["role"],
+        "clientId": str(db_user["client_id"]) if db_user.get("client_id") else None,
         "preferredLanguage": db_user.get("preferred_language") or user.get("preferredLanguage", "es"),
     }
+
+
+@app.get("/me/progress")
+@app.get("/v1/me/progress")
+def get_my_progress(lastN: int = 5, user: dict = Depends(verify_token)):
+    return progress_store.get_progress(SQL_CONN_STR, user, lastN)
+
+
+@app.get("/me/schedule")
+@app.get("/v1/me/schedule")
+def get_my_schedule(
+    fromDate: date = Query(alias="fromDate"),
+    toDate: date = Query(alias="toDate"),
+    user: dict = Depends(verify_token),
+):
+    return schedule_store.list_calendar(SQL_CONN_STR, user, fromDate, toDate)
+
+
+@app.post("/me/schedule", status_code=201)
+@app.post("/v1/me/schedule", status_code=201)
+def create_my_schedule(
+    payload: ScheduleCreateRequest,
+    user: dict = Depends(verify_token),
+):
+    return schedule_store.create_schedule(
+        SQL_CONN_STR,
+        user,
+        payload.date,
+        payload.scenario_id,
+    )
+
+
+@app.patch("/me/schedule/{schedule_id}")
+@app.patch("/v1/me/schedule/{schedule_id}")
+def update_my_schedule(
+    schedule_id: str,
+    payload: ScheduleUpdateRequest,
+    user: dict = Depends(verify_token),
+):
+    return schedule_store.update_schedule(
+        SQL_CONN_STR,
+        user,
+        schedule_id,
+        scheduled_date=payload.date,
+        scenario_id=payload.scenario_id,
+    )
+
+
+@app.post("/me/schedule/{schedule_id}/cancel")
+@app.post("/v1/me/schedule/{schedule_id}/cancel")
+def cancel_my_schedule(schedule_id: str, user: dict = Depends(verify_token)):
+    return schedule_store.cancel_schedule(SQL_CONN_STR, user, schedule_id)
+
+
+@app.post("/me/schedule/{schedule_id}/start", status_code=201)
+@app.post("/v1/me/schedule/{schedule_id}/start", status_code=201)
+def start_my_scheduled_practice(schedule_id: str, user: dict = Depends(verify_token)):
+    return schedule_store.start_schedule(SQL_CONN_STR, user, schedule_id)
+
 
 @app.get("/scenarios")
 @app.get("/v1/scenarios")
 def list_scenarios(category: str = "", q: str = "", page: int = 1, pageSize: int = 20, user: dict = Depends(verify_token)):
-    items = [
-        {
-            "id": "crisis-voceria-01",
-            "title": "Retiro Masivo de Alimentos Infantiles",
-            "context": "Falla de calidad en la planta norte detectada durante control rutinario.",
-            "category": "health",
-            "audience": "Medios nacionales y familias afectadas",
-            "difficulty": "hard",
-            "estimatedMinutes": 15,
-            "questionCount": 8,
-            "languages": ["es"]
-        },
-        {
-            "id": "crisis-operativa-02",
-            "title": "Interrupción Crítica de Plataforma Transaccional",
-            "context": "Caída del sistema central afectando transacciones de clientes corporativos.",
-            "category": "operational",
-            "audience": "Clientes B2B e inversionistas",
-            "difficulty": "intermediate",
-            "estimatedMinutes": 10,
-            "questionCount": 6,
-            "languages": ["es"]
-        },
-        {
-            "id": "crisis-reputacional-03",
-            "title": "Filtración No Autorizada de Datos Internos",
-            "context": "Incidente de ciberseguridad con publicación parcial de registros confidenciales.",
-            "category": "reputational",
-            "audience": "Prensa especializada y reguladores",
-            "difficulty": "hard",
-            "estimatedMinutes": 12,
-            "questionCount": 7,
-            "languages": ["es"]
-        }
-    ]
-    if category:
-        items = [i for i in items if i["category"] == category]
-    if q:
-        items = [i for i in items if q.lower() in i["title"].lower() or q.lower() in i["context"].lower()]
-    return {
-        "items": items,
-        "page": page,
-        "pageSize": pageSize,
-        "total": len(items)
-    }
+    if page < 1 or pageSize < 1 or pageSize > 100:
+        raise HTTPException(422, "Invalid pagination")
+    return spokesperson_store.list_catalog(SQL_CONN_STR, user, category, q, page, pageSize)
 
 @app.get("/scenarios/{scenario_id}")
 @app.get("/v1/scenarios/{scenario_id}")
 def get_scenario(scenario_id: str, user: dict = Depends(verify_token)):
-    return {
-        "id": scenario_id,
-        "title": "Retiro Masivo de Alimentos Infantiles",
-        "context": "Falla de calidad en la planta norte detectada durante control rutinario.",
-        "category": "health",
-        "audience": "Medios nacionales y familias afectadas",
-        "difficulty": "hard",
-        "estimatedMinutes": 15,
-        "questionCount": 8,
-        "languages": ["es"]
-    }
+    return spokesperson_store.scenario_detail(SQL_CONN_STR, user, scenario_id)
 
 @app.post("/sessions", status_code=201)
 @app.post("/v1/sessions", status_code=201)
 @app.post("/api/sessions")
 @app.post("/v1/api/sessions")
-def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_token)):
-    sc_id = payload.scenarioId or payload.scenario_id or "crisis-voceria-01"
-    session_uuid = str(uuid.uuid4())
-    session_id = session_uuid
-
-    # Persistir en Azure SQL para garantizar integridad referencial con tabla report
+def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_token), idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
+    scenario_id = payload.scenarioId or payload.scenario_id or "crisis-voceria-01"
     if SQL_CONN_STR:
-        try:
-            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            with pyodbc.connect(conn_str, timeout=10) as conn:
-                cur = conn.cursor()
-                # Resolver escenario activo
-                scenario_uuid = None
-                safe_sc = _safe_uuid(sc_id)
-                if safe_sc:
-                    cur.execute("SELECT id FROM scenario WHERE id = ?", safe_sc)
-                    row_sc = cur.fetchone()
-                    if row_sc:
-                        scenario_uuid = str(row_sc[0])
-
-                if not scenario_uuid:
-                    cur.execute("SELECT TOP 1 id FROM scenario WHERE status = 'active'")
-                    sc_row = cur.fetchone()
-                    scenario_uuid = str(sc_row[0]) if sc_row else None
-
-                # Resolver rúbrica publicada
-                cur.execute("SELECT TOP 1 id FROM rubric_version WHERE status = 'published'")
-                rub_row = cur.fetchone()
-                rubric_uuid = rub_row[0] if rub_row else None
-
-                DEFAULT_CLIENT_ID = "7D8C0575-196C-40D1-AD7C-08AA2843B4C3"
-                DEFAULT_USER_ID = "4CC52B91-3A9C-5659-8363-4F069CC39F9B"
-
-                # 1. Extraer credenciales reales del usuario autenticado desde el token JWT
-                user_oid = user.get("oid") or user.get("sub") or user.get("user_id") or user.get("userId") or ""
-                user_email = (
-                    user.get("email")
-                    or user.get("preferred_username")
-                    or user.get("upn")
-                    or user.get("unique_name", "")
-                ).strip()
-                display_name = (
-                    user.get("name")
-                    or f"{user.get('given_name', '')} {user.get('family_name', '')}".strip()
-                    or (user_email.split("@")[0] if user_email else "Vocero")
-                )
-                token_role = user.get("role") or user.get("extension_role") or "spokesperson"
-                client_claim = user.get("clientId") or user.get("client_id") or user.get("tid")
-
-                # 2. Sincronizar o buscar usuario real en app_user (busca por email/UUID o auto-provisiona)
-                db_user = sync_or_get_user(
-                    user_id=str(user_oid),
-                    email=user_email,
-                    display_name=display_name,
-                    client_id=str(client_claim) if client_claim else None,
-                    token_role=token_role,
-                )
-
-                user_db_id = _safe_uuid(db_user.get("id"))
-                client_uuid = _safe_uuid(db_user.get("client_id"))
-
-                # 3. Búsqueda defensiva en app_user por email u oid si sync_or_get_user no arrojó ID
-                if not user_db_id and user_email:
-                    cur.execute(
-                        "SELECT id, client_id FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
-                        user_email
-                    )
-                    u_row = cur.fetchone()
-                    if u_row:
-                        user_db_id = _safe_uuid(u_row[0])
-                        if u_row[1] and not client_uuid:
-                            client_uuid = _safe_uuid(u_row[1])
-
-                if not user_db_id and user_oid and _safe_uuid(user_oid):
-                    cur.execute(
-                        "SELECT id, client_id FROM app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
-                        _safe_uuid(user_oid)
-                    )
-                    u_row = cur.fetchone()
-                    if u_row:
-                        user_db_id = _safe_uuid(u_row[0])
-                        if u_row[1] and not client_uuid:
-                            client_uuid = _safe_uuid(u_row[1])
-
-                # 4. Resolver cliente si no está asignado
-                if not client_uuid:
-                    cur.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
-                    c_row = cur.fetchone()
-                    client_uuid = _safe_uuid(c_row[0]) if c_row else _safe_uuid(DEFAULT_CLIENT_ID)
-
-                user_db_id = user_db_id or DEFAULT_USER_ID
-                client_uuid = client_uuid or DEFAULT_CLIENT_ID
-
-                cur.execute("""
-                    INSERT INTO session (
-                        id, client_id, user_id, scenario_id, rubric_version_id,
-                        language, status, started_at, created_at, updated_at, is_deleted
-                    )
-                    VALUES (?, ?, ?, ?, ?, 'es', 'created', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME(), 0)
-                """, (session_uuid, client_uuid, user_db_id, scenario_uuid, rubric_uuid))
-
-                # Inicializar preguntas de la sesión desde scenario_question (sin redundancia de texto)
-                if scenario_uuid:
-                    cur.execute("""
-                        INSERT INTO session_question (id, session_id, question_id, sequence_no, asked_at, created_at, updated_at)
-                        SELECT NEWID(), ?, sq.question_id, sq.sequence_no, SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME()
-                        FROM scenario_question sq
-                        WHERE sq.scenario_id = ?
-                        ORDER BY sq.sequence_no ASC
-                    """, (session_uuid, scenario_uuid))
-
-                conn.commit()
-                logger.info(f"Sesión creada en Azure SQL: {session_uuid} para '{user_email}' (Usuario ID: {user_db_id}, Cliente: {client_uuid}) con escenario {scenario_uuid}")
-        except Exception as e:
-            logger.warning(f"Aviso al crear sesión en Azure SQL: {e}")
-
+        return spokesperson_store.create_session(SQL_CONN_STR, user, scenario_id, payload.language, idempotency_key)
+    session_id = str(uuid.uuid4())
     return {
         "sessionId": session_id,
         "session_id": session_id,
-        "scenarioId": sc_id,
-        "scenario_id": sc_id,
+        "scenarioId": scenario_id,
+        "scenario_id": scenario_id,
         "status": "created",
         "questionCount": 8,
     }
@@ -657,43 +484,8 @@ def list_my_sessions(status: str = "completed", user: dict = Depends(verify_toke
 @app.get("/v1/sessions/{session_id}")
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str, user: dict = Depends(verify_token)):
-    session_uuid = _safe_uuid(session_id) or session_id
     if SQL_CONN_STR:
-        try:
-            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            with pyodbc.connect(conn_str, timeout=10) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT id, scenario_id, status FROM session WHERE id = ?", session_uuid)
-                s_row = cur.fetchone()
-                if s_row:
-                    sc_id = s_row[1]
-                    cur.execute("""
-                        SELECT sq.question_id, sq.sequence_no, q.text
-                        FROM scenario_question sq
-                        JOIN question q ON sq.question_id = q.id
-                        WHERE sq.scenario_id = ?
-                        ORDER BY sq.sequence_no ASC
-                    """, sc_id)
-                    db_questions = cur.fetchall()
-                    if db_questions:
-                        questions_list = [
-                            {"id": str(r[0]), "sequenceNo": r[1], "text": r[2]}
-                            for r in db_questions
-                        ]
-                        return {
-                            "sessionId": session_id,
-                            "scenarioId": str(sc_id),
-                            "status": s_row[2] or "created",
-                            "questions": questions_list,
-                            "retentionPolicy": {
-                                "version": "1.0",
-                                "keep": "full_recording",
-                                "termDays": 30
-                            }
-                        }
-        except Exception as e:
-            logger.warning(f"Aviso consultando preguntas de sesión en SQL ({session_id}): {e}")
-
+        return spokesperson_store.get_session(SQL_CONN_STR, user, session_id)
     return {
         "sessionId": session_id,
         "scenarioId": "crisis-voceria-01",
@@ -719,6 +511,7 @@ def get_session(session_id: str, user: dict = Depends(verify_token)):
 @app.post("/v1/sessions/{session_id}/consent")
 @app.post("/api/sessions/{session_id}/consent")
 def grant_consent(session_id: str, payload: ConsentRequest, user: dict = Depends(verify_token)):
+    spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
     return {
         "sessionId": session_id,
         "status": "consented",
@@ -749,6 +542,7 @@ def mock_upload(session_id: str):
 @app.post("/v1/api/sessions/{session_id}/upload-url")
 def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal para subida directa desde el navegador (PUT)"""
+    spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
     if not STORAGE_CONN_STR:
         mock_url = f"http://localhost:8000/v1/sessions/{session_id}/mock-upload"
         return {
@@ -783,6 +577,7 @@ def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
 @app.get("/v1/api/sessions/{session_id}/recording-url")
 def get_playback_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal de LECTURA para reproducir la grabación desde el navegador"""
+    spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id, read_only=True)
     blob_name = f"recordings/{session_id}.webm"
 
     if not STORAGE_CONN_STR:
@@ -831,10 +626,13 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
     Finaliza la grabación de la sesión, registra el job de análisis en Azure SQL
     y dispara la inferencia asíncrona en ca-analysis-worker vía HTTP interno (escalado 0 a 1).
     """
-    session_uuid = _safe_uuid(session_id) or session_id
+    access = spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
+    session_uuid = access['id']
     job_id = str(uuid.uuid4())
     rubric_version_id = None
-    blob_path = payload.blobPath or payload.video_blob_name or f"recordings/{session_id}.webm"
+    blob_path = f"recordings/{session_id}.webm"
+    if any(path and path != blob_path for path in (payload.blobPath, payload.video_blob_name)):
+        raise HTTPException(422, "La ruta de grabación no corresponde a la sesión.")
 
     # 1. Gestionar estado y job en Azure SQL si está configurado
     if SQL_CONN_STR:
@@ -842,15 +640,13 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
-                cur.execute("SELECT id, status, rubric_version_id FROM session WHERE id = ?", session_uuid)
+                cur.execute("""SELECT id, status, rubric_version_id FROM session
+                               WHERE id=? AND user_id=? AND client_id=? AND is_deleted=0""",
+                            session_uuid, access['profile']['id'], access['profile']['client_id'])
                 session_row = cur.fetchone()
-
-                if session_row and session_row[2]:
-                    rubric_version_id = session_row[2]
-                else:
-                    cur.execute("SELECT TOP 1 id FROM rubric_version WHERE status = 'published'")
-                    rub_row = cur.fetchone()
-                    rubric_version_id = rub_row[0] if rub_row else None
+                if session_row is None:
+                    raise HTTPException(404, "Sesión no encontrada.")
+                rubric_version_id = session_row[2]
 
                 # Crear registro en analysis_job
                 cur.execute("""
@@ -862,8 +658,8 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
                 cur.execute("""
                     UPDATE session 
                     SET status = 'analyzing', finished_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, session_uuid)
+                    WHERE id = ? AND user_id = ? AND client_id = ? AND is_deleted = 0
+                """, session_uuid, access['profile']['id'], access['profile']['client_id'])
 
                 # Sincronizar registro de turnos en session_question (sin redundancia de texto)
                 if payload.turns:
@@ -902,8 +698,26 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
 
                 conn.commit()
                 logger.info(f"Sesión {session_uuid} actualizada a 'analyzing' (Job: {job_id}, Turnos: {len(payload.turns or [])}) en Azure SQL.")
+        except HTTPException:
+            raise
         except Exception as e_sql:
             logger.warning(f"Aviso actualizando estado en Azure SQL ({session_id}): {e_sql}")
+
+    # Normalizar turnos (turns o question_marks)
+    turns = list(payload.turns or [])
+    if not turns and payload.question_marks:
+        for idx, qm in enumerate(payload.question_marks):
+            q_idx = qm.get("questionIndex", idx)
+            start_ms = qm.get("startMs", 0)
+            end_ms = qm.get("endMs")
+            if end_ms is None:
+                end_ms = start_ms + 5000
+            turns.append(TurnInterval(
+                questionId=f"q-{q_idx + 1}",
+                sequenceNo=idx + 1,
+                startMs=int(start_ms),
+                endMs=int(end_ms)
+            ))
 
     # 2. Despachar llamada HTTP interna al worker (DNS privado de Container Apps)
     trigger_payload = WorkerTriggerPayload(
@@ -911,7 +725,7 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
         jobId=job_id,
         rubricVersionId=str(rubric_version_id) if rubric_version_id else "",
         blobPath=blob_path,
-        turns=payload.turns or []
+        turns=turns
     )
 
     worker_started = await trigger_worker_analysis(trigger_payload)
@@ -927,14 +741,14 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
                         "session_id": session_id,
                         "job_id": job_id,
                         "rubric_version_id": str(rubric_version_id) if rubric_version_id else None,
-                        "user_id": user.get("sub", "anonymous"),
-                        "scenario_id": payload.scenario_id,
-                        "tenant_id": payload.tenant_id,
+                        "user_id": access['profile']['id'],
+                        "scenario_id": access['scenario_id'],
+                        "tenant_id": access['profile']['client_id'],
                         "media": {
                             "video_blob_name": blob_path,
                             "storage_container": CONTAINER_NAME
                         },
-                        "turns": [t.model_dump() for t in (payload.turns or [])]
+                        "turns": [t.model_dump() for t in turns]
                     }
                 }
                 with ServiceBusClient.from_connection_string(SERVICE_BUS_CONN_STR) as sb_client:
@@ -982,8 +796,10 @@ def _generate_playback_sas_url(session_id: str, duration_minutes: int = 60) -> s
 @app.get("/api/sessions/{session_id}/report")
 @app.get("/v1/api/sessions/{session_id}/report")
 def get_session_report(session_id: str, user: dict = Depends(verify_token)):
-    """Obtiene el reporte consolidado normalizado desde Azure SQL y Blob Storage"""
+    """Obtiene el reporte consolidado normalizado desde Blob Storage y Azure SQL"""
+    access = spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id, read_only=True)
     scenario_title = "Simulación de Vocería en Crisis"
+    report_data = None
 
     # 1. Validar estado de la sesión en Azure SQL si está configurado
     if SQL_CONN_STR:
@@ -1066,7 +882,6 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     if SQL_CONN_STR and not report_data:
         try:
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
                 cur.execute("""
@@ -1075,7 +890,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
                     FROM report r
                     JOIN session s ON r.session_id = s.id
                     WHERE s.id = ? AND r.is_current = 1
-                """, valid_uuid)
+                """, access['id'])
                 row = cur.fetchone()
                 if row:
                     report_id, overall_score, strengths_raw, improvements_raw, cross_signal, gen_at, sess_status = row
@@ -1183,4 +998,160 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         "puntuacion_global": final_report.get("puntuacion_global", {}),
         "transcript": final_report.get("transcript") or ""
     }
+
+
+# Configuración maestra. Los tipos técnicos se mantienen separados de etiquetas UI.
+MasterText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+MasterTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+
+
+class MasterQuestionInput(BaseModel):
+    id: uuid.UUID | None = None
+    text: MasterText
+
+
+class MasterTopicRequest(BaseModel):
+    name: MasterTitle
+    context: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    optics: Literal['empathetic', 'formal', 'technical']
+    audience: Literal['leadership', 'frontline', 'technical']
+    keyMessages: list[MasterText] = Field(default_factory=list)
+    redLines: list[MasterText] = Field(default_factory=list)
+    questions: list[MasterQuestionInput] = Field(default_factory=list)
+
+    @field_validator('questions', mode='before')
+    @classmethod
+    def question_strings(cls, questions):
+        return [{"text": q} if isinstance(q, str) else q for q in questions] if isinstance(questions, list) else questions
+
+
+class MasterScenarioRequest(BaseModel):
+    title: MasterTitle
+    category: Literal['health', 'operational', 'reputational']
+    difficulty: Literal['basic', 'intermediate', 'hard']
+    estimatedMinutes: Annotated[int, Field(strict=True, gt=0)]
+    clientId: uuid.UUID
+    questionIds: Annotated[list[uuid.UUID], Field(min_length=1)]
+
+    @field_validator('questionIds')
+    @classmethod
+    def distinct_questions(cls, questions):
+        if len(set(questions)) != len(questions):
+            raise ValueError('No se puede seleccionar una pregunta dos veces.')
+        return questions
+
+
+class MasterStatusRequest(BaseModel):
+    status: Literal['active', 'archived']
+
+
+@app.get('/api/master/clients')
+@app.get('/v1/api/master/clients')
+def master_clients(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        cursor.execute("SELECT id,name,status FROM dbo.client WHERE status='active' AND is_deleted=0 ORDER BY name,id")
+        items = master_store.rows(cursor)
+        for item in items:
+            item['id'] = str(item['id'])
+        return {"items": items}
+
+
+@app.get('/api/master/topics')
+@app.get('/v1/api/master/topics')
+def master_topics(status: Literal['active', 'archived', 'all'] = 'active', user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        cursor.execute("""SELECT t.id,t.name,t.context,t.optics,t.audience,t.status,
+            (SELECT COUNT(*) FROM dbo.question q WHERE q.topic_id=t.id AND q.status='active' AND q.in_bank=1 AND q.is_deleted=0) AS questionCount
+            FROM dbo.topic t WHERE t.client_id IS NULL AND t.is_deleted=0 AND (?='all' OR t.status=?)
+            ORDER BY t.created_at DESC,t.id""", status, status)
+        topics = master_store.rows(cursor)
+        for topic in topics:
+            topic['id'] = str(topic['id'])
+            scenarios = master_store.scenarios_for_topic(cursor, topic['id'])
+            topic['scenarioCount'] = sum(s['status'] == 'active' for s in scenarios) if topic['status'] == 'active' else 0
+            topic['clients'] = list({s['clientId']: {'id': s['clientId'], 'name': s['clientName']} for s in scenarios if s['status'] == 'active' and topic['status'] == 'active'}.values())
+        return {'items': topics, 'total': len(topics)}
+
+
+@app.get('/api/master/topics/{topic_id}')
+@app.get('/v1/api/master/topics/{topic_id}')
+def master_topic_detail(topic_id: uuid.UUID, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return master_store.topic_detail(cursor, str(topic_id))
+
+
+@app.post('/api/master/topics', status_code=201)
+@app.post('/v1/api/master/topics', status_code=201)
+def master_create_topic(payload: MasterTopicRequest, user: dict = Depends(verify_token)):
+    if any(q.id for q in payload.questions):
+        raise HTTPException(422, 'Las preguntas de un tema nuevo deben crearse sin id.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        topic_id = str(uuid.uuid4())
+        cursor.execute("INSERT INTO dbo.topic(id,client_id,name,context,optics,audience,status) VALUES(?,NULL,?,?,?,?,'active')", topic_id, payload.name, payload.context, payload.optics, payload.audience)
+        master_store.save_messages(cursor, topic_id, 'topic_key_message', payload.keyMessages)
+        master_store.save_messages(cursor, topic_id, 'topic_red_line', payload.redLines)
+        master_store.save_questions(cursor, topic_id, payload.questions)
+        return master_store.topic_detail(cursor, topic_id)
+
+
+@app.put('/api/master/topics/{topic_id}')
+@app.put('/v1/api/master/topics/{topic_id}')
+def master_update_topic(topic_id: uuid.UUID, payload: MasterTopicRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        topic_id = str(topic_id)
+        master_store.require_topic(cursor, topic_id, lock=True)
+        cursor.execute("UPDATE dbo.topic SET name=?,context=?,optics=?,audience=?,updated_at=SYSUTCDATETIME() WHERE id=?", payload.name, payload.context, payload.optics, payload.audience, topic_id)
+        master_store.save_messages(cursor, topic_id, 'topic_key_message', payload.keyMessages)
+        master_store.save_messages(cursor, topic_id, 'topic_red_line', payload.redLines)
+        master_store.save_questions(cursor, topic_id, payload.questions)
+        return master_store.topic_detail(cursor, topic_id)
+
+
+@app.patch('/api/master/topics/{topic_id}/status')
+@app.patch('/v1/api/master/topics/{topic_id}/status')
+def master_topic_status(topic_id: uuid.UUID, payload: MasterStatusRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        topic_id = str(topic_id)
+        master_store.require_topic(cursor, topic_id, lock=True)
+        cursor.execute("UPDATE dbo.topic SET status=?,updated_at=SYSUTCDATETIME() WHERE id=?", payload.status, topic_id)
+        cursor.execute("UPDATE dbo.scenario SET status=?,updated_at=SYSUTCDATETIME() WHERE topic_id=? AND is_deleted=0", payload.status, topic_id)
+        return master_store.topic_detail(cursor, topic_id)
+
+
+@app.post('/api/master/topics/{topic_id}/scenarios', status_code=201)
+@app.post('/v1/api/master/topics/{topic_id}/scenarios', status_code=201)
+def master_create_scenario(topic_id: uuid.UUID, payload: MasterScenarioRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return master_store.save_scenario(cursor, str(topic_id), payload)
+
+
+@app.put('/api/master/scenarios/{scenario_id}')
+@app.put('/v1/api/master/scenarios/{scenario_id}')
+def master_update_scenario(scenario_id: uuid.UUID, payload: MasterScenarioRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        scenario_id = str(scenario_id)
+        topic_id = master_store.scenario_topic(cursor, scenario_id)
+        return master_store.save_scenario(cursor, topic_id, payload, scenario_id)
+
+
+@app.patch('/api/master/scenarios/{scenario_id}/status')
+@app.patch('/v1/api/master/scenarios/{scenario_id}/status')
+def master_scenario_status(scenario_id: uuid.UUID, payload: MasterStatusRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        scenario_id = str(scenario_id)
+        topic_id = master_store.scenario_topic(cursor, scenario_id)
+        topic_status = master_store.require_topic(cursor, topic_id, lock=True)
+        if payload.status == 'active' and topic_status != 'active':
+            raise HTTPException(409, 'Reactiva el tema antes de reactivar el escenario.')
+        cursor.execute("UPDATE dbo.scenario SET status=?,updated_at=SYSUTCDATETIME() WHERE id=?", payload.status, scenario_id)
+        return next(s for s in master_store.scenarios_for_topic(cursor, topic_id) if s['id'].lower() == scenario_id)
 

@@ -9,7 +9,7 @@ if _worker_dir not in sys.path:
 import uuid
 from typing import List, Optional
 from fastapi import FastAPI, BackgroundTasks, status
-from pydantic import BaseModel, Field, AliasChoices
+from pydantic import BaseModel, Field, AliasChoices, field_validator
 
 try:
     from core.pipeline_orchestrator import process_session_pipeline
@@ -35,6 +35,26 @@ class TurnInterval(BaseModel):
     startMs: int = Field(default=0, validation_alias=AliasChoices('startMs', 'startOffsetMs', 'start_ms', 'start_offset_ms'))
     endMs: int = Field(default=0, validation_alias=AliasChoices('endMs', 'endOffsetMs', 'end_ms', 'end_offset_ms'))
     questionText: Optional[str] = Field(default=None, validation_alias=AliasChoices('questionText', 'question_text', 'text'))
+
+    @field_validator("startMs", mode="before")
+    @classmethod
+    def parse_start_ms(cls, v):
+        if v is None:
+            return 0
+        try:
+            return int(round(float(v)))
+        except (ValueError, TypeError):
+            return 0
+
+    @field_validator("endMs", mode="before")
+    @classmethod
+    def parse_end_ms(cls, v):
+        if v is None:
+            return 0
+        try:
+            return int(round(float(v)))
+        except (ValueError, TypeError):
+            return 0
 
 
 class JobRequest(BaseModel):

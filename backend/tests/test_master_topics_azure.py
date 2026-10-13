@@ -1,0 +1,304 @@
+"""Prueba real de Azure SQL, opt-in. Todas las altas de prueba se revierten.
+
+VOXREADY_TEST_AZURE_SQL=1 python -m pytest backend/tests/test_master_topics_azure.py
+La autenticación se simula; autorización y persistencia se ejecutan realmente.
+"""
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+
+BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
+import main
+
+pytestmark = pytest.mark.skipif(os.getenv('VOXREADY_TEST_AZURE_SQL') != '1', reason='Azure SQL integration is opt-in')
+
+
+@pytest.fixture
+def azure_api(monkeypatch):
+    spec = importlib.util.spec_from_file_location('seed', BACKEND / 'scripts' / 'seed_master_topics.py')
+    seed = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed)
+    conn = seed.connect()
+    cursor = conn.cursor()
+    cursor.execute('SET XACT_ABORT OFF; IF @@TRANCOUNT=0 BEGIN TRANSACTION;')
+    users = {role: str(uuid.uuid4()) for role in ('master', 'speaker', 'colleague', 'outsider')}
+    other_client = str(uuid.uuid4())
+    cursor.execute("INSERT INTO dbo.client(id,name,status) VALUES(?,'Prueba transaccional sin persistencia','active')", other_client)
+    for label, user_id in users.items():
+        cursor.execute("INSERT INTO dbo.app_user(id,client_id,email,display_name,role) VALUES(?,?,?,?,?)", user_id,
+                       other_client if label == 'outsider' else seed.DEMO_CLIENT_ID,
+                       user_id + '@example.invalid', 'Prueba transaccional', 'master_config' if label == 'master' else 'spokesperson')
+    current = {'label': 'master', 'users': users}
+
+    @contextmanager
+    def transactional_database(_):
+        request_cursor = conn.cursor()
+        request_cursor.execute('SAVE TRANSACTION test_request')
+        try:
+            yield request_cursor
+        except Exception:
+            request_cursor.execute('ROLLBACK TRANSACTION test_request')
+            raise
+        finally:
+            request_cursor.close()
+
+    monkeypatch.setattr(main.master_store, 'database', transactional_database)
+    main.app.dependency_overrides[main.verify_token] = lambda: {'sub': users[current['label']]}
+    try:
+        with TestClient(main.app) as client:
+            yield client, current, cursor, seed
+    finally:
+        main.app.dependency_overrides.clear()
+        conn.rollback()
+        conn.close()
+
+
+def test_master_workflow_integrity_and_authorization(azure_api):
+    client, current, cursor, seed = azure_api
+    current['label'] = 'speaker'
+    assert client.get('/api/master/topics').status_code == 403
+    current['label'] = 'master'
+    clients = client.get('/v1/api/master/clients')
+    assert clients.status_code == 200
+    assert any(c['id'].lower() == seed.DEMO_CLIENT_ID.lower() for c in clients.json()['items'])
+    payload = {'name': 'Prueba fase 2', 'context': 'Contexto de prueba', 'optics': 'empathetic',
+               'audience': 'leadership', 'keyMessages': ['Mensaje uno', 'Mensaje dos'], 'redLines': ['Línea uno'],
+               'questions': [f'Pregunta {i}' for i in range(1, 13)]}
+    response = client.post('/api/master/topics', json=payload)
+    assert response.status_code == 201, response.text
+    topic = response.json()
+    assert len(topic['questions']) == 12
+    topic_id = topic['id']
+    ids = [q['id'] for q in topic['questions']]
+    selected = [ids[8], ids[2], ids[11], ids[0]]
+    scenario_payload = {'title': 'Prueba orden arbitrario', 'category': 'operational', 'difficulty': 'basic',
+                        'estimatedMinutes': 7, 'clientId': seed.DEMO_CLIENT_ID, 'questionIds': selected}
+    response = client.post(f'/api/master/topics/{topic_id}/scenarios', json=scenario_payload)
+    assert response.status_code == 201, response.text
+    scenario = response.json()
+    scenario_id = scenario['id']
+    assert [q['id'] for q in scenario['questions']] == selected
+    scenario_payload['questionIds'] = [ids[4], ids[11], ids[2], ids[0]]
+    response = client.put(f'/api/master/scenarios/{scenario_id}', json=scenario_payload)
+    assert response.status_code == 200, response.text
+    assert response.json()['questionIds'] == scenario_payload['questionIds']
+    cursor.execute('SELECT COUNT(*) FROM dbo.scenario_question WHERE scenario_id=?', scenario_id)
+    assert cursor.fetchone()[0] == 5  # relación retirada preservada
+    cursor.execute("SELECT COUNT(*) FROM dbo.scenario_question WHERE scenario_id=? AND status='archived'", scenario_id)
+    assert cursor.fetchone()[0] == 1
+    payload['questions'] = [{'id': q['id'], 'text': q['text']} for q in topic['questions'][1:]]
+    payload['questions'][0]['text'] = 'Pregunta editada conservando identidad'
+    payload['questions'].append('Pregunta nueva sin límite artificial')
+    payload['keyMessages'] = ['Mensaje actualizado']
+    payload['redLines'] = []
+    response = client.put(f'/api/master/topics/{topic_id}', json=payload)
+    assert response.status_code == 200, response.text
+    assert len(response.json()['questions']) == 12
+    cursor.execute('SELECT status,in_bank FROM dbo.question WHERE id=?', ids[0])
+    assert tuple(cursor.fetchone()) == ('archived', False)
+    cursor.execute('SELECT COUNT(*) FROM dbo.question WHERE topic_id=?', topic_id)
+    assert cursor.fetchone()[0] == 13
+    cursor.execute("SELECT COUNT(*) FROM dbo.topic_key_message WHERE topic_id=? AND status='archived'", topic_id)
+    assert cursor.fetchone()[0] == 1
+    # Una pregunta retirada del banco sigue perteneciendo al escenario previamente configurado.
+    assert client.get(f'/api/master/topics/{topic_id}').json()['scenarios'][0]['questionIds'] == scenario_payload['questionIds']
+    bad_payload = {**payload, 'name': 'Cambio que debe revertirse', 'questions': [{'id': str(uuid.uuid4()), 'text': 'Ajena'}]}
+    assert client.put(f'/api/master/topics/{topic_id}', json=bad_payload).status_code == 422
+    assert client.get(f'/api/master/topics/{topic_id}').json()['name'] == payload['name']
+    for status in ('archived', 'active'):
+        response = client.patch(f'/api/master/topics/{topic_id}/status', json={'status': status})
+        assert response.status_code == 200, response.text
+        assert response.json()['status'] == status
+        assert all(s['status'] == status for s in response.json()['scenarios'])
+    assert client.patch(f'/api/master/scenarios/{scenario_id}/status', json={'status': 'archived'}).json()['status'] == 'archived'
+    assert client.patch(f'/api/master/scenarios/{scenario_id}/status', json={'status': 'active'}).json()['status'] == 'active'
+    assert client.patch(f'/api/master/topics/{topic_id}/status', json={'status': 'archived'}).status_code == 200
+    assert client.patch(f'/api/master/scenarios/{scenario_id}/status', json={'status': 'active'}).status_code == 409
+    assert client.post('/api/master/topics', json={**payload, 'optics': 'Empática'}).status_code == 422
+    assert client.post(f'/api/master/topics/{topic_id}/scenarios', json={**scenario_payload, 'questionIds': [ids[1], ids[1]]}).status_code == 422
+    assert client.get('/api/master/topics?status=all').status_code == 200
+    assert client.get('/api/master/topics?status=unknown').status_code == 422
+
+
+def test_company_visibility_persistent_sessions_and_snapshot(azure_api):
+    client, current, cursor, seed = azure_api
+    topic_payload = {'name': 'Prueba fase 3', 'context': 'Entrevista ordenada', 'optics': 'technical',
+                     'audience': 'frontline', 'questions': [f'Pregunta {i}' for i in range(1, 13)]}
+    topic = client.post('/api/master/topics', json=topic_payload).json()
+    ids = [q['id'] for q in topic['questions']]
+    selected = [ids[9], ids[3], ids[11], ids[1]]
+    scenario_payload = {'title': 'Entrevista por empresa', 'category': 'health', 'difficulty': 'hard',
+                        'estimatedMinutes': 10, 'clientId': seed.DEMO_CLIENT_ID, 'questionIds': selected}
+    response = client.post(f"/api/master/topics/{topic['id']}/scenarios", json=scenario_payload)
+    assert response.status_code == 201, response.text
+    scenario = response.json()
+    current['label'] = 'speaker'
+    catalog = client.get('/v1/scenarios').json()
+    assert scenario['id'] in [s['id'] for s in catalog['items']]
+    first = client.get('/scenarios?page=1&pageSize=1').json()
+    assert len(first['items']) == 1 and first['total'] >= 4
+    assert client.get('/scenarios?page=0').status_code == 422
+    assert client.get('/scenarios?q=Entrevista%20por%20empresa').json()['total'] == 1
+    key = str(uuid.uuid4())
+    request = {'scenarioId': scenario['id'], 'language': 'es'}
+    response = client.post('/v1/sessions', json=request, headers={'Idempotency-Key': key})
+    assert response.status_code == 201, response.text
+    session = response.json()
+    assert session['questionCount'] == 4
+    assert client.post('/v1/sessions', json=request, headers={'Idempotency-Key': key}).json()['sessionId'] == session['sessionId']
+    assert client.post('/v1/sessions', json={**request, 'language': 'en'}, headers={'Idempotency-Key': key}).status_code == 409
+    setup = client.get(f"/sessions/{session['sessionId']}").json()
+    assert [q['id'] for q in setup['questions']] == selected
+    assert [q['sequenceNo'] for q in setup['questions']] == [1, 2, 3, 4]
+    cursor.execute('SELECT id,user_id,client_id,scenario_id FROM dbo.session WHERE external_session_id=?', session['sessionId'])
+    persisted_session = cursor.fetchone()
+    assert persisted_session is not None
+    assert str(persisted_session[1]).lower() == current['users']['speaker'].lower()
+    assert str(persisted_session[2]).lower() == seed.DEMO_CLIENT_ID.lower()
+    assert str(persisted_session[3]).lower() == scenario['id'].lower()
+    cursor.execute('SELECT COUNT(*) FROM dbo.session_question WHERE session_id=?', persisted_session[0])
+    assert cursor.fetchone()[0] == 4
+    current['label'] = 'colleague'
+    assert client.get('/v1/scenarios').json() == catalog
+    assert client.get(f"/sessions/{session['sessionId']}").status_code == 404
+    current['label'] = 'outsider'
+    assert client.get('/v1/scenarios').json()['items'] == []
+    assert client.get(f"/scenarios/{scenario['id']}").status_code == 404
+    assert client.post('/sessions', json=request).status_code == 404
+    current['label'] = 'master'
+    scenario_payload['questionIds'] = list(reversed(selected))
+    assert client.put(f"/api/master/scenarios/{scenario['id']}", json=scenario_payload).status_code == 200
+    topic_payload['questions'] = [{'id': q['id'], 'text': q['text'] + ' editada'} for q in topic['questions']]
+    assert client.put(f"/api/master/topics/{topic['id']}", json=topic_payload).status_code == 200
+    assert client.patch(f"/api/master/topics/{topic['id']}/status", json={'status': 'archived'}).status_code == 200
+    current['label'] = 'speaker'
+    assert scenario['id'] not in [s['id'] for s in client.get('/scenarios').json()['items']]
+    assert client.post('/sessions', json=request).status_code == 404
+    assert client.get(f"/sessions/{session['sessionId']}").json()['questions'] == setup['questions']
+    current['label'] = 'master'
+    assert client.patch(f"/api/master/topics/{topic['id']}/status", json={'status': 'active'}).status_code == 200
+    current['label'] = 'speaker'
+    second = client.post('/sessions', json=request).json()
+    assert second['sessionId'] != session['sessionId']
+    assert [q['id'] for q in client.get(f"/sessions/{second['sessionId']}").json()['questions']] == list(reversed(selected))
+
+
+def test_spokesperson_progress_and_schedule_are_persisted_and_isolated(azure_api):
+    client, current, cursor, _seed = azure_api
+    current['label'] = 'speaker'
+    scenarios = client.get('/v1/scenarios').json()['items']
+    assert scenarios
+    scenario_id = scenarios[0]['id']
+
+    today = date.today()
+    scheduled_for = today + timedelta(days=1)
+    created = client.post('/v1/me/schedule', json={
+        'date': scheduled_for.isoformat(),
+        'scenarioId': scenario_id,
+    })
+    assert created.status_code == 201, created.text
+    schedule_id = created.json()['id']
+
+    calendar = client.get('/v1/me/schedule', params={
+        'fromDate': today.isoformat(),
+        'toDate': (today + timedelta(days=7)).isoformat(),
+    })
+    assert calendar.status_code == 200, calendar.text
+    assert [item['id'] for item in calendar.json()['schedules']] == [schedule_id]
+
+    moved_for = today + timedelta(days=2)
+    moved = client.patch(f'/v1/me/schedule/{schedule_id}', json={'date': moved_for.isoformat()})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()['date'] == moved_for.isoformat()
+
+    cancelled = client.post(f'/v1/me/schedule/{schedule_id}/cancel')
+    assert cancelled.status_code == 200, cancelled.text
+    cursor.execute('SELECT status FROM dbo.schedule WHERE id=?', schedule_id)
+    assert cursor.fetchone()[0] == 'cancelled'
+
+    start_schedule = client.post('/v1/me/schedule', json={
+        'date': today.isoformat(),
+        'scenarioId': scenario_id,
+    })
+    assert start_schedule.status_code == 201, start_schedule.text
+    start_schedule_id = start_schedule.json()['id']
+    started = client.post(f'/v1/me/schedule/{start_schedule_id}/start')
+    assert started.status_code == 201, started.text
+    started_again = client.post(f'/v1/me/schedule/{start_schedule_id}/start')
+    assert started_again.status_code == 201, started_again.text
+    assert started_again.json()['sessionId'] == started.json()['sessionId']
+    cursor.execute('''SELECT sch.session_id,s.external_session_id,s.language
+                      FROM dbo.schedule sch JOIN dbo.session s ON s.id=sch.session_id
+                      WHERE sch.id=?''', start_schedule_id)
+    linked_session = cursor.fetchone()
+    assert linked_session is not None
+    assert linked_session[1] == started.json()['sessionId']
+    assert linked_session[2] == 'es'
+
+    public_sessions = []
+    for _ in range(2):
+        response = client.post('/v1/sessions', json={'scenarioId': scenario_id, 'language': 'es'},
+                               headers={'Idempotency-Key': str(uuid.uuid4())})
+        assert response.status_code == 201, response.text
+        public_sessions.append(response.json()['sessionId'])
+
+    cursor.execute('SELECT id,rubric_version_id FROM dbo.session WHERE external_session_id=?', public_sessions[0])
+    first_session_id, rubric_version_id = cursor.fetchone()
+    cursor.execute('SELECT id FROM dbo.session WHERE external_session_id=?', public_sessions[1])
+    second_session_id = cursor.fetchone()[0]
+    cursor.execute("SELECT id,area_key FROM dbo.rubric_area WHERE rubric_version_id=? AND area_key IN ('expression','voice')",
+                   rubric_version_id)
+    areas = {row[1]: row[0] for row in cursor.fetchall()}
+    assert set(areas) == {'expression', 'voice'}
+
+    completed_at = [
+        datetime(2026, 10, 1, 15, 0, tzinfo=timezone.utc),
+        datetime(2026, 10, 2, 15, 0, tzinfo=timezone.utc),
+    ]
+    for index, (session_id, overall, expression, voice) in enumerate((
+        (first_session_id, 65, 60, 70),
+        (second_session_id, 75, 68, 66),
+    )):
+        cursor.execute("UPDATE dbo.session SET status='completed',finished_at=?,updated_at=? WHERE id=?",
+                       completed_at[index], completed_at[index], session_id)
+        report_id = str(uuid.uuid4())
+        cursor.execute("""INSERT INTO dbo.report(
+                              id,session_id,rubric_version_id,overall_score,version_no,is_current,generated_at)
+                          VALUES(?,?,?,?,1,1,?)""",
+                       report_id, session_id, rubric_version_id, overall, completed_at[index])
+        cursor.execute('INSERT INTO dbo.area_score(id,report_id,rubric_area_id,value) VALUES(NEWID(),?,?,?)',
+                       report_id, areas['expression'], expression)
+        cursor.execute('INSERT INTO dbo.area_score(id,report_id,rubric_area_id,value) VALUES(NEWID(),?,?,?)',
+                       report_id, areas['voice'], voice)
+
+    progress = client.get('/v1/me/progress?lastN=5')
+    assert progress.status_code == 200, progress.text
+    payload = progress.json()
+    assert payload['sessionsCount'] == 2
+    assert [item['sessionId'] for item in payload['trendSessions']] == public_sessions
+    by_area = {item['areaKey']: item for item in payload['areas']}
+    assert by_area['expression']['current'] == 68
+    assert by_area['expression']['change'] == 8
+    assert by_area['voice']['current'] == 66
+    assert by_area['voice']['change'] == -4
+
+    current['label'] = 'colleague'
+    assert client.get('/v1/me/progress').json()['sessionsCount'] == 0
+    colleague_calendar = client.get('/v1/me/schedule', params={
+        'fromDate': today.isoformat(),
+        'toDate': (today + timedelta(days=7)).isoformat(),
+    }).json()
+    assert colleague_calendar == {
+        'dateFrom': today.isoformat(),
+        'dateTo': (today + timedelta(days=7)).isoformat(),
+        'schedules': [],
+        'sessions': [],
+    }

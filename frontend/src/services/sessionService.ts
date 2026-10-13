@@ -74,6 +74,12 @@ const DEFAULT_ANALYSIS_STEPS: MultimodalAnalysisStep[] = [
   { id: 'fusion', label: 'Fusión multimodal e índice de empatía', status: 'done' }
 ];
 
+export interface QuestionMark {
+  questionIndex: number;
+  startMs: number;
+  endMs: number | null;
+}
+
 export const sessionService = {
   /**
    * Crea una nueva sesión en el backend
@@ -122,7 +128,7 @@ export const sessionService = {
   /**
    * Solicita una URL firmada SAS de Azure Blob Storage para subida directa (Zero-Proxy)
    */
-  async getUploadUrl(sessionId: string): Promise<RecordingUrlResponse> {
+  async getUploadUrl(sessionId: string, _extension: string = 'webm'): Promise<RecordingUrlResponse> {
     try {
       const res = await apiFetch<{ upload_url: string; blob_name: string }>(
         `/api/sessions/${sessionId}/upload-url`,
@@ -130,11 +136,12 @@ export const sessionService = {
       );
       return {
         uploadUrl: res.upload_url,
-        blobPath: res.blob_name,
+        blobPath: res.blob_name || `recordings/${sessionId}.webm`,
         expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         maxSizeBytes: 524288000
       };
-    } catch {
+    } catch (err) {
+      if (isAccessError(err)) throw err;
       return {
         uploadUrl: `/api/sessions/${sessionId}/upload-url`,
         blobPath: `recordings/${sessionId}.webm`,
@@ -177,23 +184,47 @@ export const sessionService = {
     blobName: string,
     scenarioId: string = 'crisis-voceria-01',
     tenantId: string = 'tenant-voxready-dev',
-    turns: TurnInterval[] = []
+    turnsOrMarks: (TurnInterval | QuestionMark)[] = []
   ): Promise<boolean> {
+    const finalBlobName = blobName || `recordings/${sessionId}.webm`;
+    const formattedTurns: TurnInterval[] = [];
+    const questionMarks: QuestionMark[] = [];
+
+    turnsOrMarks.forEach((item: any, idx: number) => {
+      if ('questionIndex' in item) {
+        questionMarks.push(item as QuestionMark);
+        const start = Math.round(Number(item.startMs) || 0);
+        const end = Math.round(
+          Number(item.endMs !== null && item.endMs !== undefined ? item.endMs : start + 5000)
+        );
+        formattedTurns.push({
+          questionId: `q-${item.questionIndex + 1}`,
+          sequenceNo: idx + 1,
+          startOffsetMs: start,
+          endOffsetMs: Math.max(end, start + 1000)
+        });
+      } else {
+        formattedTurns.push(item as TurnInterval);
+      }
+    });
+
     try {
       await apiFetch(`/api/sessions/${sessionId}/finish`, {
         method: 'POST',
         body: JSON.stringify({
-          blobPath: blobName,
-          video_blob_name: blobName,
+          blobPath: finalBlobName,
+          video_blob_name: finalBlobName,
           scenario_id: scenarioId,
           tenant_id: tenantId,
-          turns: turns
+          turns: formattedTurns,
+          question_marks: questionMarks.length > 0 ? questionMarks : undefined
         })
       });
       return true;
     } catch (err: unknown) {
-      console.warn('Finish notification warning:', err);
-      return true;
+      if (isAccessError(err)) throw err;
+      console.warn('Finish notification error:', err);
+      throw err;
     }
   },
 

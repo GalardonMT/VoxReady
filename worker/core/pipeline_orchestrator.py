@@ -307,14 +307,18 @@ def process_session_pipeline(
     local_video_path = os.path.join(session_tmp_dir, "input.webm")
 
     db_svc = None
+    session_verified = False
     try:
-        if SQL_CONN_STR:
-            db_svc = DatabaseService()
-            db_svc.ensure_session_exists(session_id=session_id)
-    except Exception as dbe:
-        logger.warning(f"Aviso al inicializar db_svc: {dbe}")
+        if not SQL_CONN_STR:
+            raise RuntimeError("Azure SQL es obligatorio para resolver la sesion del analisis.")
+        db_svc = DatabaseService()
+        db_metadata = db_svc.get_session_context(session_id, job_id)
+        if rubric_version_id and str(rubric_version_id).lower() != db_metadata["rubric_version_id"].lower():
+            raise ValueError("La rubrica solicitada no coincide con la sesion.")
+        if blob_path != f"recordings/{session_id}.webm" and not blob_path.endswith(f"{session_id}.webm") and not blob_path.endswith(f"{session_id}.mp4"):
+            raise ValueError("La grabacion solicitada no corresponde a la sesion.")
+        session_verified = True
 
-    try:
         # 1. Descargar video
         download_blob(blob_path, local_video_path)
         if not os.path.exists(local_video_path) or os.path.getsize(local_video_path) == 0:
@@ -428,8 +432,7 @@ def process_session_pipeline(
 
         # 5. Evaluación de Contenido con LLM Juez
         logger.info("Evaluando adherencia y control de crisis con LLM Juez (NVIDIA NIM)...")
-        db_metadata = db_svc.get_active_scenario_and_rubric() if db_svc else {}
-        active_scen = db_metadata.get("scenario", {}) if db_metadata else {}
+        active_scen = db_metadata.get("scenario", {}) if isinstance(db_metadata, dict) else {}
         pregunta = "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
         mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el esclarecimiento de los hechos."]
         contexto = active_scen.get("context") or "Incidente corporativo y vocería institucional ante medios de comunicación."
@@ -542,17 +545,7 @@ def process_session_pipeline(
 
         # 8. Persistencia Atómica en Azure SQL
         report_id = None
-        resolved_rubric_id = rubric_version_id or (db_metadata.get("rubric_version_id") if db_metadata else None)
-        if db_svc and not resolved_rubric_id:
-            try:
-                with db_svc._get_connection() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT TOP 1 id FROM rubric_version")
-                    row = cur.fetchone()
-                    if row:
-                        resolved_rubric_id = str(row[0])
-            except Exception as re:
-                logger.warning(f"Aviso al consultar rúbrica de respaldo: {re}")
+        resolved_rubric_id = db_metadata["rubric_version_id"]
 
         processed_at_iso = datetime.now(timezone.utc).isoformat()
         video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
@@ -608,7 +601,7 @@ def process_session_pipeline(
 
     except Exception as ex:
         logger.error(f"Fallo crítico en pipeline de sesión {session_id}: {ex}", exc_info=True)
-        if db_svc:
+        if db_svc and session_verified:
             update_analysis_job_status(db_svc, job_id, "failed", failure_reason=str(ex))
             try:
                 db_svc.update_session_status(session_id, "failed")

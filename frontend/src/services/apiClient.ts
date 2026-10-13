@@ -26,7 +26,26 @@ export interface ProblemDetails {
 
 export class ApiError extends Error {
   constructor(public problem: ProblemDetails) {
-    super(problem.detail || problem.title);
+    let msg: string;
+    const detail = problem.detail as unknown;
+    if (typeof detail === 'string') {
+      msg = detail;
+    } else if (Array.isArray(detail)) {
+      msg = detail
+        .map((item: any) => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            return item.msg || item.message || JSON.stringify(item);
+          }
+          return String(item);
+        })
+        .join(', ');
+    } else if (detail && typeof detail === 'object') {
+      msg = (detail as any).msg || (detail as any).message || JSON.stringify(detail);
+    } else {
+      msg = problem.title || 'Error en la petición';
+    }
+    super(msg);
     this.name = 'ApiError';
   }
 }
