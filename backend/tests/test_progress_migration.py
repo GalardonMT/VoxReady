@@ -71,9 +71,28 @@ class VerificationCursor:
             table = params[0].removeprefix("dbo.")
             column = params[1]
             self._row = (None if (table, column) == self.missing_column else 16,)
+        elif "select name,type_name(user_type_id),max_length,is_nullable" in normalized:
+            self._rows = [
+                ("id", "uniqueidentifier", 16, False),
+                ("name", "nvarchar", 300, False),
+                ("status", "nvarchar", 40, False),
+                ("created_at", "datetime2", 8, False),
+                ("updated_at", "datetime2", 8, False),
+                ("is_deleted", "bit", 1, False),
+                ("deleted_at", "datetime2", 8, True),
+            ]
         elif "from sys.columns" in normalized and "is_nullable" in normalized:
-            self._row = (True, "uniqueidentifier") if "session_id" in normalized else (True,)
-        elif "sys.index_columns" in normalized:
+            if "dbo.app_user" in normalized or "session_id" in normalized:
+                self._row = (True, "uniqueidentifier")
+            elif "video_blob_path" in normalized:
+                self._row = (True,)
+            elif "dbo.microlesson" in normalized:
+                self._row = (False,)
+            else:
+                self._row = (True,)
+        elif "from sys.key_constraints" in normalized:
+            self._rows = [("id",)]
+        elif "join sys.index_columns" in normalized and params:
             index = params[-1]
             shapes = {
                 "UQ_schedule_session": [("session_id", 1, False, 1)],
@@ -99,13 +118,19 @@ class VerificationCursor:
             filtered = index in {
                 "UQ_session_external_id", "UQ_session_idempotency", "UQ_schedule_session",
             }
-            unique = index != "IX_schedule_client_user_date"
+            unique = index in {
+                "UQ_session_external_id", "UQ_session_idempotency", "UQ_schedule_session",
+                "UQ_user_area_progress_user_area", "UQ_scenario_id_client",
+            }
             filter_definition = "[session_id] IS NOT NULL" if index == "UQ_schedule_session" else None
             self._row = ((not unique), 0, filtered, filter_definition) if index == self.bad_index else (unique, 0, filtered, filter_definition)
         elif "from sys.foreign_keys" in normalized:
-            self._row = None if self.missing_fk else (False, False, "session_id", "id")
-        elif "from sys.key_constraints" in normalized:
-            self._row = (1,)
+            if "dbo.schedule" in normalized:
+                self._row = None if self.missing_fk else (False, False, "session_id", "id")
+            else:
+                self._row = (False, False)
+        elif "from sys.check_constraints" in normalized:
+            self._row = (False, False)
         else:
             raise AssertionError(f"Consulta de verificación inesperada: {sql}")
         return self

@@ -95,6 +95,50 @@ y frontend en `127.0.0.1`. Sigue usando Azure SQL y Blob Storage; no crea una
 base local. Para ver logs o detener ese mismo proyecto, usa
 `.\docker.ps1 logs -LocalDevAuth` o `.\docker.ps1 stop -LocalDevAuth`.
 
+### Perfil aislado para probar el registro de clientes
+
+No hay un motor de base de datos local alternativo soportado: el esquema usa
+Azure SQL y el inicializador rechaza otros motores. Para no reutilizar la
+configuración habitual, prepara un archivo local separado (queda ignorado):
+
+```powershell
+Copy-Item .env.client-registration.example .env.client-registration.local
+```
+
+Completa ese archivo únicamente con recursos Azure **no productivos** y define
+`DEV_AUTH_TEST_EMAIL` con una cuenta activa de rol `master_config` ya presente
+en `dbo.app_user`, cuyo `client_id` sea `NULL`. Luego inicia el entorno:
+
+```powershell
+.\docker.ps1 up -LocalDevAuth -EnvFile .env.client-registration.local
+```
+
+El servicio `init` aplica la migración aditiva antes de iniciar la API. Abre
+`http://localhost:3000/login/`, ingresa con esa cuenta y entra a
+**Maestro > Clientes > Nuevo cliente**. Después de guardar, reinicia los
+contenedores con el mismo perfil para comprobar persistencia:
+
+```powershell
+.\docker.ps1 stop -LocalDevAuth -EnvFile .env.client-registration.local
+.\docker.ps1 up -LocalDevAuth -EnvFile .env.client-registration.local
+```
+
+El cliente debe seguir visible en **Clientes**. No se crean usuarios al
+registrar la empresa y no se modifica la pertenencia de voceros existentes.
+
+Con ese entorno aislado ya preparado, ejecuta la verificación de esquema y las
+pruebas de integración (sus altas se revierten al finalizar):
+
+```powershell
+.\docker.ps1 verify -EnvFile .env.client-registration.local
+.\docker.ps1 test -EnvFile .env.client-registration.local
+```
+
+Para compilar y ejecutar únicamente las pruebas unitarias en Docker, sin abrir
+una conexión de base de datos, pueden construirse los targets `test` y ejecutar
+la imagen del backend con `VOXREADY_TEST_AZURE_SQL=0`. Las pruebas de
+persistencia real son opt-in y requieren el perfil aislado anterior.
+
 ## Verificación y pruebas dentro de Docker
 
 Después de construir o arrancar:

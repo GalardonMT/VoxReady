@@ -40,6 +40,22 @@ def test_dev_auth_contract(monkeypatch):
     assert error.value.status_code == 401
 
 
+def test_dev_token_preserves_the_preassigned_user_identity(monkeypatch):
+    monkeypatch.setattr(main, 'DEV_AUTH', True)
+    user_id = '00112233-4455-6677-8899-aabbccddeeff'
+    claims = main.verify_token(f'Bearer dev-user-{user_id}')
+    assert claims['oid'] == user_id
+    assert claims['sub'] == user_id
+    assert 'email' not in claims
+
+
+def test_dev_token_rejects_an_invalid_embedded_identity(monkeypatch):
+    monkeypatch.setattr(main, 'DEV_AUTH', True)
+    with pytest.raises(HTTPException) as error:
+        main.verify_token('Bearer dev-user-not-a-uuid')
+    assert error.value.status_code == 401
+
+
 def test_dev_auth_requires_preassigned_email(monkeypatch):
     monkeypatch.setattr(main, 'DEV_AUTH', True)
     monkeypatch.delenv('DEV_AUTH_TEST_EMAIL', raising=False)

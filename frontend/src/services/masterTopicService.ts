@@ -17,7 +17,7 @@ const id = encodeURIComponent;
 
 export const masterTopicService = {
   async clients(): Promise<ClientInfo[]> {
-    return (await apiFetch<{ items: ClientInfo[] }>(`${base}/clients`)).items;
+    return (await apiFetch<{ items: ClientInfo[] }>(`${base}/clients?status=active`)).items;
   },
   async topics(status: LifecycleStatus | 'all' = 'active'): Promise<MasterTopicListItem[]> {
     return (await apiFetch<{ items: MasterTopicListItem[] }>(`${base}/topics?status=${status}`)).items;

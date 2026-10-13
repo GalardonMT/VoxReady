@@ -159,7 +159,7 @@ function ScenarioEditor({ topic, clients, existing, onCancel, onSaved }: { topic
       <div className="grid2" style={{ margin: '16px 0' }}>
         <div><label className="label" htmlFor="scenario-minutes">{d.duration} *</label><input id="scenario-minutes" className="field" type="number" required min={1} step={1} value={minutes} onChange={e => setMinutes(e.target.value)} /></div>
         <div><label className="label" htmlFor="scenario-client">{d.client} *</label><select id="scenario-client" className="field" required value={clientId} onChange={e => setClientId(e.target.value)}><option value="">{d.chooseClient}</option>{clients.map(client => <option value={client.id} key={client.id}>{client.name}</option>)}
-          {existing && !clients.some(c => c.id === existing.clientId) && <option disabled value={existing.clientId}>{existing.clientName} ({d.archived})</option>}</select></div>
+          {existing && !clients.some(c => c.id === existing.clientId) && <option disabled value={existing.clientId}>{existing.clientName} (no activo)</option>}</select></div>
       </div>
       <div className="grid2">
         <div className="card"><h4>{d.bank} ({topic.questions.length})</h4>

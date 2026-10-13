@@ -19,6 +19,7 @@ import progress_store
 import schedule_store
 import spokesperson_store
 import microlessons as microlesson_store
+import client_store
 
 # Cargar variables de entorno locales si existen
 try:
@@ -83,7 +84,19 @@ def verify_token(authorization: str = Header(None)):
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
 
-    # 1. Si no hay token o es token explícito de dev local:
+    # 1. En desarrollo, el token emitido por /dev/token conserva la identidad
+    # preasignada en app_user. La identidad fija queda como atajo interactivo.
+    if token and token.startswith("dev-user-") and DEV_AUTH:
+        try:
+            dev_user_id = str(uuid.UUID(token.removeprefix("dev-user-")))
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=401, detail="Token de desarrollo inválido") from None
+        return {
+            "sub": dev_user_id,
+            "oid": dev_user_id,
+            "name": "Dev User",
+        }
+
     if (not token or token.startswith("dev-")) and DEV_AUTH:
         dev_email = os.getenv("DEV_AUTH_TEST_EMAIL", "").strip()
         if not dev_email:
@@ -1006,6 +1019,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
 # Configuración maestra. Los tipos técnicos se mantienen separados de etiquetas UI.
 MasterText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 MasterTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+ClientName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
 
 
 class MasterQuestionInput(BaseModel):
@@ -1048,6 +1062,11 @@ class MasterStatusRequest(BaseModel):
     status: Literal['active', 'archived']
 
 
+class MasterClientRequest(BaseModel):
+    name: ClientName
+    status: Literal['active', 'suspended'] = 'active'
+
+
 class MicrolessonRequest(BaseModel):
     clientId: uuid.UUID
     scenarioId: uuid.UUID
@@ -1080,14 +1099,22 @@ class MicrolessonVideoFinalizeRequest(MicrolessonVideoUploadRequest):
 
 @app.get('/api/master/clients')
 @app.get('/v1/api/master/clients')
-def master_clients(user: dict = Depends(verify_token)):
+def master_clients(
+    status: Literal['active', 'suspended', 'all'] = 'active',
+    user: dict = Depends(verify_token),
+):
     with master_store.database(SQL_CONN_STR) as cursor:
         master_store.resolve_user(cursor, user, master=True)
-        cursor.execute("SELECT id,name,status FROM dbo.client WHERE status='active' AND is_deleted=0 ORDER BY name,id")
-        items = master_store.rows(cursor)
-        for item in items:
-            item['id'] = str(item['id'])
-        return {"items": items}
+        items = client_store.list_clients(cursor, status)
+        return {"items": items, "total": len(items)}
+
+
+@app.post('/api/master/clients', status_code=201)
+@app.post('/v1/api/master/clients', status_code=201)
+def master_create_client(payload: MasterClientRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return client_store.create_client(cursor, payload.name, payload.status)
 
 
 @app.get('/api/master/topics')
@@ -1194,7 +1221,7 @@ def master_scenario_status(scenario_id: uuid.UUID, payload: MasterStatusRequest,
 @app.get('/api/master/microlessons/clients')
 @app.get('/v1/api/master/microlessons/clients')
 def master_microlesson_clients(
-    status: Literal['active', 'archived', 'all'] = 'all',
+    status: Literal['active', 'suspended', 'all'] = 'all',
     user: dict = Depends(verify_token),
 ):
     return microlesson_store.clients(SQL_CONN_STR, user, status)

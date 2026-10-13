@@ -4,3 +4,4 @@ export * from './sessionFlowService';
 export * from './topicService';
 export * from './rubricService';
 export * from './masterTopicService';
+export * from './clientService';
