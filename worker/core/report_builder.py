@@ -168,3 +168,162 @@ class ReportBuilder:
         }
 
         return report
+
+
+def sanitize_report_json(
+    session_id: str,
+    job_id: Optional[str],
+    report_id: Optional[str],
+    processed_at: str,
+    recording_url: str,
+    overall_score: int,
+    area_scores: Dict[str, int],
+    visum_narrative: Dict[str, Any],
+    vision_metrics: Dict[str, Any],
+    audio_metrics: Dict[str, Any],
+    judge_metrics: Dict[str, Any],
+    transcript: str,
+    segmented_turns: Optional[list] = None,
+) -> Dict[str, Any]:
+    """
+    Sanea y normaliza el reporte consolidado de acuerdo con la Especificación Técnica (Sección 1):
+    1. Elimina informe_ejecutivo_visum de la raíz, preservando únicamente narrative.visum.
+    2. Unifica las métricas de visión a estándar técnico en camelCase sin duplicidades en español.
+    3. Normaliza métricas acústicas y dimensiones pedagógicas del LLM Juez.
+    """
+    # 1. Normalizar Visum
+    sintesis_ej = visum_narrative.get("sintesis_ejecutiva") or {}
+    desempeno = visum_narrative.get("desempeno_observado") or {}
+    
+    sintesis_clean = {
+        "diagnosticoGeneral": sintesis_ej.get("diagnostico_general", sintesis_ej.get("diagnosticoGeneral", "")),
+        "fortalezaPrincipal": sintesis_ej.get("fortaleza_principal", sintesis_ej.get("fortalezaPrincipal", "")),
+        "focoDesarrollo": sintesis_ej.get("foco_desarrollo", sintesis_ej.get("focoDesarrollo", "")),
+        "continuidadRecomendada": sintesis_ej.get("continuidad_recomendada", sintesis_ej.get("continuidadRecomendada", ""))
+    }
+    
+    formula_rec = (
+        desempeno.get("formula_practica_recomendada")
+        or visum_narrative.get("formulaRecomendada")
+        or "Secuencia de 3 pasos: Reconocer el impacto -> Explicar certezas -> Acciones en curso."
+    )
+    
+    hallazgos_raw = visum_narrative.get("hallazgos_transversales") or visum_narrative.get("hallazgosTransversales") or []
+    if isinstance(hallazgos_raw, list) and hallazgos_raw:
+        hallazgos_str = " ".join([h.get("descripcion", str(h)) if isinstance(h, dict) else str(h) for h in hallazgos_raw])
+    else:
+        hallazgos_str = str(hallazgos_raw or "")
+        
+    visum_clean = {
+        "sintesisEjecutiva": sintesis_clean,
+        "formulaRecomendada": formula_rec,
+        "hallazgosTransversales": hallazgos_str,
+        # Preservar atributos detallados para vistas pedagógicas profundas
+        "sintesis_ejecutiva": sintesis_ej,
+        "desempeno_observado": desempeno,
+        "recomendaciones_proximas_vocerias": visum_narrative.get("recomendaciones_proximas_vocerias", []),
+        "consideracion_final": visum_narrative.get("consideracion_final", "")
+    }
+
+    # 2. Normalizar Métricas de Visión
+    v_summary = vision_metrics.get("summary") or vision_metrics.get("visum_summary") or vision_metrics
+    eye_pct = float(v_summary.get("eye_contact_pct", vision_metrics.get("contacto_visual_porcentaje", 0.0)))
+    shoulder_score = float(v_summary.get("shoulder_stability_score", vision_metrics.get("posture_stability_score", vision_metrics.get("average_posture_score", 100.0))))
+    sway_std = float(v_summary.get("body_sway_std", 0.0))
+    hands_vis = float(v_summary.get("hands_visible_pct", 0.0))
+    frames_count = int(v_summary.get("total_frames_analyzed", vision_metrics.get("total_frames_analizados", vision_metrics.get("frames_validos", 0))))
+
+    clean_vision = {
+        "eyeContactPct": round(eye_pct, 2),
+        "shoulderStabilityScore": round(shoulder_score, 2),
+        "bodySwayStd": round(sway_std, 4),
+        "handsVisiblePct": round(hands_vis, 2),
+        "totalFramesAnalyzed": frames_count,
+        "frames_analyzed": frames_count
+    }
+
+    # 3. Normalizar Métricas Acústicas
+    clean_audio = {
+        "palabrasTotales": int(audio_metrics.get("palabras_totales", audio_metrics.get("palabrasTotales", 0))),
+        "duracionSegundos": float(audio_metrics.get("duracion_segundos", audio_metrics.get("duracionSegundos", 0.0))),
+        "tiempoVozActivaSegundos": float(audio_metrics.get("tiempo_voz_activa_segundos", audio_metrics.get("tiempoVozActivaSegundos", 0.0))),
+        "wpmGlobal": float(audio_metrics.get("wpm_global", audio_metrics.get("wpmGlobal", audio_metrics.get("wpm", 0.0)))),
+        "ratioFonacion": float(audio_metrics.get("ratio_fonacion", audio_metrics.get("ratioFonacion", 0.0))),
+        "pausasVacilacion": int(audio_metrics.get("pausas_vacilacion", audio_metrics.get("pausasVacilacion", 0))),
+        "pausasProlongadas": int(audio_metrics.get("pausas_prolongadas", audio_metrics.get("pausasProlongadas", 0))),
+        "densidadMuletillasPct": float(audio_metrics.get("densidad_muletillas_pct", audio_metrics.get("densidadMuletillasPct", 0.0))),
+        "muletillasDetectadas": audio_metrics.get("muletillas_detectadas") or audio_metrics.get("muletillasDetectadas") or [],
+        "scoreFluidez": float(audio_metrics.get("score_fluidez", audio_metrics.get("scoreFluidez", 0.0))),
+        "scoreDiccion": float(audio_metrics.get("score_diccion", audio_metrics.get("scoreDiccion", 100.0)))
+    }
+
+    # 4. Normalizar Dimensiones del Juez
+    raw_dims = judge_metrics.get("dimensiones", {})
+    dim_map = {
+        "pertinencia_respuesta": "pertinenciaRespuesta",
+        "alineacion_mensaje_clave": "alineacionMensajeClave",
+        "tecnicas_control": "tecnicasControl",
+        "consistencia_institucional": "consistenciaInstitucional",
+        "asertividad_hostilidad": "asertividadHostilidad",
+        "capacidad_sintesis": "capacidadSintesis",
+        "claridad_mensaje": "claridadMensaje"
+    }
+    clean_dims = {}
+    for k, v in raw_dims.items():
+        camel_k = dim_map.get(k, k)
+        if isinstance(v, dict):
+            clean_dims[camel_k] = {
+                "nivel": v.get("nivel", v.get("score_1_5", 1)),
+                "score": float(v.get("score_100", v.get("score", 0.0))),
+                "criterio": v.get("criterio", v.get("justificacion", ""))
+            }
+        else:
+            clean_dims[camel_k] = v
+
+    clean_judge = {
+        "puntajeGlobal100": float(judge_metrics.get("puntaje_global_100", judge_metrics.get("puntajeGlobal100", 0.0))),
+        "dimensiones": clean_dims,
+        "feedback": judge_metrics.get("feedback", {})
+    }
+
+    # 5. Narrativa y Señal Cruzada
+    strengths = visum_narrative.get("desempeno_observado", {}).get("fortalezas", [])
+    improvements = visum_narrative.get("desempeno_observado", {}).get("oportunidades_desarrollo", [])
+    cross_signal = str(visum_narrative.get("observacion_senal_cruzada", ""))
+
+    return {
+        "sessionId": session_id,
+        "session_id": session_id,
+        "jobId": job_id or "",
+        "job_id": job_id or "",
+        "reportId": report_id or "",
+        "report_id": report_id or "",
+        "processedAt": processed_at,
+        "processed_at": processed_at,
+        "recordingUrl": recording_url,
+        "overallScore": overall_score,
+        "areaScores": [
+            {"area": "expression", "value": area_scores.get("expression", 0)},
+            {"area": "voice", "value": area_scores.get("voice", 0)},
+            {"area": "coherence", "value": area_scores.get("coherence", 0)},
+            {"area": "empathy", "value": area_scores.get("empathy", 0)}
+        ],
+        "puntuacion_global": {
+            "score_general": overall_score,
+            "areas": area_scores
+        },
+        "narrative": {
+            "strengths": strengths,
+            "improvements": improvements,
+            "crossSignal": cross_signal,
+            "visum": visum_clean
+        },
+        "metrics": {
+            "vision": clean_vision,
+            "audio": clean_audio,
+            "judge": clean_judge,
+            "turns_evaluated": len(segmented_turns or [])
+        },
+        "transcript": transcript
+    }
+

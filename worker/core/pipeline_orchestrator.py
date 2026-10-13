@@ -19,14 +19,14 @@ try:
     from core.llm_judge import LLMJudgeService
     from core.narrative_generator import generate_visum_report
     from core.vision_client import VisionClient
-    from core.report_builder import calculate_expression_area_score
+    from core.report_builder import calculate_expression_area_score, sanitize_report_json
     from services.db_service import DatabaseService
 except (ImportError, ValueError):
     from worker.core.audio_analyzer import AudioAnalyzer
     from worker.core.llm_judge import LLMJudgeService
     from worker.core.narrative_generator import generate_visum_report
     from worker.core.vision_client import VisionClient
-    from worker.core.report_builder import calculate_expression_area_score
+    from worker.core.report_builder import calculate_expression_area_score, sanitize_report_json
     from worker.services.db_service import DatabaseService
 
 logger = logging.getLogger("analysis-worker.orchestrator")
@@ -133,10 +133,10 @@ def split_media(video_path: str, session_tmp_dir: str):
     if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
         raise ValueError("El archivo de audio generado está vacío o no contiene datos válidos.")
 
-    # Extraer frames a 0.5 FPS (1 fotograma cada 2 segundos)
+    # Extraer frames a 2 FPS (1 fotograma cada 500 ms según especificación técnica)
     cmd_frames = [
         "ffmpeg", "-nostdin", "-y", "-i", video_path,
-        "-vf", "fps=0.5", "-q:v", "2", os.path.join(frames_dir, "frame_%04d.jpg")
+        "-vf", "fps=2", "-q:v", "2", os.path.join(frames_dir, "frame_%04d.jpg")
     ]
     res_frames = subprocess.run(
         cmd_frames,
@@ -150,16 +150,16 @@ def split_media(video_path: str, session_tmp_dir: str):
         raise RuntimeError(f"FFmpeg no pudo extraer fotogramas del video: {res_frames.stderr[:200]}")
 
     frame_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
-    logger.info(f"Fotogramas extraídos: {len(frame_files)}")
+    logger.info(f"Fotogramas extraídos a 2 FPS: {len(frame_files)}")
 
     if not frame_files:
         raise ValueError("No se pudieron generar fotogramas a partir de la grabación.")
 
-    # Muestrear a máximo 20 frames representativos para optimizar tiempo de inferencia
-    if len(frame_files) > 20:
-        step = len(frame_files) // 20
-        frame_files = frame_files[::step][:20]
-        logger.info(f"Muestreados {len(frame_files)} fotogramas para MediaPipe.")
+    # Muestrear si la grabación es excesivamente larga para proteger tiempo de inferencia (< 60s)
+    if len(frame_files) > 120:
+        step = len(frame_files) // 120
+        frame_files = frame_files[::step][:120]
+        logger.info(f"Muestreados {len(frame_files)} fotogramas representativos para MediaPipe.")
 
     return audio_path, frame_files
 
@@ -172,10 +172,10 @@ def segment_audio_by_turns(audio_path: str, turns: list, output_dir: str) -> lis
     os.makedirs(output_dir, exist_ok=True)
     segmented = []
     for t in turns:
-        q_id = t.get("questionId", "q")
-        seq = t.get("sequenceNo", 0)
-        start_ms = t.get("startMs", 0)
-        end_ms = t.get("endMs", 0)
+        q_id = t.get("questionId") or t.get("question_id") or "q"
+        seq = t.get("sequenceNo") or t.get("sequence_no") or 0
+        start_ms = t.get("startMs") if t.get("startMs") is not None else t.get("startOffsetMs", 0)
+        end_ms = t.get("endMs") if t.get("endMs") is not None else t.get("endOffsetMs", 0)
         if end_ms <= start_ms:
             continue
 
@@ -366,9 +366,65 @@ def process_session_pipeline(
             raise ValueError("El servicio de transcripción (NVIDIA Riva ASR) no detectó palabras inteligibles en el audio.")
 
         audio_metrics = audio_res.get("metrics", {})
-        score_fluidez = float(audio_metrics.get("score_fluidez", 0.0))
-        score_diccion = float(audio_metrics.get("score_diccion", 0.0))
+        score_fluidez = float(audio_metrics.get("score_fluidez") if audio_metrics.get("score_fluidez") is not None else 0.0)
+        score_diccion = float(audio_metrics.get("score_diccion") if audio_metrics.get("score_diccion") is not None else 100.0)
         score_verbal = round((score_fluidez * 0.6) + (score_diccion * 0.4), 1)
+
+        # 4.1 Mapear transcripción a cada turno/pregunta y persistir respuesta en session_question
+        turn_responses = []
+        if turns:
+            for t in turns:
+                q_id = t.get("questionId") or t.get("question_id") or ""
+                seq = t.get("sequenceNo") or t.get("sequence_no") or 1
+                start_ms = t.get("startMs") if t.get("startMs") is not None else t.get("startOffsetMs", 0)
+                end_ms = t.get("endMs") if t.get("endMs") is not None else t.get("endOffsetMs", 0)
+                start_s = start_ms / 1000.0
+                end_s = end_ms / 1000.0
+
+                matched_words = []
+                for w in words:
+                    w_start = w.get("start", w.get("start_time", 0.0))
+                    w_end = w.get("end", w.get("end_time", w_start + 0.1))
+                    if (w_start < end_s and w_end > start_s) or (w_start >= start_s and w_start <= end_s):
+                        matched_words.append(w.get("word", ""))
+
+                turn_text = " ".join(matched_words).strip()
+                turn_responses.append({
+                    "questionId": q_id,
+                    "sequenceNo": seq,
+                    "transcript": turn_text,
+                })
+
+            # Si ningún turno capturó texto individual (o sólo hay 1 turno) pero hay transcripción global:
+            non_empty_turns = [tr for tr in turn_responses if tr.get("transcript")]
+            if not non_empty_turns and transcript and turn_responses:
+                turn_responses[0]["transcript"] = transcript
+
+            if db_svc and turn_responses:
+                try:
+                    db_svc.update_question_responses(session_id, turn_responses)
+                except Exception as t_err:
+                    logger.error(f"Error actualizando respuestas en session_question: {t_err}", exc_info=True)
+        elif db_svc and transcript:
+            try:
+                with db_svc._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT question_id, sequence_no 
+                        FROM session_question 
+                        WHERE session_id = ? 
+                        ORDER BY sequence_no ASC
+                    """, valid_session_uuid)
+                    sq_rows = cur.fetchall()
+                    if sq_rows:
+                        turn_responses = [{
+                            "questionId": str(sq_rows[0][0]),
+                            "sequenceNo": sq_rows[0][1],
+                            "transcript": transcript
+                        }]
+                        db_svc.update_question_responses(session_id, turn_responses)
+            except Exception as e_turns:
+                logger.warning(f"Aviso actualizando respuesta para sesión sin turnos explícitos: {e_turns}")
 
         # 5. Evaluación de Contenido con LLM Juez
         logger.info("Evaluando adherencia y control de crisis con LLM Juez (NVIDIA NIM)...")
@@ -498,6 +554,26 @@ def process_session_pipeline(
             except Exception as re:
                 logger.warning(f"Aviso al consultar rúbrica de respaldo: {re}")
 
+        processed_at_iso = datetime.now(timezone.utc).isoformat()
+        video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
+
+        # Construir JSON consolidado y saneado (Sección 1)
+        cleaned_report = sanitize_report_json(
+            session_id=session_id,
+            job_id=job_id,
+            report_id=None,
+            processed_at=processed_at_iso,
+            recording_url=video_blob_url,
+            overall_score=int(round(score_global)),
+            area_scores=area_scores_map,
+            visum_narrative=visum_narrative,
+            vision_metrics=vision_metrics,
+            audio_metrics=audio_metrics,
+            judge_metrics=llm_metrics,
+            transcript=transcript,
+            segmented_turns=segmented_turns
+        )
+
         if db_svc and resolved_rubric_id:
             try:
                 report_id = db_svc.finalize_session_analysis(
@@ -506,14 +582,19 @@ def process_session_pipeline(
                     visum_report=visum_narrative,
                     area_scores=area_scores_map,
                     rubric_version_id=resolved_rubric_id,
-                    rubric_areas=db_metadata.get("rubric_areas", {})
+                    rubric_areas=db_metadata.get("rubric_areas", {}),
+                    job_id=job_id
                 )
                 logger.info(f"Reporte y puntajes persistidos en Azure SQL con ID: {report_id}")
+                cleaned_report["reportId"] = report_id
+                cleaned_report["report_id"] = report_id
 
+                # Trazabilidad integral en analysis_pipeline_result (incluyendo fusion consolidado)
                 pipeline_map = {
                     "vision": vision_metrics,
                     "voice": audio_metrics,
-                    "content_judge": llm_metrics
+                    "content_judge": llm_metrics,
+                    "fusion": cleaned_report
                 }
                 persist_pipeline_results(db_svc, job_id, pipeline_map)
                 update_analysis_job_status(db_svc, job_id, "completed")
@@ -521,47 +602,8 @@ def process_session_pipeline(
                 logger.error(f"Fallo en persistencia Azure SQL: {dbe}")
                 raise dbe
 
-        # 9. Subir JSON consolidado a Azure Blob Storage
-        video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
-        consolidated_report = {
-            "session_id": session_id,
-            "job_id": job_id,
-            "report_id": report_id,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
-            "recordingUrl": video_blob_url,
-            "overallScore": int(round(score_global)),
-
-            "puntuacion_global": {
-                "score_general": score_global,
-                "score_comunicacion_no_verbal": round(score_visual, 1),
-                "score_comunicacion_verbal": score_verbal,
-                "score_estrategia_crisis": round(score_estrategico, 1),
-                "score_empatia": round(score_empatia, 1),
-                "areas": area_scores_map
-            },
-            "areaScores": [
-                {"area": "expression", "value": area_scores_map["expression"]},
-                {"area": "voice", "value": area_scores_map["voice"]},
-                {"area": "coherence", "value": area_scores_map["coherence"]},
-                {"area": "empathy", "value": area_scores_map["empathy"]}
-            ],
-            "narrative": {
-                "strengths": visum_narrative.get("desempeno_observado", {}).get("fortalezas", []),
-                "improvements": visum_narrative.get("desempeno_observado", {}).get("oportunidades_desarrollo", []),
-                "crossSignal": visum_narrative.get("observacion_senal_cruzada", ""),
-                "visum": visum_narrative
-            },
-            "informe_ejecutivo_visum": visum_narrative,
-            "metrics": {
-                "vision": vision_metrics,
-                "audio": audio_metrics,
-                "judge": llm_metrics,
-                "turns_evaluated": len(segmented_turns)
-            },
-            "transcript": transcript
-        }
-
-        upload_report_to_blob(session_id, consolidated_report)
+        # 9. Subir JSON saneado a Azure Blob Storage
+        upload_report_to_blob(session_id, cleaned_report)
         logger.info(f"=== Pipeline Multimodal completado con éxito para sesión {session_id} ===")
 
     except Exception as ex:

@@ -1,13 +1,14 @@
 # backend/schemas/session.py
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AliasChoices
 
 
 class TurnInterval(BaseModel):
-    questionId: str
-    sequenceNo: int
-    startMs: int
-    endMs: int
+    questionId: str = Field(default="", validation_alias=AliasChoices('questionId', 'question_id'))
+    sequenceNo: int = Field(default=1, validation_alias=AliasChoices('sequenceNo', 'sequence_no'))
+    startMs: int = Field(default=0, validation_alias=AliasChoices('startMs', 'startOffsetMs', 'start_ms', 'start_offset_ms'))
+    endMs: int = Field(default=0, validation_alias=AliasChoices('endMs', 'endOffsetMs', 'end_ms', 'end_offset_ms'))
+    questionText: Optional[str] = Field(default=None, validation_alias=AliasChoices('questionText', 'question_text', 'text'))
 
 
 class FinishSessionRequest(BaseModel):

@@ -5,6 +5,7 @@ import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService } from '../../services/sessionService';
 import type { SessionSetup } from '../../services/sessionFlowService';
+import type { TurnInterval } from '../../types/api';
 
 interface LiveSessionViewProps {
   onNavigate: (screen: VoceroScreen) => void;
@@ -52,6 +53,10 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const turnsRef = useRef<TurnInterval[]>([]);
+  const questionStartMsRef = useRef<number>(0);
+  const recordingStartEpochRef = useRef<number>(0);
+  const elapsedMsRef = useRef<number>(0);
 
   const [streamActive, setStreamActive] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -135,6 +140,10 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
         // INICIAR EN FLUJO CONTINUO (SIN timeslice para eliminar saltos temporales)
         recorder.start();
+        recordingStartEpochRef.current = Date.now();
+        elapsedMsRef.current = 0;
+        questionStartMsRef.current = 0;
+        turnsRef.current = [];
         mediaRecorderRef.current = recorder;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -178,19 +187,43 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
     if (isPaused && recorder.state === 'recording') {
       try {
         recorder.pause();
+        if (recordingStartEpochRef.current > 0) {
+          elapsedMsRef.current += Date.now() - recordingStartEpochRef.current;
+          recordingStartEpochRef.current = 0;
+        }
       } catch (e) {
         console.warn('Advertencia al pausar MediaRecorder:', e);
       }
     } else if (!isPaused && recorder.state === 'paused') {
       try {
         recorder.resume();
+        recordingStartEpochRef.current = Date.now();
       } catch (e) {
         console.warn('Advertencia al reanudar MediaRecorder:', e);
       }
     }
   }, [isPaused]);
 
+  const getElapsedMediaMs = (): number => {
+    let total = elapsedMsRef.current;
+    if (!isPaused && recordingStartEpochRef.current > 0) {
+      total += Date.now() - recordingStartEpochRef.current;
+    }
+    return Math.max(0, Math.round(total));
+  };
+
   const handleNextQuestion = () => {
+    const currentMs = getElapsedMediaMs();
+    const qId = (setup?.questions && setup.questions[questionIndex - 1]?.id) || `q-${questionIndex}`;
+    turnsRef.current.push({
+      questionId: qId,
+      sequenceNo: questionIndex,
+      startOffsetMs: questionStartMsRef.current,
+      endOffsetMs: Math.max(questionStartMsRef.current + 500, currentMs),
+      questionText: currentQuestion
+    });
+    questionStartMsRef.current = currentMs;
+
     if (questionIndex < totalQuestions) {
       setQuestionIndex((prev) => prev + 1);
     }
@@ -199,6 +232,19 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   };
 
   const handleFinishSession = async () => {
+    const finalMs = getElapsedMediaMs();
+    const alreadyRecorded = turnsRef.current.some((t) => t.sequenceNo === questionIndex);
+    if (!alreadyRecorded) {
+      const qId = (setup?.questions && setup.questions[questionIndex - 1]?.id) || `q-${questionIndex}`;
+      turnsRef.current.push({
+        questionId: qId,
+        sequenceNo: questionIndex,
+        startOffsetMs: questionStartMsRef.current,
+        endOffsetMs: Math.max(questionStartMsRef.current + 500, finalMs),
+        questionText: currentQuestion
+      });
+    }
+
     setIsUploading(true);
     setUploadStatus('1/3 Finalizando codificación de video y vaciando buffers...');
 
@@ -267,7 +313,8 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
         activeSessionId,
         blobPath,
         activeScenarioId,
-        'tenant-voxready-dev'
+        'tenant-voxready-dev',
+        turnsRef.current
       );
 
       setUploadStatus('¡Encolado con éxito en Azure! Pasando a análisis...');

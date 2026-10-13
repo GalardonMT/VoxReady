@@ -8,6 +8,7 @@ import { TechConsentView } from '../../../components/spokesperson/TechConsentVie
 import { LiveSessionView } from '../../../components/spokesperson/LiveSessionView';
 import { AnalyzingView } from '../../../components/spokesperson/AnalyzingView';
 import { CoachReportView } from '../../../components/spokesperson/CoachReportView';
+import { FullVisumReportView } from '../../../components/spokesperson/FullVisumReportView';
 import { ProgressView } from '../../../components/spokesperson/ProgressView';
 import { LessonView } from '../../../components/spokesperson/LessonView';
 import { useAuth } from '../../../context/AuthContext';
@@ -163,6 +164,12 @@ function SpokespersonContent() {
         )}
         {voceroScreen === 'u6' && (
           <CoachReportView
+            onNavigate={handleVoceroNavigate}
+            sessionId={activeSessionId}
+          />
+        )}
+        {voceroScreen === 'u8' && (
+          <FullVisumReportView
             onNavigate={handleVoceroNavigate}
             sessionId={activeSessionId}
           />

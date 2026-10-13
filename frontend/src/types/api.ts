@@ -90,6 +90,74 @@ export interface CoachReport {
   metrics?: Record<string, unknown>;
 }
 
+export interface VisumExecutive {
+  sintesisEjecutiva?: {
+    diagnosticoGeneral?: string;
+    fortalezaPrincipal?: string;
+    focoDesarrollo?: string;
+    continuidadRecomendada?: string;
+  };
+  formulaRecomendada?: string;
+  hallazgosTransversales?: string;
+  recomendacionesProximasVocerias?: string[];
+  consideracionFinal?: string;
+}
+
+export interface MetricsSummary {
+  eyeContactPct?: number;
+  shoulderStabilityScore?: number;
+  wpm?: number;
+  fillerWordsCount?: number;
+  fillerWordsDensityPct?: number;
+}
+
+export interface FullVisumReport {
+  sessionId: string;
+  status: string;
+  overallScore: number;
+  scenarioTitle?: string;
+  generatedAt?: string;
+  recordingUrl?: string;
+  narrative: {
+    strengths: string[];
+    improvements: string[];
+    crossSignal: string;
+    visum?: VisumExecutive;
+  };
+  areaScores: { area: string; value: number }[];
+  visumExecutive?: VisumExecutive;
+  metricsSummary?: MetricsSummary;
+  metrics?: {
+    vision?: {
+      eyeContactPct?: number;
+      shoulderStabilityScore?: number;
+      bodySwayStd?: number;
+      handsVisiblePct?: number;
+      totalFramesAnalyzed?: number;
+      frames_analyzed?: number;
+    };
+    audio?: {
+      palabrasTotales?: number;
+      duracionSegundos?: number;
+      tiempoVozActivaSegundos?: number;
+      wpmGlobal?: number;
+      ratioFonacion?: number;
+      pausasVacilacion?: number;
+      pausasProlongadas?: number;
+      densidadMuletillasPct?: number;
+      muletillasDetectadas?: string[];
+      scoreFluidez?: number;
+      scoreDiccion?: number;
+    };
+    judge?: {
+      puntajeGlobal100?: number;
+      dimensiones?: Record<string, { nivel: number; score: number; criterio: string }>;
+      feedback?: Record<string, unknown>;
+    };
+  };
+  transcript?: string;
+}
+
 export interface ProgressTrend {
   sessions: string[]; // e.g. ['S1', 'S2', 'S3', 'S4', 'S5']
   expression: number[];
@@ -167,4 +235,12 @@ export interface LabelingCase {
   };
   expertComment?: string;
   videoDuration: string;
+}
+
+export interface TurnInterval {
+  questionId: string;
+  sequenceNo: number;
+  startOffsetMs: number;
+  endOffsetMs: number;
+  questionText?: string;
 }

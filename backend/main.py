@@ -414,9 +414,18 @@ def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_to
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
                 # Resolver escenario activo
-                cur.execute("SELECT TOP 1 id FROM scenario WHERE status = 'active'")
-                sc_row = cur.fetchone()
-                scenario_uuid = sc_row[0] if sc_row else None
+                scenario_uuid = None
+                safe_sc = _safe_uuid(sc_id)
+                if safe_sc:
+                    cur.execute("SELECT id FROM scenario WHERE id = ?", safe_sc)
+                    row_sc = cur.fetchone()
+                    if row_sc:
+                        scenario_uuid = str(row_sc[0])
+
+                if not scenario_uuid:
+                    cur.execute("SELECT TOP 1 id FROM scenario WHERE status = 'active'")
+                    sc_row = cur.fetchone()
+                    scenario_uuid = str(sc_row[0]) if sc_row else None
 
                 # Resolver rúbrica publicada
                 cur.execute("SELECT TOP 1 id FROM rubric_version WHERE status = 'published'")
@@ -448,8 +457,19 @@ def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_to
                     )
                     VALUES (?, ?, ?, ?, ?, 'es', 'created', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME(), 0)
                 """, (session_uuid, client_uuid, user_db_id, scenario_uuid, rubric_uuid))
+
+                # Inicializar preguntas de la sesión desde scenario_question (sin redundancia de texto)
+                if scenario_uuid:
+                    cur.execute("""
+                        INSERT INTO session_question (id, session_id, question_id, sequence_no, asked_at, created_at, updated_at)
+                        SELECT NEWID(), ?, sq.question_id, sq.sequence_no, SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME()
+                        FROM scenario_question sq
+                        WHERE sq.scenario_id = ?
+                        ORDER BY sq.sequence_no ASC
+                    """, (session_uuid, scenario_uuid))
+
                 conn.commit()
-                logger.info(f"Sesión creada en Azure SQL: {session_uuid}")
+                logger.info(f"Sesión creada en Azure SQL: {session_uuid} con escenario {scenario_uuid}")
         except Exception as e:
             logger.warning(f"Aviso al crear sesión en Azure SQL: {e}")
 
@@ -466,6 +486,43 @@ def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_to
 @app.get("/v1/sessions/{session_id}")
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str, user: dict = Depends(verify_token)):
+    session_uuid = _safe_uuid(session_id) or session_id
+    if SQL_CONN_STR:
+        try:
+            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+            with pyodbc.connect(conn_str, timeout=10) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id, scenario_id, status FROM session WHERE id = ?", session_uuid)
+                s_row = cur.fetchone()
+                if s_row:
+                    sc_id = s_row[1]
+                    cur.execute("""
+                        SELECT sq.question_id, sq.sequence_no, q.text
+                        FROM scenario_question sq
+                        JOIN question q ON sq.question_id = q.id
+                        WHERE sq.scenario_id = ?
+                        ORDER BY sq.sequence_no ASC
+                    """, sc_id)
+                    db_questions = cur.fetchall()
+                    if db_questions:
+                        questions_list = [
+                            {"id": str(r[0]), "sequenceNo": r[1], "text": r[2]}
+                            for r in db_questions
+                        ]
+                        return {
+                            "sessionId": session_id,
+                            "scenarioId": str(sc_id),
+                            "status": s_row[2] or "created",
+                            "questions": questions_list,
+                            "retentionPolicy": {
+                                "version": "1.0",
+                                "keep": "full_recording",
+                                "termDays": 30
+                            }
+                        }
+        except Exception as e:
+            logger.warning(f"Aviso consultando preguntas de sesión en SQL ({session_id}): {e}")
+
     return {
         "sessionId": session_id,
         "scenarioId": "crisis-voceria-01",
@@ -636,8 +693,44 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
                     SET status = 'analyzing', finished_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
                     WHERE id = ?
                 """, session_uuid)
+
+                # Sincronizar registro de turnos en session_question (sin redundancia de texto)
+                if payload.turns:
+                    for turn in payload.turns:
+                        valid_q = _safe_uuid(turn.questionId)
+                        if valid_q:
+                            cur.execute("SELECT id FROM question WHERE id = ?", valid_q)
+                            if not cur.fetchone():
+                                valid_q = None
+                        if not valid_q:
+                            cur.execute("""
+                                SELECT sq.question_id 
+                                FROM scenario_question sq
+                                JOIN session s ON s.scenario_id = sq.scenario_id
+                                WHERE s.id = ? AND sq.sequence_no = ?
+                            """, (session_uuid, turn.sequenceNo))
+                            row_sq = cur.fetchone()
+                            if row_sq:
+                                valid_q = str(row_sq[0])
+                        if not valid_q:
+                            cur.execute("SELECT TOP 1 id FROM question")
+                            row_any = cur.fetchone()
+                            valid_q = str(row_any[0]) if row_any else None
+
+                        cur.execute(
+                            "SELECT id FROM session_question WHERE session_id = ? AND (question_id = ? OR sequence_no = ?)",
+                            (session_uuid, valid_q or "", turn.sequenceNo)
+                        )
+                        if not cur.fetchone() and valid_q:
+                            cur.execute("""
+                                INSERT INTO session_question (
+                                    id, session_id, question_id, sequence_no, asked_at, created_at, updated_at
+                                )
+                                VALUES (NEWID(), ?, ?, ?, SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME())
+                            """, (session_uuid, valid_q, turn.sequenceNo))
+
                 conn.commit()
-                logger.info(f"Sesión {session_uuid} actualizada a 'analyzing' (Job: {job_id}) en Azure SQL.")
+                logger.info(f"Sesión {session_uuid} actualizada a 'analyzing' (Job: {job_id}, Turnos: {len(payload.turns or [])}) en Azure SQL.")
         except Exception as e_sql:
             logger.warning(f"Aviso actualizando estado en Azure SQL ({session_id}): {e_sql}")
 
@@ -690,16 +783,101 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
     }
 
 
+def _generate_playback_sas_url(session_id: str, duration_minutes: int = 60) -> str:
+    """Genera URL temporal SAS de lectura para la grabación de la sesión."""
+    if not STORAGE_CONN_STR:
+        return f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
+        blob_name = f"recordings/{session_id}.webm"
+        account_name = blob_service_client.account_name
+        account_key = blob_service_client.credential.account_key
+        sas_token = generate_blob_sas(
+            account_name=account_name,
+            container_name=CONTAINER_NAME,
+            blob_name=blob_name,
+            account_key=account_key,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+        )
+        return f"https://{account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}?{sas_token}"
+    except Exception as e:
+        logger.warning(f"Aviso al generar SAS URL de lectura para {session_id}: {e}")
+        return f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
+
+
 @app.get("/sessions/{session_id}/report")
 @app.get("/v1/sessions/{session_id}/report")
 @app.get("/api/sessions/{session_id}/report")
 @app.get("/v1/api/sessions/{session_id}/report")
 def get_session_report(session_id: str, user: dict = Depends(verify_token)):
-    """Obtiene el reporte consolidado normalizado desde Blob Storage y Azure SQL"""
-    report_data = None
+    """Obtiene el reporte consolidado normalizado desde Azure SQL y Blob Storage"""
+    scenario_title = "Simulación de Vocería en Crisis"
 
-    # 1. Intentar leer desde Azure Blob Storage
-    if STORAGE_CONN_STR:
+    # 1. Validar estado de la sesión en Azure SQL si está configurado
+    if SQL_CONN_STR:
+        try:
+            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+            with pyodbc.connect(conn_str, timeout=10) as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT s.status, sc.title
+                    FROM session s
+                    LEFT JOIN scenario sc ON s.scenario_id = sc.id
+                    WHERE s.id = ?
+                """, valid_uuid)
+                s_row = cur.fetchone()
+                if s_row:
+                    s_status = (s_row[0] or "").lower()
+                    if s_row[1]:
+                        scenario_title = s_row[1]
+                    if s_status in ["created", "analyzing", "processing"]:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="El análisis de la sesión no ha finalizado"
+                        )
+                    if s_status == "failed":
+                        cur.execute("""
+                            SELECT TOP 1 failure_reason 
+                            FROM analysis_job 
+                            WHERE session_id = ? 
+                            ORDER BY created_at DESC
+                        """, valid_uuid)
+                        aj_row = cur.fetchone()
+                        fail_reason = aj_row[0] if aj_row and aj_row[0] else "El análisis de la sesión falló durante el procesamiento."
+                        raise HTTPException(
+                            status_code=422,
+                            detail=fail_reason
+                        )
+        except HTTPException:
+            raise
+        except Exception as sqle:
+            logger.warning(f"Aviso al verificar estado previo de sesión ({session_id}): {sqle}")
+
+    # 2. Intentar leer desde analysis_pipeline_result (pipeline = 'fusion') en Azure SQL
+    report_data = None
+    if SQL_CONN_STR:
+        try:
+            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+            with pyodbc.connect(conn_str, timeout=10) as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT TOP 1 apr.summary_json
+                    FROM analysis_pipeline_result apr
+                    JOIN analysis_job aj ON apr.analysis_job_id = aj.id
+                    WHERE aj.session_id = ? AND apr.pipeline = 'fusion'
+                    ORDER BY apr.created_at DESC
+                """, valid_uuid)
+                apr_row = cur.fetchone()
+                if apr_row and apr_row[0]:
+                    report_data = json.loads(apr_row[0])
+        except Exception as sqle:
+            logger.warning(f"Aviso al leer fusion de analysis_pipeline_result ({session_id}): {sqle}")
+
+    # 3. Intentar leer desde Azure Blob Storage si no se halló en SQL
+    if STORAGE_CONN_STR and not report_data:
         try:
             blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
             container_client = blob_service_client.get_container_client("reports")
@@ -712,7 +890,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         except Exception as e:
             logger.warning(f"Aviso al leer reporte desde Blob Storage ({session_id}): {e}")
 
-    # 2. Si no está en Blob Storage o para complementar, consultar Azure SQL
+    # 4. Si aún no hay report_data, reconstruir desde tablas report y area_score
     sql_report = None
     if SQL_CONN_STR and not report_data:
         try:
@@ -733,7 +911,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
                     strengths = json.loads(strengths_raw) if strengths_raw else []
                     improvements = json.loads(improvements_raw) if improvements_raw else []
 
-                    # Leer area_scores
+                    # Leer area_scores usando JOIN con rubric_area
                     cur.execute("""
                         SELECT ra.area_key, a.value
                         FROM area_score a
@@ -752,19 +930,14 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
                             "improvements": improvements,
                             "crossSignal": cross_signal or "",
                             "visum": {
-                                "sintesis_ejecutiva": {
-                                    "diagnostico_general": "Evaluación estructurada completada.",
-                                    "fortaleza_principal": strengths[0] if strengths else "",
-                                    "foco_desarrollo": improvements[0] if improvements else "",
-                                    "continuidad_recomendada": "Entrenamiento continuo en vocería de crisis."
+                                "sintesisEjecutiva": {
+                                    "diagnosticoGeneral": "Evaluación estructurada completada.",
+                                    "fortalezaPrincipal": strengths[0] if strengths else "",
+                                    "focoDesarrollo": improvements[0] if improvements else "",
+                                    "continuidadRecomendada": "Entrenamiento continuo en vocería de crisis."
                                 },
-                                "desempeno_observado": {
-                                    "evaluacion_general": "Desempeño registrado en sistema de evaluación.",
-                                    "fortalezas": strengths,
-                                    "oportunidades_desarrollo": improvements,
-                                    "formula_practica_recomendada": "Reconocer el impacto -> Explicar certezas -> Acciones en curso."
-                                },
-                                "observacion_senal_cruzada": cross_signal or ""
+                                "formulaRecomendada": "Reconocer el impacto -> Explicar certezas -> Acciones en curso.",
+                                "hallazgosTransversales": "Desempeño registrado en sistema de evaluación."
                             }
                         },
                         "areaScores": area_scores_list,
@@ -775,78 +948,68 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
 
     final_report = report_data or sql_report
 
-    # Si no hay reporte, verificar si la sesión o el job falló en Azure SQL
-    if not final_report and SQL_CONN_STR:
-        try:
-            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
-            with pyodbc.connect(conn_str, timeout=10) as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT TOP 1 s.status, aj.status, aj.failure_reason
-                    FROM session s
-                    LEFT JOIN analysis_job aj ON s.id = aj.session_id
-                    WHERE s.id = ?
-                    ORDER BY aj.created_at DESC
-                """, valid_uuid)
-                row = cur.fetchone()
-                if row:
-                    sess_status, job_status, failure_reason = row
-                    if sess_status == "failed" or job_status == "failed":
-                        err_msg = failure_reason or "El análisis no pudo completarse debido a información insuficiente o error de procesamiento."
-                        return {
-                            "sessionId": session_id,
-                            "session_id": session_id,
-                            "status": "failed",
-                            "error": err_msg,
-                            "message": err_msg
-                        }
-        except Exception as sqle:
-            logger.warning(f"Aviso al consultar estado de falla en Azure SQL ({session_id}): {sqle}")
-
     if not final_report:
-        return {
-            "sessionId": session_id,
-            "session_id": session_id,
-            "status": "processing",
-            "message": "El análisis multimedia está en curso..."
-        }
+        raise HTTPException(
+            status_code=409,
+            detail="El análisis de la sesión no ha finalizado"
+        )
 
-    # Normalizar respuesta unificada asegurando todas las claves requeridas por el frontend
+    # 5. Generar SAS URL de lectura para el video
+    playback_sas_url = _generate_playback_sas_url(session_id)
+
+    # 6. Extraer y formatear datos garantizando compatibilidad con contrato OpenAPI
     overall = final_report.get("overallScore") or final_report.get("puntuacion_global", {}).get("score_general", 75)
-    visum = (
-        final_report.get("informe_ejecutivo_visum")
-        or final_report.get("narrative", {}).get("visum")
-        or {}
-    )
     narrative_obj = final_report.get("narrative") or {}
-    if not narrative_obj.get("visum") and visum:
-        narrative_obj["visum"] = visum
-    if not narrative_obj.get("strengths") and visum.get("desempeno_observado", {}).get("fortalezas"):
-        narrative_obj["strengths"] = visum["desempeno_observado"]["fortalezas"]
-    if not narrative_obj.get("improvements") and visum.get("desempeno_observado", {}).get("oportunidades_desarrollo"):
-        narrative_obj["improvements"] = visum["desempeno_observado"]["oportunidades_desarrollo"]
-    if not narrative_obj.get("crossSignal") and visum.get("observacion_senal_cruzada"):
-        narrative_obj["crossSignal"] = visum["observacion_senal_cruzada"]
+    visum = narrative_obj.get("visum") or final_report.get("informe_ejecutivo_visum") or {}
+
+    sintesis_ej = visum.get("sintesisEjecutiva") or visum.get("sintesis_ejecutiva") or {}
+    visum_executive = {
+        "sintesisEjecutiva": {
+            "diagnosticoGeneral": sintesis_ej.get("diagnosticoGeneral", sintesis_ej.get("diagnostico_general", "")),
+            "fortalezaPrincipal": sintesis_ej.get("fortalezaPrincipal", sintesis_ej.get("fortaleza_principal", "")),
+            "focoDesarrollo": sintesis_ej.get("focoDesarrollo", sintesis_ej.get("foco_desarrollo", "")),
+            "continuidadRecomendada": sintesis_ej.get("continuidadRecomendada", sintesis_ej.get("continuidad_recomendada", ""))
+        },
+        "formulaRecomendada": visum.get("formulaRecomendada") or visum.get("desempeno_observado", {}).get("formula_practica_recomendada", "Secuencia en 3 pasos: Reconocer el impacto -> Explicar certezas -> Acciones en curso."),
+        "hallazgosTransversales": visum.get("hallazgosTransversales") or visum.get("hallazgos_transversales") or ""
+    }
+
+    metrics_obj = final_report.get("metrics") or {}
+    vision_m = metrics_obj.get("vision") or {}
+    audio_m = metrics_obj.get("audio") or {}
+
+    metrics_summary = {
+        "eyeContactPct": vision_m.get("eyeContactPct", vision_m.get("contacto_visual_porcentaje", 0.0)),
+        "shoulderStabilityScore": vision_m.get("shoulderStabilityScore", vision_m.get("average_posture_score", 0.0)),
+        "wpm": audio_m.get("wpmGlobal", audio_m.get("wpm", 0.0)),
+        "fillerWordsCount": len(audio_m.get("muletillasDetectadas", audio_m.get("muletillas_detectadas", []))),
+        "fillerWordsDensityPct": audio_m.get("densidadMuletillasPct", audio_m.get("densidad_muletillas_pct", 0.0))
+    }
 
     area_scores = final_report.get("areaScores")
     if not area_scores and "puntuacion_global" in final_report and "areas" in final_report["puntuacion_global"]:
         areas_dict = final_report["puntuacion_global"]["areas"]
         area_scores = [{"area": k, "value": v} for k, v in areas_dict.items()]
 
-    response_payload = {
+    return {
         "sessionId": session_id,
         "session_id": session_id,
         "status": "completed",
         "overallScore": int(round(overall)),
-        "puntuacion_global": final_report.get("puntuacion_global", {}),
+        "scenarioTitle": final_report.get("scenarioTitle") or scenario_title,
+        "generatedAt": final_report.get("processedAt") or final_report.get("processed_at") or final_report.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
+        "recordingUrl": playback_sas_url,
+        "narrative": {
+            "strengths": narrative_obj.get("strengths", []),
+            "improvements": narrative_obj.get("improvements", []),
+            "crossSignal": narrative_obj.get("crossSignal") or visum.get("observacion_senal_cruzada", ""),
+            "visum": visum_executive
+        },
         "areaScores": area_scores or [],
-        "narrative": narrative_obj,
-        "informe_ejecutivo_visum": visum,
-        "metrics": final_report.get("metrics", {}),
-        "recordingUrl": final_report.get("recordingUrl") or f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm",
-        "scenarioTitle": final_report.get("scenarioTitle") or "Simulación de Vocería en Crisis",
-        "generatedAt": final_report.get("processed_at") or final_report.get("generatedAt") or datetime.now(timezone.utc).isoformat()
+        "visumExecutive": visum_executive,
+        "metricsSummary": metrics_summary,
+        "metrics": metrics_obj,
+        "puntuacion_global": final_report.get("puntuacion_global", {}),
+        "transcript": final_report.get("transcript") or ""
     }
-    return response_payload
 

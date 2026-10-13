@@ -235,16 +235,24 @@ class DatabaseService:
         area_scores: Dict[str, int],
         rubric_version_id: str,
         rubric_areas: Dict[str, Any],
+        job_id: Optional[str] = None,
     ) -> str:
         """
-        Persiste atómicamente el informe en 'report' y los 4 puntajes en 'area_score',
-        y actualiza la sesión a 'completed'.
+        Persiste atómicamente el informe en 'report' (incluyendo analysis_job_id)
+        y los 4 puntajes en 'area_score', y actualiza la sesión a 'completed'.
         """
         try:
             uuid_obj = uuid.UUID(session_id)
             valid_session_uuid = str(uuid_obj)
         except Exception:
             valid_session_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+
+        valid_job_uuid = None
+        if job_id:
+            try:
+                valid_job_uuid = str(uuid.UUID(str(job_id)))
+            except Exception:
+                valid_job_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(job_id)))
 
         report_id = str(uuid.uuid4())
         strengths_list = visum_report.get("desempeno_observado", {}).get("fortalezas", [])
@@ -258,17 +266,18 @@ class DatabaseService:
         try:
             cur = conn.cursor()
 
-            # 1. Insertar en report
+            # 1. Insertar en report con analysis_job_id
             cur.execute("""
                 INSERT INTO report (
-                    id, session_id, rubric_version_id, overall_score,
+                    id, session_id, analysis_job_id, rubric_version_id, overall_score,
                     narrative_strengths, narrative_improvements, cross_signal_observation,
                     version_no, is_current, generated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, SYSUTCDATETIME())
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, SYSUTCDATETIME())
             """, (
                 report_id,
                 valid_session_uuid,
+                valid_job_uuid,
                 rubric_version_id,
                 int(round(overall_score)),
                 strengths_json,
@@ -298,23 +307,98 @@ class DatabaseService:
             """, valid_session_uuid)
 
             conn.commit()
-            logger.info(f"Sesión {valid_session_uuid} finalizada y persistida con Report ID: {report_id}")
+            logger.info(f"Sesión {valid_session_uuid} finalizada y persistida con Report ID: {report_id} (Job: {valid_job_uuid})")
             return report_id
         except Exception as e:
             conn.rollback()
             logger.error(f"Error persistiendo informe en SQL para {valid_session_uuid}: {e}")
-            try:
-                cur.execute("""
-                    UPDATE session
-                    SET status = 'failed', updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, valid_session_uuid)
-                conn.commit()
-            except Exception:
-                pass
             raise e
         finally:
             conn.close()
+
+    def update_question_responses(
+        self,
+        session_id: str,
+        turn_responses: List[Dict[str, Any]]
+    ):
+        """
+        Actualiza el texto transcrito de la respuesta (response_text) para cada pregunta
+        en la tabla session_question.
+        """
+        if not turn_responses:
+            return
+
+        try:
+            uuid_obj = uuid.UUID(session_id)
+            valid_session_uuid = str(uuid_obj)
+        except Exception:
+            valid_session_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            for tr in turn_responses:
+                q_id = tr.get("questionId") or tr.get("question_id") or ""
+                seq = tr.get("sequenceNo") or tr.get("sequence_no") or 1
+                resp_text = (tr.get("transcript") or tr.get("response_text") or "").strip()
+                q_text = tr.get("questionText") or tr.get("question_text")
+
+                try:
+                    q_uuid = str(uuid.UUID(str(q_id)))
+                except Exception:
+                    q_uuid = None
+
+                # 1. Intentar actualizar response_text en fila existente
+                if q_uuid:
+                    cur.execute("""
+                        UPDATE session_question
+                        SET response_text = ?, updated_at = SYSUTCDATETIME()
+                        WHERE session_id = ? AND (question_id = ? OR sequence_no = ?)
+                    """, (resp_text, valid_session_uuid, q_uuid, seq))
+                else:
+                    cur.execute("""
+                        UPDATE session_question
+                        SET response_text = ?, updated_at = SYSUTCDATETIME()
+                        WHERE session_id = ? AND sequence_no = ?
+                    """, (resp_text, valid_session_uuid, seq))
+
+                # 2. Si no existía la fila, resolver question_id válido y crearla (sin question_text)
+                if cur.rowcount == 0:
+                    real_q_uuid = q_uuid
+                    if real_q_uuid:
+                        cur.execute("SELECT id FROM question WHERE id = ?", real_q_uuid)
+                        if not cur.fetchone():
+                            real_q_uuid = None
+
+                    if not real_q_uuid:
+                        cur.execute("""
+                            SELECT sq.question_id 
+                            FROM scenario_question sq
+                            JOIN session s ON s.scenario_id = sq.scenario_id
+                            WHERE s.id = ? AND sq.sequence_no = ?
+                        """, (valid_session_uuid, seq))
+                        sq_row = cur.fetchone()
+                        if sq_row:
+                            real_q_uuid = str(sq_row[0])
+
+                    if not real_q_uuid:
+                        cur.execute("SELECT TOP 1 id FROM question")
+                        any_q = cur.fetchone()
+                        real_q_uuid = str(any_q[0]) if any_q else None
+
+                    if real_q_uuid:
+                        cur.execute("""
+                            INSERT INTO session_question (
+                                id, session_id, question_id, sequence_no, asked_at, response_text, created_at, updated_at
+                            )
+                            VALUES (NEWID(), ?, ?, ?, SYSUTCDATETIME(), ?, SYSUTCDATETIME(), SYSUTCDATETIME())
+                        """, (
+                            valid_session_uuid,
+                            real_q_uuid,
+                            seq,
+                            resp_text
+                        ))
+            conn.commit()
+            logger.info(f"Respuestas transcritas de {len(turn_responses)} preguntas actualizadas en session_question para sesión {valid_session_uuid}")
 
     save_analysis_report = finalize_session_analysis
 

@@ -20,8 +20,9 @@ async def trigger_worker_analysis(payload: WorkerTriggerPayload) -> bool:
     La llamada despertará el contenedor de 0 a 1 réplica.
     """
     try:
-        # Se establece un timeout de 30 segundos y verify=False para absorber el cold-start y certs internos de ACA
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        # Timeout de 45s total y 30s de conexión para absorber el arranque en frío (cold-start) de ACA
+        timeout = httpx.Timeout(45.0, connect=30.0)
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
             response = await client.post(
                 WORKER_INTERNAL_URL,
                 json=payload.model_dump(),
