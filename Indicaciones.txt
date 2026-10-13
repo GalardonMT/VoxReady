@@ -1,319 +1,228 @@
-### Especificación Técnica de Implementación: Montaje y Persistencia del Reporte Final de Sesión (Opción 1)
+### Plan de Implementación Técnica: Métricas de Nivel 1 (Quick-Wins)
 
-**Para:** Equipo de Ingeniería (*Antigravity*)
+**Destinatario:** Equipo de Ingeniería (*Antigravity*)
 
-**Módulos Afectados:** `ca-analysis-worker` (Capa de Fusión y Datos), `ca-backend-api` (Endpoints de Reporte), `sqldb-voxready` (Persistencia Relacional).
+**Módulos Afectados:** `ca-analysis-worker` (`audio_analyzer.py`, `llm_judge.py`, `report_builder.py`), `sqldb-voxready` (consultas de lectura sobre `red_line` y `scenario`).
 
-**Objetivo:** Consolidar el pipeline de análisis multimodal en un único informe global por entrevista, sanear las redundancias del objeto JSON de salida, persistir los resultados en el esquema relacional existente de Azure SQL y exponer el contrato enriquecido hacia el frontend.
+**Objetivo:** Incorporar al pipeline de análisis multimodal las tres métricas faltantes de Visum que no requieren nuevos modelos ni procesamiento pesado de señales: dicción fonética real, penalización estricta por líneas rojas y evaluación de reconocimiento explícito del afectado.
 
 ---
 
-### 1. Diagnóstico y Saneamiento del JSON en el Worker (`report_builder.py`)
+### 1. Resumen de Alcance e Impacto Arquitectónico
 
-El JSON generado actualmente por la capa de fusión contiene todas las métricas requeridas por Visum, pero presenta duplicidades críticas que deben eliminarse antes de insertarlo en base de datos o enviarlo a la red:
+Estas tres métricas operan sobre datos ya disponibles en memoria durante la ejecución del job de análisis, manteniendo el tiempo de cómputo en CPU por debajo de los límites del contenedor (1.0 vCPU) y sin alterar el esquema relacional de Azure SQL (`sqldb-voxready`):
 
-1. **Eliminar redundancia de Visum:** Suprimir el nodo raíz `informe_ejecutivo_visum`, conservando únicamente `narrative.visum`.
-2. **Unificar nombres de métricas de visión:** Eliminar claves duplicadas en español (`contacto_visual_porcentaje`, `average_posture_score`, `total_frames_analizados`) y retener únicamente el estándar técnico en `metrics.vision`:
-* `eye_contact_pct` (float)
-* `shoulder_stability_score` (float)
-* `body_sway_std` (float)
-* `hands_visible_pct` (float)
-* `frames_analyzed` (int)
+| Métrica | Fuente de Entrada | Componente Receptor | Impacto en la Rúbrica |
+| --- | --- | --- | --- |
+| **Dicción y Claridad Fonética** | Metadatos de NVIDIA Parakeet (`word.confidence`)
+
+ | `audio_analyzer.py` | Modula la nota del área **`voice`**.
+
+ |
+| **Detección de Líneas Rojas** | Tabla `red_line` en Azure SQL + Transcripción
+
+ | `llm_judge.py` | Penaliza severamente **`coherence`** y **`consistencia_institucional`**.
+
+ |
+| **Reconocimiento del Afectado** | Transcripción de la entrevista + Prompt estructurado
+
+ | `llm_judge.py` / `report_builder.py` | Modula el canal verbal de **`empathy`**.
+
+ |
+
+---
+
+### 2. Tarea 1: Cálculo Real de Dicción Fonética (`audio_analyzer.py`)
+
+#### Contexto del problema
+
+El reporte actual devuelve un valor estático fijado en `"score_diccion": 100.0` sin procesar la calidad acústica de las palabras.
+
+#### Implementación técnica
+
+1. **Extracción de confianza en Parakeet:**
+La respuesta estructurada de Parakeet-TDT expone para cada palabra transcrita su marca temporal y su nivel de certeza acústica ($\text{confidence} \in [0.0, 1.0]$).
 
 
-3. **Consolidar dimensiones del Juez:** Preservar `metrics.judge.dimensiones` y `metrics.judge.feedback`, eliminando la copia cruda redundante `metrics.judge.raw_evaluation`.
+2. **Algoritmo de cálculo:**
+En `services/audio_analyzer.py`, sustituir el valor hardcodeado por el promedio aritmético de confianza escalado a base 100, descartando palabras vacías o símbolos de puntuación:
+$$\text{score\_diccion} = \left( \frac{1}{N} \sum_{i=1}^{N} \text{confidence}_i \right) \times 100$$
 
-#### Estructura Normalizada Final (`cleaned_report_json`):
 
+
+```python
+def compute_diction_score(parakeet_words: list[dict]) -> float:
+    """
+    Calcula la claridad fonética basada en la confianza acústica de Parakeet.
+    Cada elemento en parakeet_words debe contener 'word' y 'confidence'.
+    """
+    valid_confidences = [
+        float(w["confidence"]) 
+        for w in parakeet_words 
+        if "confidence" in w and w.get("word", "").strip()
+    ]
+    
+    if not valid_confidences:
+        return 70.0  # Fallback defensivo si no hay palabras reconocibles
+    
+    mean_confidence = sum(valid_confidences) / len(valid_confidences)
+    return round(mean_confidence * 100, 1)
+
+```
+
+3. **Integración en la nota de Voz (`area_score.voice`):**
+En `report_builder.py`, ponderar el `score_diccion` dentro del cálculo del canal auditivo:
+
+
+$$\text{Score Voz} = (\text{Puntaje WPM} \times 0.40) + (\text{Score Fluidez} \times 0.35) + (\text{Score Dicción} \times 0.25)$$
+
+
+
+---
+
+### 3. Tarea 2: Extracción e Inyección de Líneas Rojas (`llm_judge.py`)
+
+#### Contexto del problema
+
+El catálogo del administrador permite configurar "Líneas Rojas" (frases, justificaciones o admisiones legales estrictamente prohibidas para el vocero). Actualmente, el Juez LLM evalúa apego a mensajes clave, pero no penaliza de forma determinista la transgresión de estas prohibiciones.
+
+#### Implementación técnica
+
+1. **Lectura desde base de datos (`database.py`):**
+Al inicio del pipeline, el worker debe consultar las líneas rojas vinculadas al escenario que se está analizando mediante su relación con `topic`:
+
+
+```sql
+SELECT rl.text 
+FROM red_line rl
+INNER JOIN topic t ON rl.topic_id = t.id
+INNER JOIN scenario s ON s.topic_id = t.id
+WHERE s.id = :scenario_id
+ORDER BY rl.sort_order ASC;
+```[cite: 7]
+
+
+```
+
+
+2. **Extensión del System Prompt del LLM Juez:**
+En `services/llm_judge.py`, inyectar la lista de líneas rojas en el bloque de instrucciones para `meta/llama-3.2-90b-vision-instruct`:
+
+
+
+```markdown
+LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS):
+{% for rl in red_lines %}
+- "{{ rl }}"
+{% endfor %}
+
+REGLA CRÍTICA DE EVALUACIÓN:
+Evalúa si en la transcripción el vocero admitió, mencionó o violó alguna de las líneas rojas anteriores.
+Si existe una violación de línea roja:
+1. Asigna inmediatamente nivel 1 (score 0.0) a "consistencia_institucional".
+2. Declara "infraccion_linea_roja": true en el JSON de salida.
+3. Detalla en "evidencia_infraccion" la frase exacta pronunciada y la línea roja vulnerada.
+4. Incluye la transgresión como la primera prioridad en "brecha_critica".
+
+```
+
+3. **Esquema de salida JSON requerido del modelo:**
+Actualizar la especificación del contrato de respuesta del LLM para capturar la detección:
 ```json
 {
-  "sessionId": "763406bc-a1ae-46fc-9912-40a3fee4e554",
-  "jobId": "f401ae7e-9209-4ca4-9684-795913901e87",
-  "reportId": "61e7a91a-803a-4acf-bb85-3ea75fc42810",
-  "processedAt": "2026-10-13T00:03:16.501Z",
-  "recordingUrl": "https://stavoxreadyst.blob.core.windows.net/recordings/recordings/763406bc-a1ae-46fc-9912-40a3fee4e554.webm",
-  "overallScore": 40,
-  "areaScores": [
-    { "area": "expression", "value": 59 },
-    { "area": "voice", "value": 76 },
-    { "area": "coherence", "value": 8 },
-    { "area": "empathy", "value": 25 }
-  ],
-  "narrative": {
-    "strengths": [
-      "Buena expresión no verbal",
-      "Contacto visual del 100%",
-      "Tono de voz claro y conciso"
-    ],
-    "improvements": [
-      "Mejorar empatía y congruencia",
-      "Aumentar contenido estratégico y adherencia a mensajes clave",
-      "Mejorar respuesta a preguntas y mantener el enfoque"
-    ],
-    "crossSignal": "En la pregunta 5, el vocero dijo que no existen sanciones contra los responsables de la supervisión de calidad, pero luego se contradijo al decir que se están tomando medidas para prevenir futuras situaciones similares. Esto muestra una falta de congruencia en la comunicación.",
-    "visum": {
-      "sintesisEjecutiva": {
-        "diagnosticoGeneral": "El vocero demostró un desempeño moderado en la simulación con un score global de 40.3.",
-        "fortalezaPrincipal": "El vocero mostró una buena expresión no verbal, con un score de 59.46 y contacto visual del 100%.",
-        "focoDesarrollo": "El vocero requiere mejorar su capacidad de empatía y congruencia, así como su contenido estratégico.",
-        "continuidadRecomendada": "Se recomienda entrenamiento continuo enfocado en conducción estratégica y empatía."
-      },
-      "formulaRecomendada": "Utilizar la secuencia de 3 pasos: reconocer el impacto, explicar certezas y acciones en curso.",
-      "hallazgosTransversales": "El vocero no logró transmitir una visión clara y coherente de la situación, lo que llevó a confusiones en la audiencia."
-    }
-  },
-  "metrics": {
-    "vision": {
-      "eyeContactPct": 100.0,
-      "shoulderStabilityScore": 57.16,
-      "bodySwayStd": 0.0041,
-      "handsVisiblePct": 11.0,
-      "totalFramesAnalyzed": 100
-    },
-    "audio": {
-      "palabrasTotales": 111,
-      "duracionSegundos": 49.92,
-      "tiempoVozActivaSegundos": 28.71,
-      "wpmGlobal": 133.4,
-      "ratioFonacion": 0.58,
-      "pausasVacilacion": 5,
-      "pausasProlongadas": 2,
-      "densidadMuletillasPct": 1.8,
-      "muletillasDetectadas": ["este", "eh"],
-      "scoreFluidez": 60.5
-    },
-    "judge": {
-      "puntajeGlobal100": 7.5,
-      "dimensiones": {
-        "pertinenciaRespuesta": { "nivel": 1, "score": 0.0, "criterio": "No responde ni delimita la pregunta concreta" },
-        "alineacionMensajeClave": { "nivel": 1, "score": 0.0, "criterio": "No menciona los mensajes clave obligatorios" },
-        "tecnicasControl": { "nivel": 2, "score": 25.0, "criterio": "Utiliza bridging y evasión para evitar responder directamente" },
-        "consistenciaInstitucional": { "nivel": 1, "score": 0.0, "criterio": "No respeta la confidencialidad de la información" },
-        "asertividadHostilidad": { "nivel": 2, "score": 25.0, "criterio": "Utiliza un tono defensivo y evasivo" },
-        "capacidadSintesis": { "nivel": 1, "score": 0.0, "criterio": "No muestra capacidad para sintetizar la información" },
-        "claridadMensaje": { "nivel": 2, "score": 25.0, "criterio": "Utiliza lenguaje confuso y evasivo" }
-      }
-    }
-  },
-  "transcript": "Pregunta uno cuál es la gravedad real de la falla detectada..."
+  "infraccion_linea_roja": false,
+  "evidencia_infraccion": null,
+  "consistencia_institucional": 4
 }
 
 ```
 
----
 
-### 2. Mapeo y Persistencia en Azure SQL (`sqldb-voxready`)
+4. **Penalización forzada en Python (`report_builder.py`):**
+Para evitar que una alucinación del LLM asigne un puntaje alto habiendo detectado una infracción, programar una salvaguarda determinista:
 
-La persistencia debe ejecutarse dentro de una única transacción atómica en `ca-analysis-worker/services/database.py` al concluir el análisis, mapeando hacia las tablas del modelo relacional existente:
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        TRANSACCIÓN SQL (Worker)                        │
-├──────────────────────────────────┬─────────────────────────────────────┤
-│ 1. INSERT INTO report            │ Cabecera, overall_score y texto     │
-│ 2. INSERT INTO area_score (x4)   │ Filas: expression, voice, etc.      │
-│ 3. INSERT INTO                   │                                     │
-│    analysis_pipeline_result      │ summary_json = JSON completo        │
-│ 4. UPDATE session                │ status = 'completed'                │
-└──────────────────────────────────┴─────────────────────────────────────┘
-
-```
-
-#### A. Inserción en tabla `report`
-
-Mapear los campos del reporte agregando el registro de versión:
-
-```sql
-INSERT INTO report (
-    id,
-    session_id,
-    analysis_job_id,
-    rubric_version_id,
-    overall_score,
-    narrative_strengths,
-    narrative_improvements,
-    cross_signal_observation,
-    version_no,
-    is_current,
-    generated_at
-) VALUES (
-    :report_id,                -- '61e7a91a-803a-4acf-bb85-3ea75fc42810'
-    :session_id,               -- '763406bc-a1ae-46fc-9912-40a3fee4e554'
-    :analysis_job_id,          -- 'f401ae7e-9209-4ca4-9684-795913901e87'
-    :rubric_version_id,        -- UUID de la versión activa de rúbrica
-    40,                        -- overallScore
-    :narrative_strengths,      -- JSON serializado: ["Buena expresión no verbal", ...]
-    :narrative_improvements,   -- JSON serializado: ["Mejorar empatía...", ...]
-    :cross_signal_observation, -- narrative.crossSignal
-    1,
-    1,
-    SYSUTCDATETIME()
-);
-
-```
-
-*(Nota: Si `narrative_strengths` y `narrative_improvements` son columnas `nvarchar(max)`, serializar las listas como cadenas JSON estructuradas)*.
-
-#### B. Inserción en tabla `area_score` (Exactamente 4 registros)
-
-Cada registro se vincula al `report_id` y al `rubric_area_id` correspondiente:
-
-```sql
--- Consultar los IDs de área vigentes para la versión de rúbrica
--- INSERT parametrizado para cada una de las 4 dimensiones:
-INSERT INTO area_score (id, report_id, rubric_area_id, area, value)
-VALUES 
-    (NEWID(), :report_id, :id_area_expression, 'expression', 59),
-    (NEWID(), :report_id, :id_area_voice,      'voice',      76),
-    (NEWID(), :report_id, :id_area_coherence,  'coherence',   8),
-    (NEWID(), :report_id, :id_area_empathy,    'empathy',    25);
-
-```
-
-#### C. Resguardo Técnico en `analysis_pipeline_result`
-
-Para no perder las métricas de MediaPipe, WPM acústico ni el árbol de diagnóstico de Visum sin alterar el esquema relacional, volcar el documento saneado completo en `summary_json`:
-
-```sql
-INSERT INTO analysis_pipeline_result (
-    id,
-    analysis_job_id,
-    pipeline,
-    status,
-    summary_json,
-    created_at,
-    updated_at
-) VALUES (
-    NEWID(),
-    :analysis_job_id,
-    'fusion',
-    'done',
-    :cleaned_report_json_string, -- El payload JSON normalizado completo
-    SYSUTCDATETIME(),
-    SYSUTCDATETIME()
-);
-
-```
-
-#### D. Actualización de estado en tabla `session`
-
-Actualizar el ciclo de vida de la sesión:
-
-```sql
-UPDATE session 
-SET status = 'completed',
-    updated_at = SYSUTCDATETIME()
-WHERE id = :session_id;
-
-```
-
----
-
-### 3. Exposición en el Backend (`ca-backend-api`)
-
-#### A. Actualización de ruta `GET /v1/sessions/{sessionId}/report`
-
-El endpoint (correspondiente a la tarea `RPT-1` del sprint) debe consultar la vista consolidada combinando los datos tabulares de `report` con el `summary_json` de la ejecución:
 
 ```python
-@router.get("/v1/sessions/{session_id}/report", response_model=SessionReportResponse)
-async def get_session_report(
-    session_id: UUID,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: TokenData = Depends(get_current_user)
-):
-    # 1. Validar que la sesión exista, pertenezca al usuario (o admin) y esté 'completed'
-    session = await crud_session.get_by_id(db, session_id, user_id=current_user.sub)
-    if not session:
-        raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    if session.status != "completed":
-        raise HTTPException(status_code=409, detail="El análisis de la sesión no ha finalizado")
-
-    # 2. Consultar el reporte vigente (is_current = 1) y sus area_scores
-    report = await crud_report.get_current_by_session(db, session_id)
-    area_scores = await crud_report.get_area_scores(db, report.id)
-
-    # 3. Extraer el blob de métricas técnicas enriquecidas desde analysis_pipeline_result
-    pipeline_res = await crud_pipeline.get_fusion_result(db, report.analysis_job_id)
-    extra_data = json.loads(pipeline_res.summary_json) if pipeline_res else {}
-
-    # 4. Generar URL SAS de lectura temporal para el video (si la retención lo autoriza)
-    recording_url = generate_read_sas_url(session.blob_path, duration_minutes=60)
-
-    # 5. Mapear respuesta compatible OpenAPI
-    return {
-        "sessionId": session.id,
-        "overallScore": report.overall_score,
-        "scenarioTitle": session.scenario.title,
-        "generatedAt": report.generated_at.isoformat(),
-        "recordingUrl": recording_url,
-        "narrative": {
-            "strengths": json.loads(report.narrative_strengths) if isinstance(report.narrative_strengths, str) else report.narrative_strengths,
-            "improvements": json.loads(report.narrative_improvements) if isinstance(report.narrative_improvements, str) else report.narrative_improvements,
-            "crossSignal": report.cross_signal_observation
-        },
-        "areaScores": [
-            {"area": a.area, "value": a.value} for a in area_scores
-        ],
-        "visumExecutive": extra_data.get("narrative", {}).get("visum", {}),
-        "metricsSummary": {
-            "eyeContactPct": extra_data.get("metrics", {}).get("vision", {}).get("eyeContactPct"),
-            "shoulderStabilityScore": extra_data.get("metrics", {}).get("vision", {}).get("shoulderStabilityScore"),
-            "wpm": extra_data.get("metrics", {}).get("audio", {}).get("wpmGlobal"),
-            "fillerWordsCount": len(extra_data.get("metrics", {}).get("audio", {}).get("muletillasDetectadas", [])),
-            "fillerWordsDensityPct": extra_data.get("metrics", {}).get("audio", {}).get("densidadMuletillasPct")
-        }
-    }
+if judge_result.get("infraccion_linea_roja") is True:
+    # Forzar nivel mínimo en consistencia y aplicar castigo a Coherencia
+    score_coherencia = min(score_coherencia, 20.0)
 
 ```
 
----
 
-### 4. Pautas de Renderizado para el Frontend (`spa-voxready-frontend`)
-
-La interfaz del informe de desempeño (tarea `RPT-2`) debe montarse consumiendo este payload organizado en tres paneles visuales:
-
-| Componente UI | Origen de Datos en el Payload | Comportamiento Visual |
-| --- | --- | --- |
-| **Score Ring Global** | `overallScore` (`40`)
-
- | Indicador circular con código de color dinámico (<50: Rojo, 50–74: Ámbar, ≥75: Verde).
-
- |
-| **Reproductor de Sesión** | `recordingUrl`<br> | Reproductor HTML5 para revisión de la práctica.
-
- |
-| **Desglose de Rúbrica** | `areaScores[]` (`expression: 59`, `voice: 76`, `coherence: 8`, `empathy: 25`)
-
- | 4 barras de progreso con etiquetas descriptivas del área.
-
- |
-| **KPIs de Soporte** | `metricsSummary` (`100% mirada`, `133 WPM`, `1.8% muletillas`)
-
- | Tarjetas numéricas secundarias bajo cada barra de área.
-
- |
-| **Caja de Coaching** | `narrative.strengths`, `narrative.improvements`<br> | Dos listas estilo viñeta con las fortalezas y brechas detectadas.
-
- |
-| **Alerta de Señal Cruzada** | `narrative.crossSignal`<br> | Banner destacado en color ámbar/púrpura alertando sobre la incongruencia de la pregunta 5.
-
- |
-| **Síntesis Visum** | `visumExecutive.formulaRecomendada`, `diagnosticoGeneral`<br> | Párrafo pedagógico con la secuencia práctica de 3 pasos recomendada.
-
- |
 
 ---
 
-### 5. Criterios de Validación Técnica y QA
+### 4. Tarea 3: Reconocimiento Explícito del Afectado (`llm_judge.py`)
 
-1. **Persistencia limpia:** Al invocar `POST /analyze` en el worker, confirmar que la tabla `report` recibe una fila válida, `area_score` recibe exactamente 4 filas vinculadas, y `analysis_pipeline_result` almacena el JSON saneado sin campos duplicados.
+#### Contexto del problema
+
+La rúbrica de crisis de Visum exige evaluar si el vocero coloca a las víctimas o clientes afectados como la primera prioridad comunicacional antes de presentar defensas corporativas o balances técnicos. En el esquema actual, la nota de Empatía depende casi exclusivamente de correlaciones matemáticas con la mirada y la postura.
+
+#### Implementación técnica
+
+1. **Nueva dimensión en el LLM Juez:**
+Incorporar en el prompt de evaluación la variable `reconocimiento_afectados` (escala 1 a 5):
 
 
-2. **Consistencia de claves foráneas:** Los valores insertados en `area_score` deben coincidir con las 4 áreas activas de la versión de rúbrica en `rubric_area` (`expression`, `voice`, `coherence`, `empathy`).
+
+```markdown
+DIMENSIÓN ADICIONAL - RECONOCIMIENTO DEL AFECTADO:
+- Nivel 5: Prioriza inmediatamente el impacto humano, a los clientes perjudicados o a la comunidad antes de dar explicaciones técnicas o corporativas. Muestra empatía activa sin evasivas.
+- Nivel 3: Menciona a los afectados de forma tardía o como una formalidad secundaria.
+- Nivel 1: Ignora el impacto humano; se enfoca exclusivamente en justificaciones financieras, operacionales o en deslindar responsabilidades corporativas.
+
+```
+
+2. **Cálculo Híbrido de Empatía en `report_builder.py`:**
+Reestructurar el cálculo del área `empathy` combinando la señal no verbal (congruencia de mirada y estabilidad) con la señal verbal (reconocimiento evaluado por el LLM):
 
 
-3. **Resiliencia de Endpoint:** `GET /v1/sessions/{id}/report` debe responder en menos de 200 ms, entregando una URL SAS de lectura válida para el video y parseando los atributos `narrative` sin errores de serialización.
+$$\text{Score Empatía Verbal} = \left(\frac{\text{Nivel Reconocimiento} - 1}{4}\right) \times 100$$
 
 
-4. **Manejo de estados:** Si la sesión se encuentra en estado `analyzing` o `created`, el backend debe rechazar la consulta del reporte con código `HTTP 409 Conflict` bajo el estándar RFC 7807.
+$$\text{Score Empatía Final} = (\text{Empatía No Verbal} \times 0.40) + (\text{Score Empatía Verbal} \times 0.60)$$
+
+
+
+
+---
+
+### 5. Tarea 4: Limpieza de Redundancias en el Objeto de Persistencia
+
+Alinear la serialización final en `analysis_pipeline_result.summary_json` asegurando que las nuevas métricas queden registradas sin duplicaciones:
+
+```json
+{
+  "metrics": {
+    "audio": {
+      "palabrasTotales": 111,
+      "wpmGlobal": 133.4,
+      "scoreDiccion": 94.2,
+      "densidadMuletillasPct": 1.8
+    },
+    "judge": {
+      "infraccionLineaRoja": false,
+      "dimensiones": {
+        "consistenciaInstitucional": { "nivel": 4, "score": 75.0 },
+        "reconocimientoAfectados": { "nivel": 2, "score": 25.0 }
+      }
+    }
+  }
+}
+```[cite: 2]
+
+---
+
+### 6. Criterios de Aceptación (DoD) para QA y Testing
+
+1. **Prueba de Dicción Real (`audio_analyzer_test.py`):**  
+   Al inyectar un payload de Parakeet con confianza media de $0.85$, el campo `metrics.audio.scoreDiccion` debe registrar exactamente `85.0` (eliminando el valor fijo de `100.0`)[cite: 2].
+2. **Prueba de Transgresión de Línea Roja (`llm_judge_test.py`):**  
+   Ejecutar una evaluación con una transcripción que contenga deliberadamente una frase prohibida (ej. *"No habrá indemnizaciones"*)[cite: 7]. Verificar que `infraccionLineaRoja` sea `true`, que `consistencia_institucional` caiga a nivel 1 y que el puntaje final de Coherencia quede truncado a un máximo de 20 puntos[cite: 2, 7].
+3. **Prueba de Empatía Cruzada:**  
+   Verificar que una respuesta con 100% de contacto visual pero con omisión total de las víctimas no obtenga un puntaje de Empatía superior a 40 puntos[cite: 2].
+4. **Tiempo de Ejecución:**  
+   El pipeline completo debe mantenerse por debajo de los 60 segundos totales de procesamiento en Azure Container Apps[cite: 4, 5].
+
+```
