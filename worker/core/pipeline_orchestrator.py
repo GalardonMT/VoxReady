@@ -313,6 +313,7 @@ def process_session_pipeline(
             raise RuntimeError("Azure SQL es obligatorio para resolver la sesion del analisis.")
         db_svc = DatabaseService()
         db_metadata = db_svc.get_session_context(session_id, job_id)
+        internal_session_id = str(db_metadata["session_id"])
         if rubric_version_id and str(rubric_version_id).lower() != db_metadata["rubric_version_id"].lower():
             raise ValueError("La rubrica solicitada no coincide con la sesion.")
         if blob_path != f"recordings/{session_id}.webm" and not blob_path.endswith(f"{session_id}.webm") and not blob_path.endswith(f"{session_id}.mp4"):
@@ -406,7 +407,7 @@ def process_session_pipeline(
 
             if db_svc and turn_responses:
                 try:
-                    db_svc.update_question_responses(session_id, turn_responses)
+                    db_svc.update_question_responses(internal_session_id, turn_responses)
                 except Exception as t_err:
                     logger.error(f"Error actualizando respuestas en session_question: {t_err}", exc_info=True)
         elif db_svc and transcript:
@@ -418,7 +419,7 @@ def process_session_pipeline(
                         FROM session_question 
                         WHERE session_id = ? 
                         ORDER BY sequence_no ASC
-                    """, valid_session_uuid)
+                    """, internal_session_id)
                     sq_rows = cur.fetchall()
                     if sq_rows:
                         turn_responses = [{
@@ -426,7 +427,7 @@ def process_session_pipeline(
                             "sequenceNo": sq_rows[0][1],
                             "transcript": transcript
                         }]
-                        db_svc.update_question_responses(session_id, turn_responses)
+                        db_svc.update_question_responses(internal_session_id, turn_responses)
             except Exception as e_turns:
                 logger.warning(f"Aviso actualizando respuesta para sesión sin turnos explícitos: {e_turns}")
 
@@ -570,7 +571,7 @@ def process_session_pipeline(
         if db_svc and resolved_rubric_id:
             try:
                 report_id = db_svc.finalize_session_analysis(
-                    session_id=session_id,
+                    session_id=internal_session_id,
                     overall_score=int(round(score_global)),
                     visum_report=visum_narrative,
                     area_scores=area_scores_map,
@@ -597,6 +598,8 @@ def process_session_pipeline(
 
         # 9. Subir JSON saneado a Azure Blob Storage
         upload_report_to_blob(session_id, cleaned_report)
+        if session_id != internal_session_id:
+            upload_report_to_blob(internal_session_id, cleaned_report)
         logger.info(f"=== Pipeline Multimodal completado con éxito para sesión {session_id} ===")
 
     except Exception as ex:

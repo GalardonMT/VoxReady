@@ -409,14 +409,9 @@ class DatabaseService:
         if not turn_responses:
             return
 
-        try:
-            uuid_obj = uuid.UUID(session_id)
-            valid_session_uuid = str(uuid_obj)
-        except Exception:
-            valid_session_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
-
         with self._get_connection() as conn:
             cur = conn.cursor()
+            valid_session_uuid = self._resolve_session_id(cur, session_id)
             for tr in turn_responses:
                 q_id = tr.get("questionId") or tr.get("question_id") or ""
                 seq = tr.get("sequenceNo") or tr.get("sequence_no") or 1

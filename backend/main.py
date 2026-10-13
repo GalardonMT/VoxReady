@@ -805,7 +805,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     if SQL_CONN_STR:
         try:
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+            valid_uuid = access.get("id") or _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
                 cur.execute("""
@@ -847,7 +847,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     if SQL_CONN_STR:
         try:
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            valid_uuid = _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
+            valid_uuid = access.get("id") or _safe_uuid(session_id) or str(uuid.uuid5(uuid.NAMESPACE_DNS, session_id))
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
                 cur.execute("""
