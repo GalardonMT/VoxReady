@@ -161,10 +161,8 @@ export async function apiFetch<T>(
     ...(options.headers as Record<string, string> || {})
   };
 
-  const devToken = process.env.NEXT_PUBLIC_DEV_AUTH === 'true' ? 'dev-token' : null;
-  const effectiveToken = token || devToken;
-  if (effectiveToken && !headers['Authorization']) {
-    headers['Authorization'] = `Bearer ${effectiveToken}`;
+  if (token && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
 
   // Correlation ID para trazabilidad

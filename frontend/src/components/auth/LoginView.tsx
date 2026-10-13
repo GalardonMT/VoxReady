@@ -12,17 +12,17 @@ interface LoginViewProps {
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const { t } = useI18n();
-  const { loginAs, loginWithEmail, loginWithAzure, loading, authError, testUsers } = useAuth();
+  const { loginWithEmail, loginWithAzure, loading, authError, testUsers } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [azureLoading, setAzureLoading] = useState(false);
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setError('');
-    const success = loginWithEmail(email);
+    const success = await loginWithEmail(email);
     if (success) {
       if (onLoginSuccess) onLoginSuccess();
     } else {
@@ -46,9 +46,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  const handleSelectTestUser = (user: UserSession) => {
-    loginAs(user);
-    if (onLoginSuccess) onLoginSuccess();
+  const handleSelectTestUser = async (user: UserSession) => {
+    setError('');
+    const success = await loginWithEmail(user.email);
+    if (success && onLoginSuccess) onLoginSuccess();
   };
 
   if (loading || azureLoading) {
@@ -114,7 +115,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         )}
 
         {/* ---- Email / password credentials form ---- */}
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={(event) => void handleSubmit(event)}>
           <div className="login-field">
             <label>{t.login.emailL}</label>
             <input
@@ -155,7 +156,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
               key={user.userId}
               type="button"
               className="tu"
-              onClick={() => handleSelectTestUser(user)}
+              onClick={() => void handleSelectTestUser(user)}
             >
               <span className="tuava">{user.initials}</span>
               <span className="tumeta">

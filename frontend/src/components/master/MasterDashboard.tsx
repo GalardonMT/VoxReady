@@ -3,7 +3,7 @@
 import React from 'react';
 import { useI18n } from '../../context/I18nContext';
 
-export type MasterScreen = 'm1' | 'm2' | 'm3' | 'm4' | 'm5';
+export type MasterScreen = 'm1' | 'm2' | 'm3' | 'm4' | 'm5' | 'm6';
 
 interface MasterDashboardProps {
   onNavigate: (screen: MasterScreen) => void;

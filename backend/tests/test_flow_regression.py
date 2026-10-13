@@ -145,6 +145,19 @@ def test_recording_sas_contract(monkeypatch, authorized_session):
     assert result['upload_url'].endswith(f'/{session_id}.webm?test-sas')
 
 
+def test_microlesson_video_validation():
+    assert main._validated_video('Mi video final.mp4', 'video/mp4', 100) == ('Mi-video-final.mp4', 'video/mp4')
+    with pytest.raises(HTTPException) as error:
+        main._validated_video('archivo.exe', 'video/mp4', 100)
+    assert error.value.status_code == 422
+    with pytest.raises(HTTPException) as error:
+        main._validated_video('video.mp4', 'video/webm', 100)
+    assert error.value.status_code == 422
+    with pytest.raises(HTTPException) as error:
+        main._validated_video('video.mp4', 'video/mp4', main.MICROLESSON_VIDEO_MAX_BYTES + 1)
+    assert error.value.status_code == 413
+
+
 @pytest.mark.asyncio
 async def test_worker_event_and_report_contract(monkeypatch, authorized_session):
     service_bus = MagicMock()
