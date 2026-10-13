@@ -435,17 +435,62 @@ def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_to
                 DEFAULT_CLIENT_ID = "7D8C0575-196C-40D1-AD7C-08AA2843B4C3"
                 DEFAULT_USER_ID = "4CC52B91-3A9C-5659-8363-4F069CC39F9B"
 
-                # Resolver cliente
-                cur.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
-                c_row = cur.fetchone()
-                client_uuid = c_row[0] if c_row else DEFAULT_CLIENT_ID
+                # 1. Extraer credenciales reales del usuario autenticado desde el token JWT
+                user_oid = user.get("oid") or user.get("sub") or user.get("user_id") or user.get("userId") or ""
+                user_email = (
+                    user.get("email")
+                    or user.get("preferred_username")
+                    or user.get("upn")
+                    or user.get("unique_name", "")
+                ).strip()
+                display_name = (
+                    user.get("name")
+                    or f"{user.get('given_name', '')} {user.get('family_name', '')}".strip()
+                    or (user_email.split("@")[0] if user_email else "Vocero")
+                )
+                token_role = user.get("role") or user.get("extension_role") or "spokesperson"
+                client_claim = user.get("clientId") or user.get("client_id") or user.get("tid")
 
-                # Resolver usuario válido para evitar violación de FK con app_user
-                user_db_id = _safe_uuid(user.get("user_id_in_db") or user.get("id"))
-                if not user_db_id:
-                    cur.execute("SELECT TOP 1 id FROM app_user WHERE is_deleted = 0")
+                # 2. Sincronizar o buscar usuario real en app_user (busca por email/UUID o auto-provisiona)
+                db_user = sync_or_get_user(
+                    user_id=str(user_oid),
+                    email=user_email,
+                    display_name=display_name,
+                    client_id=str(client_claim) if client_claim else None,
+                    token_role=token_role,
+                )
+
+                user_db_id = _safe_uuid(db_user.get("id"))
+                client_uuid = _safe_uuid(db_user.get("client_id"))
+
+                # 3. Búsqueda defensiva en app_user por email u oid si sync_or_get_user no arrojó ID
+                if not user_db_id and user_email:
+                    cur.execute(
+                        "SELECT id, client_id FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
+                        user_email
+                    )
                     u_row = cur.fetchone()
-                    user_db_id = u_row[0] if u_row else DEFAULT_USER_ID
+                    if u_row:
+                        user_db_id = _safe_uuid(u_row[0])
+                        if u_row[1] and not client_uuid:
+                            client_uuid = _safe_uuid(u_row[1])
+
+                if not user_db_id and user_oid and _safe_uuid(user_oid):
+                    cur.execute(
+                        "SELECT id, client_id FROM app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
+                        _safe_uuid(user_oid)
+                    )
+                    u_row = cur.fetchone()
+                    if u_row:
+                        user_db_id = _safe_uuid(u_row[0])
+                        if u_row[1] and not client_uuid:
+                            client_uuid = _safe_uuid(u_row[1])
+
+                # 4. Resolver cliente si no está asignado
+                if not client_uuid:
+                    cur.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
+                    c_row = cur.fetchone()
+                    client_uuid = _safe_uuid(c_row[0]) if c_row else _safe_uuid(DEFAULT_CLIENT_ID)
 
                 user_db_id = user_db_id or DEFAULT_USER_ID
                 client_uuid = client_uuid or DEFAULT_CLIENT_ID
@@ -469,7 +514,7 @@ def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_to
                     """, (session_uuid, scenario_uuid))
 
                 conn.commit()
-                logger.info(f"Sesión creada en Azure SQL: {session_uuid} con escenario {scenario_uuid}")
+                logger.info(f"Sesión creada en Azure SQL: {session_uuid} para '{user_email}' (Usuario ID: {user_db_id}, Cliente: {client_uuid}) con escenario {scenario_uuid}")
         except Exception as e:
             logger.warning(f"Aviso al crear sesión en Azure SQL: {e}")
 
@@ -549,13 +594,13 @@ def list_my_sessions(status: str = "completed", user: dict = Depends(verify_toke
                     query += " AND s.status = ?"
                     params.append(status)
 
-                # Si hay usuario identificado, filtrar por sus IDs o fallback default
+                # Si hay usuario identificado, filtrar estrictamente por su ID
                 if user_db_id:
-                    query += " AND (s.user_id = ? OR s.user_id = ?)"
-                    params.extend([user_db_id, DEFAULT_USER_ID])
+                    query += " AND s.user_id = ?"
+                    params.append(user_db_id)
                 elif client_claim and _safe_uuid(client_claim):
-                    query += " AND (s.client_id = ? OR s.user_id = ?)"
-                    params.extend([_safe_uuid(client_claim), DEFAULT_USER_ID])
+                    query += " AND s.client_id = ?"
+                    params.append(_safe_uuid(client_claim))
 
                 query += " ORDER BY s.created_at DESC"
 
