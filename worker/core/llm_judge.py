@@ -18,18 +18,43 @@ logger = logging.getLogger(__name__)
 
 
 def _clean_and_parse_json(content: str) -> dict:
+    if not content or not content.strip():
+        raise ValueError("El contenido devuelto por el LLM está vacío.")
+
     text = content.strip()
     # 1. Quitar markdown fences si existen
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
     if match:
         text = match.group(1).strip()
 
-    # 2. Extraer el bloque delimitado por las llaves exteriores si hay texto adyacente
-    if not text.startswith("{"):
-        start_idx = text.find("{")
-        end_idx = text.rfind("}")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            text = text[start_idx : end_idx + 1].strip()
+    # 2. Intento directo
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # 3. Intentar raw_decode desde el primer '{' para ignorar 'Extra data'
+    start_idx = text.find("{")
+    if start_idx != -1:
+        try:
+            decoder = json.JSONDecoder()
+            parsed, _ = decoder.raw_decode(text[start_idx:])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # 4. Extraer el bloque delimitado por las llaves exteriores si hay texto adyacente
+    end_idx = text.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        try:
+            parsed = json.loads(text[start_idx : end_idx + 1].strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
 
     return json.loads(text)
 

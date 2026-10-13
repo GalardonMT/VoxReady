@@ -63,18 +63,50 @@ Responde EXCLUSIVAMENTE un objeto JSON válido con la siguiente estructura:
 """
 
 
-def _clean_json_markdown(text: str) -> str:
-    """Elimina delimitadores markdown tipo ```json ... ``` si el LLM los incluye y extrae el JSON."""
+def _parse_llm_json(text: str) -> dict:
+    """Extrae y parsea de forma robusta un objeto JSON devuelto por el LLM, tolerando extra data o markdown."""
+    if not text or not text.strip():
+        raise ValueError("El contenido devuelto por el LLM está vacío.")
+
     clean = text.strip()
+
+    # 1. Si viene envuelto en markdown ```json ... ```, extraer contenido del bloque
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean, re.IGNORECASE)
     if match:
         clean = match.group(1).strip()
-    if not clean.startswith("{"):
-        start_idx = clean.find("{")
-        end_idx = clean.rfind("}")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            clean = clean[start_idx : end_idx + 1].strip()
-    return clean
+
+    # 2. Intento directo con json.loads
+    try:
+        parsed = json.loads(clean)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # 3. Intentar raw_decode desde el primer '{' para ignorar cualquier texto sobrante (Extra data)
+    start_idx = clean.find("{")
+    if start_idx != -1:
+        try:
+            decoder = json.JSONDecoder()
+            parsed, _ = decoder.raw_decode(clean[start_idx:])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # 4. Intentar recortar entre el primer '{' y el último '}'
+    start_idx = clean.find("{")
+    end_idx = clean.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        try:
+            parsed = json.loads(clean[start_idx : end_idx + 1].strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # 5. Si todo falla, intentar json.loads estándar para propagar la excepción informativa
+    return json.loads(clean)
 
 
 def generate_visum_report(
@@ -162,8 +194,7 @@ def generate_visum_report(
             response_format={"type": "json_object"}
         )
         raw_content = response.choices[0].message.content
-        cleaned_content = _clean_json_markdown(raw_content)
-        parsed = json.loads(cleaned_content)
+        parsed = _parse_llm_json(raw_content)
         return parsed
     except Exception as e:
         logger.error(f"Fallo en la generación del informe VISUM ({type(e).__name__}): {str(e)}")
