@@ -7,6 +7,7 @@ import { RubricEditorView } from '../../../components/master/RubricEditorView';
 import { LabelingQueueView } from '../../../components/master/LabelingQueueView';
 import { TopicCatalogView } from '../../../components/master/TopicCatalogView';
 import { MasterTopicEditorView } from '../../../components/master/MasterTopicEditorView';
+import { MicrolessonManagerView } from '../../../components/master/MicrolessonManagerView';
 import { useI18n } from '../../../context/I18nContext';
 import { useAuth } from '../../../context/AuthContext';
 import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
@@ -38,7 +39,8 @@ function MasterContent() {
     { id: 'm2', label: 'Editor de Rúbrica', icon: '📐' },
     { id: 'm3', label: 'Cola de Etiquetado', icon: '🎯' },
     { id: 'm4', label: t.masterTopics.catalog, icon: '📚' },
-    { id: 'm5', label: t.masterTopics.editor, icon: '✏️' }
+    { id: 'm5', label: t.masterTopics.editor, icon: '✏️' },
+    { id: 'm6', label: 'Microlecciones', icon: '📖' }
   ];
 
   return (
@@ -91,7 +93,7 @@ function MasterContent() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
             <span className="uname">{user.displayName}</span>
-            <span style={{ fontSize: '10.5px', color: 'var(--muted)' }}>Configurador maestro</span>
+            <span style={{ fontSize: '10.5px', color: 'var(--muted)' }}>{t.roles[user.role]}</span>
           </div>
           <button
             type="button"
@@ -115,6 +117,7 @@ function MasterContent() {
         {masterScreen === 'm4' && <TopicCatalogView onEdit={id => { setSelectedTopicId(id); handleMasterNavigate('m5'); }} />}
         {masterScreen === 'm5' && <MasterTopicEditorView key={`${user.userId}:${selectedTopicId || 'new'}`} topicId={selectedTopicId}
           onCreated={setSelectedTopicId} onBack={() => handleMasterNavigate('m4')} />}
+        {masterScreen === 'm6' && <MicrolessonManagerView />}
       </main>
     </div>
   );

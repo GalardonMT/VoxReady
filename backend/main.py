@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import uuid
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, field_validator
@@ -15,6 +16,7 @@ from jwt import PyJWKClient
 import pyodbc
 import master_topics as master_store
 import spokesperson_store
+import microlessons as microlesson_store
 
 # Cargar variables de entorno locales si existen
 try:
@@ -56,6 +58,7 @@ STORAGE_CONN_STR = os.getenv("STORAGE_CONNECTION_STRING", "")
 CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
 SERVICE_BUS_CONN_STR = os.getenv("SERVICE_BUS_CONNECTION_STRING", "")
 QUEUE_NAME = os.getenv("SERVICE_BUS_QUEUE_NAME", "analysis-queue")
+MICROLESSON_VIDEO_MAX_BYTES = int(os.getenv("MICROLESSON_VIDEO_MAX_BYTES", str(250 * 1024 * 1024)))
 SQL_CONN_STR = os.getenv("SQL_CONNECTION_STRING") or os.getenv("DATABASE_URL", "")
 JWKS_URL = os.getenv("JWKS_URL", "")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
@@ -76,57 +79,47 @@ def verify_token(authorization: str = Header(None)):
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
 
-    # 1. Si no hay token o es token explícito de dev local:
-    if (not token or token.startswith("dev-")) and DEV_AUTH:
-        return {
-            "sub": "dev-user-001",
-            "oid": "dev-user-001",
-            "name": "Dev User",
-            "email": "dev@voxready.io",
-            "role": "spokesperson",
-        }
-
     if not token:
         raise HTTPException(status_code=401, detail="Token no provisto o inválido")
 
-    # 2. Si viene un token real JWT (ej. de Microsoft Entra CIAM):
+    # El token local solo identifica una fila existente. Rol, cliente, nombre
+    # y correo se resuelven siempre desde dbo.app_user.
+    if DEV_AUTH and token.startswith("dev-user-"):
+        user_id = _safe_uuid(token.removeprefix("dev-user-"))
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token de desarrollo inválido")
+        return {"sub": user_id, "oid": user_id}
+    if DEV_AUTH and token.startswith("dev-"):
+        raise HTTPException(status_code=401, detail="Token de desarrollo inválido")
+
+    # 2. Los tokens reales de Microsoft Entra siempre requieren firma válida,
+    # incluso cuando el acceso local de desarrollo está habilitado.
     try:
         client = _get_jwks_client()
-        if client:
-            try:
-                signing_key = client.get_signing_key_from_jwt(token)
-                allowed_audiences = [a for a in [
-                    JWT_AUDIENCE,
-                    "e219fd4b-3686-45dd-9656-b582d1fb0698",
-                    "5dd1bf8d-c0de-4f67-8131-df42e93dcf29",
-                    "api://5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
-                ] if a]
-                payload = jwt.decode(
-                    token,
-                    signing_key.key,
-                    algorithms=["RS256"],
-                    audience=allowed_audiences if allowed_audiences else None,
-                    options={
-                        "verify_aud": bool(allowed_audiences),
-                        "verify_iss": False,
-                    },
-                )
-                return payload
-            except Exception as e_jwks:
-                logger.warning(f"Validación con firma JWKS falló ({e_jwks}).")
-                if not DEV_AUTH:
-                    raise e_jwks
-
-        # Si DEV_AUTH está activo y falló JWKS, o en desarrollo local:
-        # decodificamos el payload de Microsoft para extraer los datos reales del usuario
-        if DEV_AUTH:
-            payload = jwt.decode(token, options={"verify_signature": False})
-            return payload
-
-        raise HTTPException(status_code=401, detail="Error validando token con Microsoft")
-    except Exception as e:
-        logger.error(f"JWT Verification failed: {e}")
-        raise HTTPException(status_code=401, detail=f"Token inválido: {str(e)}")
+        if not client:
+            raise HTTPException(status_code=401, detail="La validación de Microsoft Entra no está configurada.")
+        signing_key = client.get_signing_key_from_jwt(token)
+        allowed_audiences = [a for a in [
+            JWT_AUDIENCE,
+            "e219fd4b-3686-45dd-9656-b582d1fb0698",
+            "5dd1bf8d-c0de-4f67-8131-df42e93dcf29",
+            "api://5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
+        ] if a]
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=allowed_audiences if allowed_audiences else None,
+            options={
+                "verify_aud": bool(allowed_audiences),
+                "verify_iss": False,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning("Falló la validación firmada del token de Microsoft Entra: %s", type(error).__name__)
+        raise HTTPException(status_code=401, detail="Token de Microsoft Entra inválido.") from None
 
 
 # 4. Esquemas de petición
@@ -174,13 +167,7 @@ def sync_or_get_user(
     client_id: str | None,
     token_role: str | None
 ) -> dict:
-    """
-    Sincroniza el usuario autenticado con la base de datos Azure SQL (tabla app_user).
-    - Si existe, devuelve su perfil con el rol asignado en base de datos.
-    - Si no existe, lo registra automáticamente con rol 'spokesperson'.
-    - Permite cambiar roles directamente en Azure SQL y ver el cambio reflejado.
-    - Es resiliente: ante caídas de BD o cold-starts, no interrumpe el acceso.
-    """
+    """Resuelve un usuario existente; nunca aprovisiona durante una petición."""
     if not SQL_CONN_STR:
         return {}
 
@@ -191,32 +178,6 @@ def sync_or_get_user(
         conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
         with pyodbc.connect(conn_str, timeout=10) as conn:
             cursor = conn.cursor()
-
-            # 1. Asegurar tabla app_user si no existiese
-            try:
-                cursor.execute("""
-                    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'app_user')
-                    BEGIN
-                        CREATE TABLE app_user (
-                            id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
-                            client_id UNIQUEIDENTIFIER NULL,
-                            email NVARCHAR(256) NULL,
-                            display_name NVARCHAR(150) NULL,
-                            role NVARCHAR(50) DEFAULT 'spokesperson',
-                            preferred_language CHAR(2) DEFAULT 'es',
-                            created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                            updated_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                            is_deleted BIT DEFAULT 0,
-                            deleted_at DATETIME2 NULL
-                        );
-                        CREATE INDEX idx_app_user_email ON app_user(email);
-                    END
-                """)
-                conn.commit()
-            except Exception as e_tbl:
-                logger.debug(f"Verificación de tabla app_user: {e_tbl}")
-
-            # 2. Buscar si el usuario ya existe en app_user (por UUID o por email)
             row = None
             cols = []
             if user_uuid:
@@ -230,61 +191,23 @@ def sync_or_get_user(
 
             if not row and clean_email:
                 cursor.execute(
-                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
+                    "SELECT id, client_id, email, display_name, role, preferred_language FROM app_user "
+                    "WHERE LOWER(LTRIM(RTRIM(email))) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
                     (clean_email,)
                 )
-                row = cursor.fetchone()
-                if row:
+                matches = cursor.fetchall()
+                if len(matches) == 1:
+                    row = matches[0]
                     cols = [c[0].lower() for c in cursor.description]
 
-            # 3. Si ya existe, retornar sus datos de la base de datos (con su rol asignado)
             if row:
                 user_data = dict(zip(cols, row))
-                logger.info(f"Usuario '{clean_email}' resuelto desde Azure SQL con rol: '{user_data.get('role')}'.")
+                logger.info("Usuario autenticado resuelto desde Azure SQL.")
                 return user_data
-
-            # 4. Auto-provisioning: Registrar usuario nuevo en app_user
-            resolved_id = user_uuid or str(uuid.uuid5(uuid.NAMESPACE_DNS, user_id or clean_email or "default-user"))
-
-            # Asociar al cliente activo si existe
-            db_client_id = None
-            try:
-                cursor.execute("SELECT TOP 1 id FROM client WHERE status = 'active'")
-                c_row = cursor.fetchone()
-                if not c_row:
-                    cursor.execute("SELECT TOP 1 id FROM client")
-                    c_row = cursor.fetchone()
-                if c_row:
-                    db_client_id = c_row[0]
-            except Exception:
-                pass
-
-            if not db_client_id:
-                db_client_id = _safe_uuid(client_id)
-
-            initial_role = token_role if token_role and token_role != "None" else "spokesperson"
-
-            cursor.execute(
-                """
-                INSERT INTO app_user (id, client_id, email, display_name, role, preferred_language, is_deleted)
-                VALUES (?, ?, ?, ?, ?, 'es', 0)
-                """,
-                (resolved_id, db_client_id, clean_email, display_name or "Vocero", initial_role)
-            )
-            conn.commit()
-            logger.info(f"Usuario '{clean_email}' auto-registrado en Azure SQL (app_user) con rol: '{initial_role}'.")
-
-            return {
-                "id": resolved_id,
-                "client_id": db_client_id,
-                "email": clean_email,
-                "display_name": display_name,
-                "role": initial_role,
-                "preferred_language": "es"
-            }
+            return {}
 
     except Exception as e:
-        logger.warning(f"No se pudo sincronizar usuario en Azure SQL: {e}. Continuando con datos del token.")
+        logger.warning("No se pudo resolver el usuario en Azure SQL: %s", type(e).__name__)
         return {}
 
 # 6. Endpoints
@@ -292,14 +215,10 @@ def sync_or_get_user(
 def health_check():
     return {"status": "healthy", "service": "backend-api"}
 
-@app.post("/dev/token")
-def dev_token():
-    return {"accessToken": "dev-token-voxready-dev"}
-
 @app.get("/me")
 @app.get("/v1/me")
 def get_current_user_profile(user: dict = Depends(verify_token)):
-    """Obtiene el perfil del usuario autenticado y sincroniza roles con Azure SQL."""
+    """Obtiene desde Azure SQL el perfil existente del usuario autenticado."""
     user_id = user.get("oid") or user.get("sub", "")
     email = (
         user.get("email")
@@ -317,7 +236,7 @@ def get_current_user_profile(user: dict = Depends(verify_token)):
     token_role = user.get("role") or user.get("extension_role") or "spokesperson"
     client_id = user.get("clientId") or user.get("client_id") or user.get("tid")
 
-    # Sincronización con Azure SQL (auto-provisioning y lectura de roles en base de datos)
+    # La base de datos es la única fuente de rol, cliente e identidad visible.
     db_user = sync_or_get_user(
         user_id=str(user_id),
         email=email or "",
@@ -326,16 +245,16 @@ def get_current_user_profile(user: dict = Depends(verify_token)):
         token_role=token_role,
     )
 
-    role = db_user.get("role") or token_role or "spokesperson"
-    resolved_client_id = db_user.get("client_id") or (str(client_id) if client_id else "client-default")
+    if not db_user:
+        raise HTTPException(status_code=403, detail="Usuario no registrado en VoxReady.")
 
     return {
-        "userId": str(user_id),
-        "email": email,
-        "displayName": db_user.get("display_name") or display_name,
-        "role": role,
-        "clientId": str(resolved_client_id) if resolved_client_id else None,
-        "preferredLanguage": db_user.get("preferred_language") or user.get("preferredLanguage", "es"),
+        "userId": str(db_user["id"]),
+        "email": str(db_user.get("email") or "").strip(),
+        "displayName": db_user.get("display_name") or str(db_user.get("email") or "Usuario"),
+        "role": db_user["role"],
+        "clientId": str(db_user["client_id"]) if db_user.get("client_id") else None,
+        "preferredLanguage": db_user.get("preferred_language") or "es",
     }
 
 @app.get("/scenarios")
@@ -378,13 +297,23 @@ def grant_consent(session_id: str, payload: ConsentRequest, user: dict = Depends
     }
 
 class DevTokenRequest(BaseModel):
-    email: str = "ana.torres@acme-corp.com"
+    email: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=256)]
 
 @app.post("/dev/token")
 @app.post("/v1/dev/token")
 def create_dev_token(payload: DevTokenRequest):
+    if not DEV_AUTH:
+        raise HTTPException(status_code=404, detail="Acceso de desarrollo no disponible.")
+    with master_store.database(SQL_CONN_STR) as cursor:
+        cursor.execute("""SELECT id FROM dbo.app_user
+                          WHERE LOWER(LTRIM(RTRIM(email)))=LOWER(?)
+                          AND (is_deleted IS NULL OR is_deleted=0)""", payload.email)
+        matches = cursor.fetchall()
+        if len(matches) != 1:
+            raise HTTPException(status_code=404, detail="Usuario no registrado en VoxReady.")
+        user_id = str(matches[0][0])
     return {
-        "accessToken": "dev-local-jwt-token-voxready",
+        "accessToken": f"dev-user-{user_id}",
         "tokenType": "Bearer",
         "expiresIn": 28800
     }
@@ -780,6 +709,36 @@ class MasterStatusRequest(BaseModel):
     status: Literal['active', 'archived']
 
 
+class MicrolessonRequest(BaseModel):
+    clientId: uuid.UUID
+    scenarioId: uuid.UUID
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+    topicTag: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
+    durationMinutes: Annotated[int, Field(strict=True, gt=0, le=1440)] | None = None
+    learningObjective: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    theoryContent: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    exampleContent: str | None = None
+    status: Literal['active', 'archived']
+
+    @field_validator('topicTag', 'exampleContent', mode='before')
+    @classmethod
+    def optional_text(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+
+class MicrolessonVideoUploadRequest(BaseModel):
+    fileName: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+    contentType: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+    sizeBytes: Annotated[int, Field(strict=True, gt=0)]
+
+
+class MicrolessonVideoFinalizeRequest(MicrolessonVideoUploadRequest):
+    blobPath: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
+
+
 @app.get('/api/master/clients')
 @app.get('/v1/api/master/clients')
 def master_clients(user: dict = Depends(verify_token)):
@@ -889,4 +848,233 @@ def master_scenario_status(scenario_id: uuid.UUID, payload: MasterStatusRequest,
             raise HTTPException(409, 'Reactiva el tema antes de reactivar el escenario.')
         cursor.execute("UPDATE dbo.scenario SET status=?,updated_at=SYSUTCDATETIME() WHERE id=?", payload.status, scenario_id)
         return next(s for s in master_store.scenarios_for_topic(cursor, topic_id) if s['id'].lower() == scenario_id)
+
+
+# Microlecciones. El maestro administra; el vocero solo lee contenido visible
+# de su empresa y la misma regla de escenarios usada por el catalogo.
+@app.get('/api/master/microlessons/clients')
+@app.get('/v1/api/master/microlessons/clients')
+def master_microlesson_clients(
+    status: Literal['active', 'archived', 'all'] = 'all',
+    user: dict = Depends(verify_token),
+):
+    return microlesson_store.clients(SQL_CONN_STR, user, status)
+
+
+@app.get('/api/master/microlessons/clients/{client_id}/scenarios')
+@app.get('/v1/api/master/microlessons/clients/{client_id}/scenarios')
+def master_microlesson_scenarios(
+    client_id: uuid.UUID,
+    status: Literal['active', 'archived', 'all'] = 'active',
+    user: dict = Depends(verify_token),
+):
+    return microlesson_store.scenarios_for_client(SQL_CONN_STR, user, str(client_id), status)
+
+
+@app.get('/api/master/microlessons')
+@app.get('/v1/api/master/microlessons')
+def master_microlessons(
+    clientId: uuid.UUID | None = None,
+    status: Literal['active', 'archived', 'all'] = 'all',
+    user: dict = Depends(verify_token),
+):
+    return microlesson_store.list_master(SQL_CONN_STR, user, str(clientId) if clientId else None, status)
+
+
+@app.get('/api/master/microlessons/{microlesson_id}')
+@app.get('/v1/api/master/microlessons/{microlesson_id}')
+def master_microlesson_detail(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.get_master(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.post('/api/master/microlessons', status_code=201)
+@app.post('/v1/api/master/microlessons', status_code=201)
+def master_create_microlesson(payload: MicrolessonRequest, user: dict = Depends(verify_token)):
+    return microlesson_store.save(SQL_CONN_STR, user, payload)
+
+
+@app.put('/api/master/microlessons/{microlesson_id}')
+@app.put('/v1/api/master/microlessons/{microlesson_id}')
+def master_update_microlesson(
+    microlesson_id: uuid.UUID,
+    payload: MicrolessonRequest,
+    user: dict = Depends(verify_token),
+):
+    return microlesson_store.save(SQL_CONN_STR, user, payload, str(microlesson_id))
+
+
+@app.patch('/api/master/microlessons/{microlesson_id}/status')
+@app.patch('/v1/api/master/microlessons/{microlesson_id}/status')
+def master_microlesson_status(
+    microlesson_id: uuid.UUID,
+    payload: MasterStatusRequest,
+    user: dict = Depends(verify_token),
+):
+    return microlesson_store.set_status(SQL_CONN_STR, user, str(microlesson_id), payload.status)
+
+
+_VIDEO_MIME_BY_EXTENSION = {
+    '.mp4': {'video/mp4'},
+    '.webm': {'video/webm'},
+    '.mov': {'video/quicktime'},
+}
+
+
+def _validated_video(file_name: str, content_type: str, size_bytes: int):
+    safe_source = re.split(r'[\\/]', file_name)[-1].strip()
+    extension = os.path.splitext(safe_source)[1].lower()
+    normalized_type = content_type.split(';', 1)[0].strip().lower()
+    if extension not in _VIDEO_MIME_BY_EXTENSION or normalized_type not in _VIDEO_MIME_BY_EXTENSION[extension]:
+        raise HTTPException(422, 'El video debe ser MP4, WebM o MOV y su MIME debe coincidir con la extension.')
+    if size_bytes > MICROLESSON_VIDEO_MAX_BYTES:
+        raise HTTPException(413, f'El video supera el limite de {MICROLESSON_VIDEO_MAX_BYTES // (1024 * 1024)} MB.')
+    stem = os.path.splitext(safe_source)[0]
+    stem = re.sub(r'[^A-Za-z0-9._-]+', '-', stem).strip('._-')[:120] or 'video'
+    return f'{stem}{extension}', normalized_type
+
+
+def _blob_service():
+    if not STORAGE_CONN_STR:
+        raise HTTPException(503, 'Azure Blob Storage no esta configurado.')
+    try:
+        return BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
+    except Exception:
+        raise HTTPException(503, 'No se pudo conectar con Azure Blob Storage.') from None
+
+
+def _delete_blob(blob_path: str | None):
+    if not blob_path or not STORAGE_CONN_STR:
+        return
+    try:
+        _blob_service().get_container_client(CONTAINER_NAME).delete_blob(blob_path, delete_snapshots='include')
+    except Exception as error:
+        logger.warning('No se pudo limpiar un video de microleccion en Blob Storage: %s', type(error).__name__)
+
+
+def _playback_url(blob_path: str):
+    service = _blob_service()
+    try:
+        blob = service.get_container_client(CONTAINER_NAME).get_blob_client(blob_path)
+        if not blob.exists():
+            raise HTTPException(404, 'El video no existe en Azure Blob Storage.')
+        sas = generate_blob_sas(
+            account_name=service.account_name,
+            container_name=CONTAINER_NAME,
+            blob_name=blob_path,
+            account_key=service.credential.account_key,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.now(timezone.utc) + timedelta(minutes=60),
+        )
+        return f'https://{service.account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_path}?{sas}'
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, 'No se pudo generar el acceso temporal al video.') from None
+
+
+@app.post('/api/master/microlessons/{microlesson_id}/video-upload-url')
+@app.post('/v1/api/master/microlessons/{microlesson_id}/video-upload-url')
+def master_microlesson_video_upload_url(
+    microlesson_id: uuid.UUID,
+    payload: MicrolessonVideoUploadRequest,
+    user: dict = Depends(verify_token),
+):
+    owner = microlesson_store.video_owner(SQL_CONN_STR, user, str(microlesson_id))
+    safe_name, content_type = _validated_video(payload.fileName, payload.contentType, payload.sizeBytes)
+    blob_path = f"microlessons/{owner['clientId']}/{owner['id']}/{uuid.uuid4()}-{safe_name}"
+    service = _blob_service()
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+    try:
+        sas = generate_blob_sas(
+            account_name=service.account_name,
+            container_name=CONTAINER_NAME,
+            blob_name=blob_path,
+            account_key=service.credential.account_key,
+            permission=BlobSasPermissions(create=True, write=True),
+            expiry=expiry,
+        )
+    except Exception:
+        raise HTTPException(503, 'No se pudo preparar la subida del video.') from None
+    return {
+        'uploadUrl': f'https://{service.account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_path}?{sas}',
+        'blobPath': blob_path,
+        'fileName': safe_name,
+        'contentType': content_type,
+        'expiresAt': expiry.isoformat(),
+        'maxSizeBytes': MICROLESSON_VIDEO_MAX_BYTES,
+    }
+
+
+@app.put('/api/master/microlessons/{microlesson_id}/video')
+@app.put('/v1/api/master/microlessons/{microlesson_id}/video')
+def master_finalize_microlesson_video(
+    microlesson_id: uuid.UUID,
+    payload: MicrolessonVideoFinalizeRequest,
+    user: dict = Depends(verify_token),
+):
+    owner = microlesson_store.video_owner(SQL_CONN_STR, user, str(microlesson_id))
+    safe_name, content_type = _validated_video(payload.fileName, payload.contentType, payload.sizeBytes)
+    expected_prefix = f"microlessons/{owner['clientId']}/{owner['id']}/"
+    if not payload.blobPath.startswith(expected_prefix) or '..' in payload.blobPath:
+        raise HTTPException(422, 'La ruta del video no corresponde a esta microleccion.')
+    service = _blob_service()
+    try:
+        properties = service.get_container_client(CONTAINER_NAME).get_blob_client(payload.blobPath).get_blob_properties()
+        actual_size = int(properties.size)
+        actual_type = (properties.content_settings.content_type or '').split(';', 1)[0].lower()
+        if actual_size != payload.sizeBytes or actual_size > MICROLESSON_VIDEO_MAX_BYTES:
+            raise HTTPException(422, 'El tamano del blob no coincide con el archivo declarado.')
+        if actual_type != content_type:
+            raise HTTPException(422, 'El tipo MIME almacenado no coincide con el video declarado.')
+    except HTTPException:
+        _delete_blob(payload.blobPath)
+        raise
+    except Exception:
+        _delete_blob(payload.blobPath)
+        raise HTTPException(422, 'No se encontro un video valido para confirmar.') from None
+    try:
+        old_path = microlesson_store.set_video(
+            SQL_CONN_STR, user, str(microlesson_id), payload.blobPath,
+            safe_name, content_type, payload.sizeBytes,
+        )
+    except Exception:
+        _delete_blob(payload.blobPath)
+        raise
+    if old_path and old_path != payload.blobPath:
+        _delete_blob(old_path)
+    return microlesson_store.get_master(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.delete('/api/master/microlessons/{microlesson_id}/video')
+@app.delete('/v1/api/master/microlessons/{microlesson_id}/video')
+def master_remove_microlesson_video(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    old_path = microlesson_store.clear_video(SQL_CONN_STR, user, str(microlesson_id))
+    _delete_blob(old_path)
+    return microlesson_store.get_master(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.get('/api/master/microlessons/{microlesson_id}/video-url')
+@app.get('/v1/api/master/microlessons/{microlesson_id}/video-url')
+def master_microlesson_video_url(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    path = microlesson_store.playback_path(SQL_CONN_STR, user, str(microlesson_id), master=True)
+    return {'playbackUrl': _playback_url(path), 'expiresIn': 3600}
+
+
+@app.get('/microlessons')
+@app.get('/v1/microlessons')
+def spokesperson_microlessons(user: dict = Depends(verify_token)):
+    return microlesson_store.list_spokesperson(SQL_CONN_STR, user)
+
+
+@app.get('/microlessons/{microlesson_id}')
+@app.get('/v1/microlessons/{microlesson_id}')
+def spokesperson_microlesson_detail(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.get_spokesperson(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.get('/microlessons/{microlesson_id}/video-url')
+@app.get('/v1/microlessons/{microlesson_id}/video-url')
+def spokesperson_microlesson_video_url(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    path = microlesson_store.playback_path(SQL_CONN_STR, user, str(microlesson_id))
+    return {'playbackUrl': _playback_url(path), 'expiresIn': 3600}
 

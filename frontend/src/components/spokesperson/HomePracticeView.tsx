@@ -133,7 +133,7 @@ export const HomePracticeView: React.FC<HomePracticeViewProps> = ({ onNavigate }
                 cursor: 'pointer',
                 transition: 'border-color 0.15s ease'
               }}
-              onClick={() => onNavigate('lesson', m.name)}
+              onClick={() => onNavigate('lesson', m.id)}
             >
               <div style={{ fontSize: '13.5px', fontWeight: 600, marginBottom: '3px' }}>
                 📖 {m.name}

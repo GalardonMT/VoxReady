@@ -234,7 +234,32 @@ body {
 .master-scenario-editor { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 20px; }
 .master-dialog { max-width: min(520px, 90vw); background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
 .master-dialog::backdrop { background: rgba(0,0,0,.6); }
+.master-success { color: var(--success); padding: 10px; }
+.master-filters, .master-actions { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+.master-filters label { font-size: 12px; color: var(--muted); }
+.master-filters .field { margin-top: 4px; min-width: 170px; }
+.master-table-wrap { overflow-x: auto; }
+.microlesson-editor { margin-bottom: 20px; }
+.microlesson-editor h4 { margin: 20px 0 10px; color: var(--ink); }
+.microlesson-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.microlesson-grid label, .microlesson-editor > fieldset > label { font-size: 12px; color: var(--muted); }
+.microlesson-grid .field, .microlesson-editor > fieldset > label .field { margin-top: 5px; }
+.microlesson-textarea { min-height: 90px; resize: vertical; }
+.microlesson-textarea.tall { min-height: 140px; }
+.microlesson-video-state, .microlesson-confirm { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.microlesson-confirm { display: block; border-color: var(--accent2); }
+.microlesson-confirm p { margin-top: 0; }
 @media (max-width: 700px) { .master-question { flex-wrap: wrap; } .master-question > .field { flex-basis: 75%; } }
+@media (max-width: 700px) { .microlesson-grid { grid-template-columns: 1fr; } }
+.microlesson-card { display: flex; flex-direction: column; gap: 10px; }
+.microlesson-card h3 { margin: 4px 0; }
+.microlesson-card p { flex: 1; }
+.microlesson-detail { max-width: 900px; margin: 16px auto 0; }
+.microlesson-detail section { margin: 24px 0; }
+.microlesson-copy { white-space: pre-wrap; line-height: 1.65; }
+.microlesson-player { width: 100%; max-height: 520px; border-radius: 10px; background: #111; }
+.microlesson-practice { display: flex; justify-content: space-between; gap: 16px; align-items: center; border-top: 1px solid var(--line); padding-top: 20px; }
+@media (max-width: 700px) { .microlesson-practice { align-items: stretch; flex-direction: column; } }
 
 .grid2 {
   display: grid;

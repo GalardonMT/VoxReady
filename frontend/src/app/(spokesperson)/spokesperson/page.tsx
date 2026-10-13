@@ -28,7 +28,8 @@ function SpokespersonContent() {
   const { user, logout } = useAuth();
 
   const [voceroScreen, setVoceroScreen] = useState<VoceroScreen>('u1');
-  const [selectedLesson, setSelectedLesson] = useState<string>('Mensajes puente (Bridging)');
+  const [selectedLesson, setSelectedLesson] = useState<string>('');
+  const [practiceScenarioId, setPracticeScenarioId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string>('session-crisis-001');
   const [activeScenarioId, setActiveScenarioId] = useState<string>('crisis-voceria-01');
 
@@ -58,6 +59,8 @@ function SpokespersonContent() {
     if (extra && screen === 'lesson') {
       setSelectedLesson(extra);
     }
+    if (screen === 'lesson' && !extra) setSelectedLesson('');
+    if (screen === 'u2') setPracticeScenarioId(extra || null);
     if (screen === 'u3') {
       if (extra) setActiveScenarioId(extra);
       const newSession = `session-${extra || 'crisis'}-${Date.now()}`;
@@ -154,6 +157,7 @@ function SpokespersonContent() {
         {voceroScreen === 'u2' && (
           <ScenarioCatalog
             key={`${user.userId}:${user.clientId}`}
+            focusScenarioId={practiceScenarioId}
             onNavigate={handleVoceroNavigate}
             onSelected={(setup) => {
               setSelectedSession({ setup, userId: user.userId, clientId: user.clientId });
@@ -210,7 +214,8 @@ function SpokespersonContent() {
         )}
         {voceroScreen === 'u7' && <ProgressView onNavigate={handleVoceroNavigate} />}
         {voceroScreen === 'lesson' && (
-          <LessonView lessonTitle={selectedLesson} onNavigate={handleVoceroNavigate} />
+          <LessonView lessonReference={selectedLesson || undefined} onBack={() => handleVoceroNavigate('u1')}
+            onPracticeScenario={(scenarioId) => handleVoceroNavigate('u2', scenarioId)} />
         )}
       </main>
 

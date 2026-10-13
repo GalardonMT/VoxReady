@@ -23,12 +23,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS application
-COPY main.py master_topics.py spokesperson_store.py ./
+COPY main.py master_topics.py spokesperson_store.py microlessons.py ./
+COPY schemas ./schemas
+COPY services ./services
 COPY scripts ./scripts
 
 FROM application AS test
 COPY tests ./tests
-CMD ["python", "-m", "pytest", "tests/test_master_topics_azure.py", "tests/test_flow_regression.py", "-q", "-p", "no:cacheprovider"]
+CMD ["python", "-m", "pytest", "tests/test_master_topics_azure.py", "tests/test_microlessons_azure.py", "tests/test_flow_regression.py", "-q", "-p", "no:cacheprovider"]
 
 FROM application AS runtime
 

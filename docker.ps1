@@ -40,6 +40,7 @@ try {
         'seed' {
             Invoke-Docker -Arguments @('compose', 'run', '--rm', '--no-deps', 'init', 'python', 'scripts/prepare_azure_database.py', '--verify-only')
             Invoke-Docker -Arguments @('compose', 'run', '--rm', '--no-deps', 'init', 'python', 'scripts/seed_master_topics.py')
+            Invoke-Docker -Arguments @('compose', 'run', '--rm', '--no-deps', 'init', 'python', 'scripts/seed_dev_users.py')
         }
         'logs' { Invoke-Docker -Arguments @('compose', 'logs', '--follow', '--tail', '100', 'api', 'client') }
         'stop' { Invoke-Docker -Arguments @('compose', 'stop') }

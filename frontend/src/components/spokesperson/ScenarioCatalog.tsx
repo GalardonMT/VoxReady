@@ -17,9 +17,10 @@ const categories = [
 interface Props {
   onSelected: (setup: SessionSetup) => void;
   onNavigate?: (screen: VoceroScreen, extra?: string) => void;
+  focusScenarioId?: string | null;
 }
 
-export const ScenarioCatalog: React.FC<Props> = ({ onSelected }) => {
+export const ScenarioCatalog: React.FC<Props> = ({ onSelected, focusScenarioId }) => {
   const { t } = useI18n();
   const { user } = useAuth();
   const [category, setCategory] = useState('');
@@ -35,7 +36,10 @@ export const ScenarioCatalog: React.FC<Props> = ({ onSelected }) => {
   useEffect(() => {
     let active = true;
     const timer = setTimeout(() => {
-      sessionFlowService.listScenarios({ category, q: search.trim(), page, pageSize: 9 })
+      const request = focusScenarioId
+        ? sessionFlowService.getScenario(focusScenarioId).then(item => ({ items: [item], total: 1 }))
+        : sessionFlowService.listScenarios({ category, q: search.trim(), page, pageSize: 9 });
+      request
         .then((data) => {
           if (!active) return;
           setItems(data.items);
@@ -45,7 +49,7 @@ export const ScenarioCatalog: React.FC<Props> = ({ onSelected }) => {
         .finally(() => { if (active) setLoading(false); });
     }, search ? 250 : 0);
     return () => { active = false; clearTimeout(timer); };
-  }, [category, search, page, user?.clientId, user?.userId]);
+  }, [category, search, page, focusScenarioId, user?.clientId, user?.userId]);
 
   const selectScenario = async (scenario: CatalogScenario) => {
     if (!user || pendingId) return;
@@ -69,6 +73,7 @@ export const ScenarioCatalog: React.FC<Props> = ({ onSelected }) => {
   };
 
   return <div className="canvas-content">
+    {focusScenarioId && <div className="card" style={{ marginBottom: 16 }}><strong>Escenario de la microlección</strong><p className="legend">Solo se muestra si sigue asignado y disponible para tu empresa.</p></div>}
     <div style={{ display: 'flex', gap: 10, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {categories.map((item) => <button type="button" key={item.value}

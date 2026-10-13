@@ -16,8 +16,20 @@ import main
 
 def test_dev_auth_contract(monkeypatch):
     monkeypatch.setattr(main, 'DEV_AUTH', True)
-    assert main.verify_token('Bearer dev-token-voxready-dev')['role'] == 'spokesperson'
-    assert main.verify_token(None)['email'] == 'dev@voxready.io'
+    user_id = '00112233-4455-6677-8899-aabbccddeeff'
+    claims = main.verify_token('Bearer dev-user-' + user_id)
+    assert claims == {'sub': user_id, 'oid': user_id}
+    with pytest.raises(HTTPException) as error:
+        main.verify_token('Bearer dev-token-voxready-dev')
+    assert error.value.status_code == 401
+    with pytest.raises(HTTPException) as error:
+        main.verify_token(None)
+    assert error.value.status_code == 401
+    unsigned = jwt.encode({'sub': user_id, 'email': 'elena.diaz@voxready.ai'}, 'untrusted', algorithm='HS256')
+    monkeypatch.setattr(main, '_get_jwks_client', lambda: None)
+    with pytest.raises(HTTPException) as error:
+        main.verify_token('Bearer ' + unsigned)
+    assert error.value.status_code == 401
     monkeypatch.setattr(main, 'DEV_AUTH', False)
     with pytest.raises(HTTPException) as error:
         main.verify_token(None)
@@ -52,6 +64,19 @@ def test_recording_sas_contract(monkeypatch):
     assert result['blob_name'] == f'recordings/{session_id}.webm'
     assert result['uploadUrl'] == result['upload_url']
     assert result['upload_url'].endswith(f'/{session_id}.webm?test-sas')
+
+
+def test_microlesson_video_validation():
+    assert main._validated_video('Mi video final.mp4', 'video/mp4', 100) == ('Mi-video-final.mp4', 'video/mp4')
+    with pytest.raises(HTTPException) as error:
+        main._validated_video('archivo.exe', 'video/mp4', 100)
+    assert error.value.status_code == 422
+    with pytest.raises(HTTPException) as error:
+        main._validated_video('video.mp4', 'video/webm', 100)
+    assert error.value.status_code == 422
+    with pytest.raises(HTTPException) as error:
+        main._validated_video('video.mp4', 'video/mp4', main.MICROLESSON_VIDEO_MAX_BYTES + 1)
+    assert error.value.status_code == 413
 
 
 def test_worker_event_and_report_contract(monkeypatch):

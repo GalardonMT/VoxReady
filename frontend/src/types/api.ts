@@ -95,7 +95,7 @@ export interface Scenario {
   imageUrl?: string;
 }
 
-export interface Microlesson {
+export interface DemoMicrolesson {
   id: string;
   title: string;
   durationMinutes: number;
@@ -103,6 +103,36 @@ export interface Microlesson {
   videoPlaceholder: string;
   exampleAnalysis: string;
   relatedScenarioId?: string;
+}
+
+export interface MicrolessonInput {
+  clientId: string;
+  scenarioId: string;
+  title: string;
+  topicTag: string | null;
+  durationMinutes: number | null;
+  learningObjective: string;
+  theoryContent: string;
+  exampleContent: string | null;
+  status: LifecycleStatus;
+}
+
+export interface Microlesson extends MicrolessonInput {
+  id: string;
+  clientName: string;
+  scenarioTitle: string;
+  hasVideo: boolean;
+  videoFileName?: string | null;
+  videoContentType?: string | null;
+  videoSizeBytes?: number | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MicrolessonScenario {
+  id: string;
+  title: string;
+  status: LifecycleStatus;
 }
 
 export interface PracticeSessionState {
