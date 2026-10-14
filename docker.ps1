@@ -51,6 +51,7 @@ try {
         'seed' {
             Invoke-Compose -Arguments @('run', '--rm', '--no-deps', 'init', 'python', 'scripts/prepare_azure_database.py', '--verify-only')
             Invoke-Compose -Arguments @('run', '--rm', '--no-deps', 'init', 'python', 'scripts/seed_master_topics.py')
+            Invoke-Compose -Arguments @('run', '--rm', '--no-deps', 'init', 'python', 'scripts/seed_dev_users.py')
         }
         'logs' { Invoke-Compose -Arguments @('logs', '--follow', '--tail', '100', 'api', 'client') }
         'stop' { Invoke-Compose -Arguments @('stop') }

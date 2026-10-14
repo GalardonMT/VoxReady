@@ -1,6 +1,6 @@
 import {
   Scenario,
-  Microlesson,
+  DemoMicrolesson,
   TopicConfig,
   RetentionSettings,
   MasterRubric,
@@ -117,7 +117,7 @@ export const INITIAL_SCENARIOS: Scenario[] = [
   }
 ];
 
-export const INITIAL_MICROLESSONS: Record<string, Microlesson> = {
+export const INITIAL_MICROLESSONS: Record<string, DemoMicrolesson> = {
   bridging: {
     id: 'bridging',
     title: 'Mensajes puente (Bridging)',
