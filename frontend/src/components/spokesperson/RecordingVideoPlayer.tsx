@@ -48,10 +48,10 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
 
   // Determinar la duración efectiva más confiable
   const effectiveDuration =
-    duration && isFinite(duration) && duration > 0
-      ? duration
-      : expectedDuration && isFinite(expectedDuration) && expectedDuration > 0
-        ? expectedDuration
+    expectedDuration && isFinite(expectedDuration) && expectedDuration > 0
+      ? expectedDuration
+      : duration && isFinite(duration) && duration > 0
+        ? duration
         : 0;
 
   // Actualizar duración si expectedDuration cambia y no tenemos una duración finita detectada
@@ -66,6 +66,12 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
     const video = videoRef.current;
     if (!video) return;
 
+    // Si ya tenemos expectedDuration confiable, usarlo directamente
+    if (expectedDuration && expectedDuration > 0) {
+      setDuration(expectedDuration);
+      return;
+    }
+
     if (isFinite(video.duration) && video.duration > 0) {
       setDuration(video.duration);
     } else {
@@ -74,8 +80,6 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
         video.removeEventListener('seeked', onSeeked);
         if (isFinite(video.duration) && video.duration > 0) {
           setDuration(video.duration);
-        } else if (expectedDuration && expectedDuration > 0) {
-          setDuration(expectedDuration);
         }
         video.currentTime = 0;
       };
@@ -113,8 +117,14 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
       }
     }
 
-    // Si el navegador descubrió la duración durante la reproducción, sincronizarla
-    if (isFinite(video.duration) && video.duration > 0 && Math.abs(duration - video.duration) > 0.5) {
+    // Solo sincronizar duración del navegador si NO tenemos expectedDuration confiable
+    // y si el salto es significativo (>10s) para evitar el bug incremental de Chromium
+    if (
+      !(expectedDuration && expectedDuration > 0) &&
+      isFinite(video.duration) &&
+      video.duration > 0 &&
+      video.duration > duration + 10
+    ) {
       setDuration(video.duration);
     }
   };

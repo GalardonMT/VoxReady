@@ -7,7 +7,7 @@ import { FullVisumReport } from '../../types/api';
 import { RecordingVideoPlayer } from './RecordingVideoPlayer';
 
 interface FullVisumReportViewProps {
-  onNavigate: (screen: VoceroScreen, extra?: string) => void;
+  onNavigate: (screen: VoceroScreen | string, extra?: string) => void;
   sessionId?: string;
 }
 
@@ -39,7 +39,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
 
   const activeSessionId = report?.sessionId || sessionId;
   const audio = report?.metrics?.audio;
-  const expectedDuration = report?.durationSeconds || audio?.duracionSegundos;
+  const expectedDuration = report?.durationSeconds || audio?.duracionSegundos || (report?.metricsSummary as any)?.durationSeconds;
 
   const handleOpenVideo = async () => {
     setShowVideoModal(true);
