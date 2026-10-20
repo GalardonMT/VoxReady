@@ -1065,6 +1065,11 @@ class MasterStatusRequest(BaseModel):
 class MasterClientRequest(BaseModel):
     name: ClientName
     status: Literal['active', 'suspended'] = 'active'
+    spokespersonIds: list[uuid.UUID] = Field(default_factory=list)
+
+
+class MasterSpokespersonLinkRequest(BaseModel):
+    spokespersonIds: list[uuid.UUID] = Field(default_factory=list)
 
 
 class MicrolessonRequest(BaseModel):
@@ -1114,7 +1119,34 @@ def master_clients(
 def master_create_client(payload: MasterClientRequest, user: dict = Depends(verify_token)):
     with master_store.database(SQL_CONN_STR) as cursor:
         master_store.resolve_user(cursor, user, master=True)
-        return client_store.create_client(cursor, payload.name, payload.status)
+        client = client_store.create_client(cursor, payload.name, payload.status)
+        client_store.link_spokespersons(cursor, client["id"], payload.spokespersonIds)
+        return client
+
+
+@app.get('/api/master/spokespersons')
+@app.get('/v1/api/master/spokespersons')
+def master_spokespersons(
+    client_id: uuid.UUID | None = Query(None, alias='clientId'),
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
+    user: dict = Depends(verify_token),
+):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        items = client_store.list_spokespersons(cursor, client_id=client_id, query=query)
+        return {"items": items, "total": len(items)}
+
+
+@app.post('/api/master/clients/{client_id}/spokespersons')
+@app.post('/v1/api/master/clients/{client_id}/spokespersons')
+def master_link_spokespersons(
+    client_id: uuid.UUID,
+    payload: MasterSpokespersonLinkRequest,
+    user: dict = Depends(verify_token),
+):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return client_store.link_spokespersons(cursor, client_id, payload.spokespersonIds)
 
 
 @app.get('/api/master/topics')

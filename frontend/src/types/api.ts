@@ -20,6 +20,24 @@ export interface ClientInfo {
 export interface ClientInput {
   name: string;
   status: ClientStatus;
+  spokespersonIds?: string[];
+}
+
+export type SpokespersonLinkState = 'available' | 'linked' | 'assigned_elsewhere';
+
+export interface SpokespersonCandidate {
+  id: string;
+  displayName: string;
+  email: string;
+  clientId: string | null;
+  clientName: string | null;
+  linkState: SpokespersonLinkState;
+}
+
+export interface SpokespersonLinkResult {
+  clientId: string;
+  spokespersonIds: string[];
+  total: number;
 }
 
 export interface MasterQuestion {

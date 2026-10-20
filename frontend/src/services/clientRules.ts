@@ -8,6 +8,6 @@ export function validateClient(name: string, status: string): string | null {
   return null;
 }
 
-export function normalizeClient(name: string, status: ClientStatus) {
-  return { name: name.trim(), status };
+export function normalizeClient(name: string, status: ClientStatus, spokespersonIds: string[] = []) {
+  return { name: name.trim(), status, spokespersonIds: [...new Set(spokespersonIds)] };
 }

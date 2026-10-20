@@ -1,6 +1,8 @@
 """Persistencia de empresas cliente para la configuracion maestra."""
 import uuid
 
+from fastapi import HTTPException
+
 
 CLIENT_SCHEMA_DDL = """
 IF OBJECT_ID(N'dbo.client', N'U') IS NULL
@@ -115,3 +117,102 @@ def create_client(cursor, name, status):
     if row is None:
         raise RuntimeError("El cliente creado no pudo recuperarse.")
     return _serialize(row, columns)
+
+
+def require_client(cursor, client_id, *, lock=False):
+    """Comprueba que el cliente exista y no este archivado."""
+    hint = " WITH (UPDLOCK,HOLDLOCK)" if lock else ""
+    cursor.execute(
+        "SELECT id,name FROM dbo.client" + hint + " WHERE id=? AND is_deleted=0",
+        str(client_id),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(404, "Cliente no encontrado.")
+    return str(row[0]), row[1]
+
+
+def list_spokespersons(cursor, *, client_id=None, query=""):
+    """Lista voceros para el selector maestro, incluidos los no elegibles."""
+    target_id = None
+    if client_id is not None:
+        target_id, _ = require_client(cursor, client_id)
+
+    search = query.strip()
+    like = f"%{search}%"
+    cursor.execute(
+        """SELECT u.id,u.display_name AS displayName,u.email,u.client_id AS clientId,
+                  c.name AS clientName
+           FROM dbo.app_user u
+           LEFT JOIN dbo.client c ON c.id=u.client_id
+           WHERE u.role='spokesperson'
+             AND (u.is_deleted IS NULL OR u.is_deleted=0)
+             AND (?='' OR u.display_name LIKE ? OR u.email LIKE ?)
+           ORDER BY u.display_name,u.email,u.id""",
+        search,
+        like,
+        like,
+    )
+    columns = [column[0] for column in cursor.description]
+    items = []
+    for row in cursor.fetchall():
+        item = dict(zip(columns, row))
+        item["id"] = str(item["id"])
+        item["clientId"] = str(item["clientId"]) if item["clientId"] else None
+        if item["clientId"] is None:
+            item["linkState"] = "available"
+        elif target_id and item["clientId"].lower() == target_id.lower():
+            item["linkState"] = "linked"
+        else:
+            item["linkState"] = "assigned_elsewhere"
+        items.append(item)
+    return items
+
+
+def link_spokespersons(cursor, client_id, spokesperson_ids):
+    """Vincula voceros de forma atomica, idempotente y segura ante carreras."""
+    target_id, _ = require_client(cursor, client_id, lock=True)
+    requested_ids = sorted({str(item) for item in spokesperson_ids})
+    locked = []
+
+    # Se bloquean en orden estable y se valida todo antes de escribir nada.
+    for spokesperson_id in requested_ids:
+        cursor.execute(
+            """SELECT id,role,client_id,display_name,email
+               FROM dbo.app_user WITH (UPDLOCK,HOLDLOCK)
+               WHERE id=? AND (is_deleted IS NULL OR is_deleted=0)""",
+            spokesperson_id,
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise HTTPException(409, f"El usuario {spokesperson_id} no existe o no esta activo.")
+        if row[1] != "spokesperson":
+            raise HTTPException(409, f"El usuario {spokesperson_id} no tiene rol de vocero.")
+        current_client_id = str(row[2]) if row[2] else None
+        if current_client_id and current_client_id.lower() != target_id.lower():
+            display = row[3] or row[4] or spokesperson_id
+            raise HTTPException(409, f"{display} ya pertenece a otra empresa y no puede trasladarse.")
+        locked.append((spokesperson_id, current_client_id))
+
+    linked_ids = []
+    for spokesperson_id, current_client_id in locked:
+        if current_client_id:
+            # Repetir el vinculo con el mismo cliente es idempotente.
+            linked_ids.append(spokesperson_id)
+            continue
+        cursor.execute(
+            """UPDATE dbo.app_user
+               SET client_id=?,updated_at=SYSUTCDATETIME()
+               WHERE id=? AND role='spokesperson' AND client_id IS NULL
+                 AND (is_deleted IS NULL OR is_deleted=0)""",
+            target_id,
+            spokesperson_id,
+        )
+        if cursor.rowcount != 1:
+            raise HTTPException(
+                409,
+                "La vinculacion cambio mientras se guardaba. Recarga los voceros e intenta nuevamente.",
+            )
+        linked_ids.append(spokesperson_id)
+
+    return {"clientId": target_id, "spokespersonIds": linked_ids, "total": len(linked_ids)}

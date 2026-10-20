@@ -7,6 +7,15 @@ test('client name is trimmed and active remains the default valid status', () =>
   assert.deepEqual(normalizeClient('  Empresa Uno  ', 'active'), {
     name: 'Empresa Uno',
     status: 'active',
+    spokespersonIds: [],
+  });
+});
+
+test('selected spokesperson ids are included once in the client payload', () => {
+  assert.deepEqual(normalizeClient('Empresa', 'active', ['a', 'b', 'a']), {
+    name: 'Empresa',
+    status: 'active',
+    spokespersonIds: ['a', 'b'],
   });
 });
 

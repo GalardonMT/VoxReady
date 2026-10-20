@@ -247,6 +247,18 @@ body {
 .client-status { display: inline-flex; border-radius: 999px; padding: 4px 10px; font-size: 11.5px; font-weight: 600; }
 .client-status.active { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--panel)); }
 .client-status.suspended { color: var(--danger, #b42318); background: color-mix(in srgb, var(--danger, #b42318) 10%, var(--panel)); }
+.client-spokespersons { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.client-spokespersons h4 { margin: 0 0 5px; }
+.spokesperson-selector > label { display: block; max-width: 520px; margin-top: 14px; font-size: 12px; color: var(--muted); }
+.spokesperson-selector > label .field { margin-top: 5px; }
+.spokesperson-options { display: grid; gap: 8px; max-height: 330px; overflow-y: auto; margin-top: 12px; padding-right: 4px; }
+.spokesperson-option { display: flex; gap: 10px; align-items: flex-start; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; }
+.spokesperson-option > input { margin-top: 3px; }
+.spokesperson-option > span { display: grid; gap: 2px; min-width: 0; }
+.spokesperson-option strong, .spokesperson-option span, .spokesperson-option small { overflow-wrap: anywhere; }
+.spokesperson-option small { color: var(--muted); }
+.spokesperson-option.unavailable { opacity: .68; cursor: not-allowed; background: var(--soft); }
+.spokesperson-empty { padding: 12px; border-radius: 8px; background: var(--soft); color: var(--muted); }
 .microlesson-editor { margin-bottom: 20px; }
 .microlesson-editor h4 { margin: 20px 0 10px; color: var(--ink); }
 .microlesson-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
