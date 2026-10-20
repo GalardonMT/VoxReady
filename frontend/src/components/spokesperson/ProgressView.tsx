@@ -5,7 +5,8 @@ import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionFlowService, type CatalogScenario, type SessionSetup } from '../../services/sessionFlowService';
 import { sessionService } from '../../services/sessionService';
-import type { SessionHistoryItem } from '../../types/api';
+import type { MicrolessonRecommendations, SessionHistoryItem } from '../../types/api';
+import { microlessonService } from '../../services/microlessonService';
 import {
   progressService,
   type CalendarResponse,
@@ -76,7 +77,7 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ onNavigate, onSessio
   };
 
   useEffect(() => {
-    loadSessions();
+    void Promise.resolve().then(loadSessions);
   }, []);
 
   useEffect(() => {
@@ -140,6 +141,21 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ onNavigate, onSessio
   const [scenarioId, setScenarioId] = useState('');
   const [actionError, setActionError] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [recommendations, setRecommendations] = useState<MicrolessonRecommendations | null>(null);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(true);
+  const [recommendationsError, setRecommendationsError] = useState('');
+
+  const loadRecommendations = useCallback(async () => {
+    setRecommendationsLoading(true);
+    setRecommendationsError('');
+    try {
+      setRecommendations(await microlessonService.recommendations());
+    } catch (error) {
+      setRecommendationsError(errorText(error));
+    } finally {
+      setRecommendationsLoading(false);
+    }
+  }, []);
 
   const loadProgress = useCallback(async () => {
     setProgressLoading(true);
@@ -184,9 +200,16 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ onNavigate, onSessio
     }
   }, []);
 
-  useEffect(() => { void loadProgress(); }, [loadProgress]);
-  useEffect(() => { void loadCalendar(); }, [loadCalendar]);
-  useEffect(() => { void loadScenarios(); }, [loadScenarios]);
+  useEffect(() => { void Promise.resolve().then(loadProgress); }, [loadProgress]);
+  useEffect(() => { void Promise.resolve().then(loadCalendar); }, [loadCalendar]);
+  useEffect(() => { void Promise.resolve().then(loadScenarios); }, [loadScenarios]);
+  useEffect(() => {
+    let active = true;
+    microlessonService.recommendations().then(result => { if (active) setRecommendations(result); })
+      .catch(error => { if (active) setRecommendationsError(errorText(error)); })
+      .finally(() => { if (active) setRecommendationsLoading(false); });
+    return () => { active = false; };
+  }, []);
 
   const prevMonth = () => {
     setCalMonth((month) => {
@@ -353,18 +376,23 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ onNavigate, onSessio
       />
 
       <div className="grid2" style={{ marginTop: '18px' }}>
-        {/* Este bloque se conserva para enlazar las microlecciones cuando estén listas. */}
         <div className="card">
-          <div className="label">{d.recoTitle}</div>
-          {d.recos.map((r, i) => (
-            <div key={i} className="box" style={{ padding: '14px', marginBottom: '10px' }}>
-              <div style={{ fontSize: '13.5px', fontWeight: 600, marginBottom: '4px' }}>💡 {r.t}</div>
-              <div className="legend" style={{ margin: '0 0 10px', fontSize: '12px' }}>{r.d}</div>
-              <button type="button" className="btn" onClick={() => onNavigate('lesson', r.t)}>
-                {t.openLesson} →
-              </button>
-            </div>
+          <div className="label">RECOMENDACIONES PARA TI</div>
+          {recommendationsLoading && <p role="status">Cargando tus microlecciones…</p>}
+          {recommendationsError && <ErrorBox message={recommendationsError} onRetry={loadRecommendations} />}
+          {!recommendationsLoading && !recommendationsError && recommendations?.items.length === 0 && <div className="progress-empty-recommendations">
+            <p>No tienes microlecciones asignadas por ahora.</p>
+            <button type="button" className="btn" onClick={() => onNavigate('lesson')}>Explorar microlecciones</button>
+          </div>}
+          {!recommendationsLoading && !recommendationsError && recommendations?.items.map(item => (
+            <article key={item.assignmentId ?? item.id} className="box progress-recommendation">
+              <div className="progress-recommendation-heading"><strong>{item.title}</strong><span className="tagm">{item.assignmentStatus === 'in_progress' ? 'En progreso' : 'Asignada'}</span></div>
+              <p className="legend">{item.learningObjective}</p>
+              <div className="legend">{item.durationMinutes ? `≈ ${item.durationMinutes} min · ` : ''}Escenario: {item.scenarioTitle}</div>
+              <button type="button" className="btn" onClick={() => onNavigate('lesson', item.id)}>Abrir microlección →</button>
+            </article>
           ))}
+          {!recommendationsLoading && !recommendationsError && (recommendations?.total ?? 0) > 3 && <button type="button" className="btn ghost" onClick={() => onNavigate('lesson')}>Ver todas</button>}
         </div>
 
         <div className="card">

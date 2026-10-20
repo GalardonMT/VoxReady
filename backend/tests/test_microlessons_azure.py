@@ -33,8 +33,9 @@ def microlesson_api(monkeypatch):
     cursor.execute("INSERT INTO dbo.client(id,name,status) VALUES(?,'Cliente externo prueba','active')", other_client)
     cursor.execute("""INSERT INTO dbo.scenario(id,topic_id,client_id,title,category,difficulty,estimated_minutes,question_count,status)
                       VALUES(?,?,?,'Escenario externo','operational','basic',5,0,'active')""", other_scenario, topic_id, other_client)
-    users = {name: str(uuid.uuid4()) for name in ('master', 'speaker', 'admin', 'outsider')}
-    roles = {'master': 'master_config', 'speaker': 'spokesperson', 'admin': 'client_admin', 'outsider': 'spokesperson'}
+    users = {name: str(uuid.uuid4()) for name in ('master', 'speaker', 'speaker2', 'admin', 'outsider')}
+    roles = {'master': 'master_config', 'speaker': 'spokesperson', 'speaker2': 'spokesperson',
+             'admin': 'client_admin', 'outsider': 'spokesperson'}
     for name, user_id in users.items():
         cursor.execute("INSERT INTO dbo.app_user(id,client_id,email,display_name,role) VALUES(?,?,?,?,?)", user_id,
                        None if name == 'master' else other_client if name == 'outsider' else seed.DEMO_CLIENT_ID,
@@ -67,7 +68,7 @@ def microlesson_api(monkeypatch):
     monkeypatch.setattr(main, 'generate_blob_sas', lambda **_: 'temporary-sas')
     try:
         with TestClient(main.app) as client:
-            yield client, current, str(demo_scenario), other_scenario, seed, service
+            yield client, current, str(demo_scenario), other_scenario, seed, service, users
     finally:
         main.app.dependency_overrides.clear()
         conn.rollback()
@@ -81,7 +82,9 @@ def payload(client_id, scenario_id, title='Tecnica de prueba', status='active'):
             'exampleContent': 'Caso comentado de prueba.', 'status': status}
 
 
-def test_seed_identities_and_role_endpoints():
+def test_seed_identities_and_role_endpoints(monkeypatch):
+    if not main.DEV_AUTH:
+        pytest.skip('Este caso requiere DEV_AUTH=true; se verifica en el perfil Dev Auth.')
     expected = {
         'elena.diaz@voxready.ai': 'master_config',
         'ana.torres@acme-corp.com': 'spokesperson',
@@ -93,27 +96,31 @@ def test_seed_identities_and_role_endpoints():
             response = client.post('/v1/dev/token', json={'email': email.upper()})
             assert response.status_code == 200, response.text
             tokens[email] = response.json()['accessToken']
+            monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', email)
             profile = client.get('/v1/me', headers={'Authorization': 'Bearer ' + tokens[email]})
             assert profile.status_code == 200, profile.text
             assert profile.json()['email'].casefold() == email.casefold()
             assert profile.json()['role'] == role
 
         master_headers = {'Authorization': 'Bearer ' + tokens['elena.diaz@voxready.ai']}
+        monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', 'elena.diaz@voxready.ai')
         assert client.get('/v1/api/master/microlessons/clients', headers=master_headers).status_code == 200
         assert client.get('/v1/api/master/microlessons', headers=master_headers).status_code == 200
 
         speaker_headers = {'Authorization': 'Bearer ' + tokens['ana.torres@acme-corp.com']}
+        monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', 'ana.torres@acme-corp.com')
         assert client.get('/v1/microlessons', headers=speaker_headers).status_code == 200
         assert client.get('/v1/api/master/microlessons', headers=speaker_headers).status_code == 403
 
         admin_headers = {'Authorization': 'Bearer ' + tokens['carlos.ruiz@acme-corp.com']}
+        monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', 'carlos.ruiz@acme-corp.com')
         assert client.get('/v1/api/master/microlessons', headers=admin_headers).status_code == 403
         assert client.get('/v1/microlessons', headers=admin_headers).status_code == 403
         assert client.post('/v1/dev/token', json={'email': 'missing@example.invalid'}).status_code == 404
 
 
 def test_master_crud_video_status_and_role_permissions(microlesson_api):
-    client, current, scenario_id, _, seed, service = microlesson_api
+    client, current, scenario_id, _, seed, service, _ = microlesson_api
     created = client.post('/api/master/microlessons', json=payload(seed.DEMO_CLIENT_ID, scenario_id))
     assert created.status_code == 201, created.text
     lesson = created.json()
@@ -147,7 +154,7 @@ def test_master_crud_video_status_and_role_permissions(microlesson_api):
 
 
 def test_client_scenario_validation_and_spokesperson_visibility(microlesson_api):
-    client, current, scenario_id, other_scenario, seed, _ = microlesson_api
+    client, current, scenario_id, other_scenario, seed, _, _ = microlesson_api
     scenarios = client.get(f'/api/master/microlessons/clients/{seed.DEMO_CLIENT_ID}/scenarios').json()['items']
     assert scenario_id in [item['id'] for item in scenarios]
     assert other_scenario not in [item['id'] for item in scenarios]
@@ -159,10 +166,125 @@ def test_client_scenario_validation_and_spokesperson_visibility(microlesson_api)
     assert visible.status_code == 200
     ids = [item['id'] for item in visible.json()['items']]
     assert active['id'] in ids and archived['id'] not in ids
-    assert client.get(f"/v1/microlessons/{active['id']}").status_code == 200
+    catalog_item = next(item for item in visible.json()['items'] if item['id'] == active['id'])
+    assert catalog_item['canOpen'] is False
+    assert 'theoryContent' not in catalog_item
+    assert 'exampleContent' not in catalog_item
+    assert 'videoBlobPath' not in catalog_item
+    assert client.get(f"/v1/microlessons/{active['id']}").status_code == 404
     assert client.get(f"/v1/microlessons/{archived['id']}").status_code == 404
     current['name'] = 'outsider'
     assert client.get('/v1/microlessons').json()['items'] == []
     assert client.get(f"/v1/microlessons/{active['id']}").status_code == 404
     current['name'] = 'admin'
     assert client.get('/v1/microlessons').status_code == 403
+
+
+def test_assignment_access_recommendations_and_history(microlesson_api):
+    client, current, scenario_id, _, seed, _, users = microlesson_api
+    one = client.post('/v1/api/master/microlessons', json=payload(seed.DEMO_CLIENT_ID, scenario_id, 'Primera')).json()
+    two = client.post('/v1/api/master/microlessons', json=payload(seed.DEMO_CLIENT_ID, scenario_id, 'Segunda')).json()
+    lesson_id = one['id']
+    path = f'/v1/api/master/microlessons/{lesson_id}/assignments'
+    assigned = client.post(path, json={'userIds': [users['speaker']], 'sortOrder': 2})
+    assert assigned.status_code == 200, assigned.text
+    assignment_id = assigned.json()['items'][0]['id']
+    assert client.post(path, json={'userIds': [users['speaker']], 'sortOrder': 2}).json()['items'][0]['id'] == assignment_id
+    assert client.post(path, json={'userIds': [users['outsider']], 'sortOrder': 2}).status_code == 422
+    assert client.post(path, json={'userIds': [users['admin']], 'sortOrder': 2}).status_code == 422
+    assert client.patch(f'{path}/{assignment_id}/order', json={'sortOrder': 1}).status_code == 200
+
+    current['name'] = 'speaker2'
+    assert client.get(f'/v1/microlessons/{lesson_id}').status_code == 404
+    assert client.post(f'/v1/microlessons/{lesson_id}/start').status_code == 404
+    assert client.get(f'/v1/microlessons/{lesson_id}/video-url').status_code == 404
+
+    current['name'] = 'speaker'
+    catalog = client.get('/v1/microlessons').json()['items']
+    unlocked = next(item for item in catalog if item['id'] == lesson_id)
+    locked = next(item for item in catalog if item['id'] == two['id'])
+    assert unlocked['canOpen'] and unlocked['assignmentStatus'] == 'assigned'
+    assert not locked['canOpen'] and locked['assignmentStatus'] is None
+    assert 'theoryContent' not in locked and 'videoBlobPath' not in locked
+    assert 'theoryContent' not in unlocked and 'exampleContent' not in unlocked
+    assert 'videoBlobPath' not in unlocked
+    assert client.get(f'/v1/microlessons/{lesson_id}').status_code == 200
+    assert client.get(f'/v1/microlessons/{two["id"]}').status_code == 404
+    assert client.get('/v1/microlessons/recommendations').json()['total'] == 1
+    assert client.post(f'/v1/microlessons/{lesson_id}/complete').status_code == 409
+    assert client.post(f'/v1/microlessons/{lesson_id}/start').json()['assignmentStatus'] == 'in_progress'
+    assert client.post(f'/v1/microlessons/{lesson_id}/complete').json()['assignmentStatus'] == 'completed'
+    assert client.get('/v1/microlessons/recommendations').json()['items'] == []
+    restarted = client.post(f'/v1/microlessons/{lesson_id}/restart')
+    assert restarted.status_code == 200, restarted.text
+    assert restarted.json()['assignmentId'] != assignment_id
+    assert restarted.json()['assignmentStatus'] == 'assigned'
+    assert client.get('/v1/microlessons/recommendations').json()['total'] == 1
+
+    current['name'] = 'master'
+    history = client.get(path).json()['items']
+    assert [item['status'] for item in history][:2] == ['assigned', 'completed']
+    assert client.post(f'{path}/{restarted.json()["assignmentId"]}/revoke').json()['status'] == 'revoked'
+    current['name'] = 'speaker'
+    assert client.get(f'/v1/microlessons/{lesson_id}').status_code == 404
+    assert client.get('/v1/microlessons/recommendations').json()['total'] == 0
+    assert any(item['assignmentStatus'] == 'revoked' for item in client.get('/v1/microlessons').json()['history'])
+
+
+def test_recommendations_order_limit_and_master_permissions(microlesson_api):
+    client, current, scenario_id, _, seed, _, users = microlesson_api
+    lesson_ids = []
+    for index in range(4):
+        lesson = client.post('/v1/api/master/microlessons',
+                             json=payload(seed.DEMO_CLIENT_ID, scenario_id, f'Leccion {index}')).json()
+        lesson_ids.append(lesson['id'])
+        response = client.post(f'/v1/api/master/microlessons/{lesson["id"]}/assignments',
+                               json={'userIds': [users['speaker']], 'sortOrder': 4 - index})
+        assert response.status_code == 200, response.text
+    current['name'] = 'speaker'
+    assert client.get(f'/v1/api/master/microlessons/{lesson_ids[0]}/assignments').status_code == 403
+    assert client.post(f'/v1/api/master/microlessons/{lesson_ids[0]}/assignments',
+                       json={'userIds': [users['speaker']], 'sortOrder': 1}).status_code == 403
+    recs = client.get('/v1/microlessons/recommendations').json()
+    assert recs['total'] == 4
+    assert [item['id'] for item in recs['items']] == list(reversed(lesson_ids))[:3]
+    assert all('theoryContent' not in item for item in recs['items'])
+
+
+def test_archived_scenario_keeps_assigned_lesson_readable(microlesson_api):
+    client, current, scenario_id, _, seed, _, users = microlesson_api
+    lesson = client.post('/v1/api/master/microlessons',
+                         json=payload(seed.DEMO_CLIENT_ID, scenario_id)).json()
+    assert client.post(f'/v1/api/master/microlessons/{lesson["id"]}/assignments',
+                       json={'userIds': [users['speaker']], 'sortOrder': 1}).status_code == 200
+    with main.master_store.database(main.SQL_CONN_STR) as cursor:
+        cursor.execute("UPDATE dbo.scenario SET status='archived' WHERE id=?", scenario_id)
+    current['name'] = 'speaker'
+    detail = client.get(f'/v1/microlessons/{lesson["id"]}')
+    assert detail.status_code == 200, detail.text
+    assert detail.json()['canPractice'] is False
+    catalog_item = next(item for item in client.get('/v1/microlessons').json()['items'] if item['id'] == lesson['id'])
+    assert catalog_item['canOpen'] is True and catalog_item['canPractice'] is False
+
+
+def test_archived_lesson_preserves_pending_cycle_as_read_only_history(microlesson_api):
+    client, current, scenario_id, _, seed, _, users = microlesson_api
+    lesson = client.post('/v1/api/master/microlessons',
+                         json=payload(seed.DEMO_CLIENT_ID, scenario_id)).json()
+    assignment = client.post(f'/v1/api/master/microlessons/{lesson["id"]}/assignments',
+                             json={'userIds': [users['speaker']], 'sortOrder': 1}).json()['items'][0]
+    current['name'] = 'speaker'
+    assert client.post(f'/v1/microlessons/{lesson["id"]}/start').status_code == 200
+    current['name'] = 'master'
+    assert client.patch(f'/v1/api/master/microlessons/{lesson["id"]}/status',
+                        json={'status': 'archived'}).status_code == 200
+    current['name'] = 'speaker'
+    catalog = client.get('/v1/microlessons').json()
+    assert all(item['id'] != lesson['id'] for item in catalog['items'])
+    archived = next(item for item in catalog['history'] if item['assignmentId'] == assignment['id'])
+    assert archived['status'] == 'archived'
+    assert archived['assignmentStatus'] == 'in_progress'
+    assert archived['canOpen'] is False and archived['canPractice'] is False
+    assert client.get(f'/v1/microlessons/{lesson["id"]}').status_code == 404
+    assert client.get(f'/v1/microlessons/{lesson["id"]}/video-url').status_code == 404
+    assert client.get('/v1/microlessons/recommendations').json()['total'] == 0

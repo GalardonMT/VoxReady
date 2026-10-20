@@ -17,6 +17,7 @@ from progress_migration import (
     USER_AREA_PROGRESS_BACKFILL_DML,
 )
 from microlessons import MICROLESSON_SCHEMA_DDL, MICROLESSON_DATA_DDL, MICROLESSON_CONSTRAINT_DDL
+from microlesson_assignment_migration import ASSIGNMENT_SCHEMA_STEPS, verify_assignment_schema
 from seed_master_topics import connect, SeedError, SCENARIO_QUESTION_DDL, verify_link_schema
 
 REQUIRED = {
@@ -184,6 +185,7 @@ def verify(cursor):
         row = cursor.fetchone()
         if not row or bool(row[0]) != unique or row[1]:
             raise SeedError(f'Falta el indice activo {index}.')
+    verify_assignment_schema(cursor, SeedError)
 
 
 def main(argv=None):
@@ -232,6 +234,8 @@ def main(argv=None):
             cursor.execute(MICROLESSON_SCHEMA_DDL)
             cursor.execute(MICROLESSON_DATA_DDL)
             cursor.execute(MICROLESSON_CONSTRAINT_DDL)
+            for ddl in ASSIGNMENT_SCHEMA_STEPS:
+                cursor.execute(ddl)
         verify(cursor)
         if args.verify_only:
             connection.rollback()
