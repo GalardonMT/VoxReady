@@ -338,6 +338,7 @@ export const sessionService = {
           goodAspects: strengths,
           improveAspects: improvements,
           crossSignalQuote,
+          recordingUrl: raw.recordingUrl,
           areas: [
             {
               name: 'Imagen / no verbal',
@@ -379,9 +380,13 @@ export const sessionService = {
   async getPlaybackUrl(sessionId: string): Promise<string> {
     try {
       // 1. Probar desde getRawReport (si ya incluye recordingUrl con SAS prefirmada)
-      const raw = await this.getRawReport(sessionId);
-      if (raw && raw.recordingUrl) {
-        return raw.recordingUrl;
+      try {
+        const raw = await this.getRawReport(sessionId);
+        if (raw && raw.recordingUrl) {
+          return raw.recordingUrl;
+        }
+      } catch (errReport) {
+        console.warn('Aviso: getRawReport en getPlaybackUrl no retornó recordingUrl:', errReport);
       }
       // 2. Fallback al endpoint /recording-url
       const res = await apiFetch<{ playback_url: string; session_id: string; message?: string }>(

@@ -184,6 +184,7 @@ export interface CoachReport {
   crossSignalQuote: string;
   areas: AreaScore[];
   metrics?: Record<string, unknown>;
+  recordingUrl?: string;
 }
 
 export interface VisumExecutive {
