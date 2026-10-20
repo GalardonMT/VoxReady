@@ -967,12 +967,14 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     vision_m = metrics_obj.get("vision") or {}
     audio_m = metrics_obj.get("audio") or {}
 
+    dur_secs = float(audio_m.get("duracionSegundos", audio_m.get("duracion_segundos", 0.0)) or 0.0)
     metrics_summary = {
         "eyeContactPct": vision_m.get("eyeContactPct", vision_m.get("contacto_visual_porcentaje", 0.0)),
         "shoulderStabilityScore": vision_m.get("shoulderStabilityScore", vision_m.get("average_posture_score", 0.0)),
         "wpm": audio_m.get("wpmGlobal", audio_m.get("wpm", 0.0)),
         "fillerWordsCount": len(audio_m.get("muletillasDetectadas", audio_m.get("muletillas_detectadas", []))),
-        "fillerWordsDensityPct": audio_m.get("densidadMuletillasPct", audio_m.get("densidad_muletillas_pct", 0.0))
+        "fillerWordsDensityPct": audio_m.get("densidadMuletillasPct", audio_m.get("densidad_muletillas_pct", 0.0)),
+        "durationSeconds": dur_secs
     }
 
     area_scores = final_report.get("areaScores")
@@ -988,6 +990,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         "scenarioTitle": final_report.get("scenarioTitle") or scenario_title,
         "generatedAt": final_report.get("processedAt") or final_report.get("processed_at") or final_report.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
         "recordingUrl": playback_sas_url,
+        "durationSeconds": dur_secs,
         "narrative": {
             "strengths": narrative_obj.get("strengths", []),
             "improvements": narrative_obj.get("improvements", []),

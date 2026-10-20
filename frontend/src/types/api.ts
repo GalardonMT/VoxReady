@@ -185,6 +185,7 @@ export interface CoachReport {
   areas: AreaScore[];
   metrics?: Record<string, unknown>;
   recordingUrl?: string;
+  durationSeconds?: number;
 }
 
 export interface VisumExecutive {
@@ -215,6 +216,7 @@ export interface FullVisumReport {
   scenarioTitle?: string;
   generatedAt?: string;
   recordingUrl?: string;
+  durationSeconds?: number;
   narrative: {
     strengths: string[];
     improvements: string[];

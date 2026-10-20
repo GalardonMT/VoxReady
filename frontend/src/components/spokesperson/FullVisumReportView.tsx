@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService } from '../../services/sessionService';
 import { FullVisumReport } from '../../types/api';
+import { RecordingVideoPlayer } from './RecordingVideoPlayer';
 
 interface FullVisumReportViewProps {
   onNavigate: (screen: VoceroScreen, extra?: string) => void;
@@ -37,6 +38,8 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
   }, [sessionId]);
 
   const activeSessionId = report?.sessionId || sessionId;
+  const audio = report?.metrics?.audio;
+  const expectedDuration = report?.durationSeconds || audio?.duracionSegundos;
 
   const handleOpenVideo = async () => {
     setShowVideoModal(true);
@@ -100,7 +103,6 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
 
   // Métricas técnicas
   const vision = report?.metrics?.vision;
-  const audio = report?.metrics?.audio;
   const judge = report?.metrics?.judge;
   const dims = judge?.dimensiones || {};
 
@@ -901,21 +903,11 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
               )}
 
               {!videoLoading && !videoError && videoUrl && (
-                <video
-                  controls
-                  autoPlay
-                  playsInline
-                  style={{
-                    width: '100%',
-                    display: 'block',
-                    background: '#000',
-                    maxHeight: '480px'
-                  }}
-                >
-                  <source src={videoUrl} type="video/webm" />
-                  <source src={videoUrl} type="video/mp4" />
-                  Tu navegador no soporta la reproducción de video.
-                </video>
+                <RecordingVideoPlayer
+                  src={videoUrl}
+                  expectedDuration={expectedDuration}
+                  autoPlay={true}
+                />
               )}
             </div>
 

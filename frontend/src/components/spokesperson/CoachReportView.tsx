@@ -5,6 +5,7 @@ import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService } from '../../services/sessionService';
 import { CoachReport } from '../../types/api';
+import { RecordingVideoPlayer } from './RecordingVideoPlayer';
 
 interface CoachReportViewProps {
   onNavigate: (screen: VoceroScreen, extra?: string) => void;
@@ -39,6 +40,8 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
   }, [sessionId]);
 
   const activeSessionId = report?.sessionId || sessionId;
+  const audioMetrics = (report?.metrics as any)?.audio;
+  const expectedDuration = report?.durationSeconds || audioMetrics?.duracionSegundos || audioMetrics?.duracion_segundos;
 
   const handleOpenVideo = async () => {
     setShowVideoModal(true);
@@ -403,21 +406,11 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
               )}
 
               {!videoLoading && !videoError && videoUrl && (
-                <video
-                  controls
-                  autoPlay
-                  playsInline
-                  style={{
-                    width: '100%',
-                    display: 'block',
-                    background: '#000',
-                    maxHeight: '480px'
-                  }}
-                >
-                  <source src={videoUrl} type="video/webm" />
-                  <source src={videoUrl} type="video/mp4" />
-                  Tu navegador no soporta la reproducción de video.
-                </video>
+                <RecordingVideoPlayer
+                  src={videoUrl}
+                  expectedDuration={expectedDuration}
+                  autoPlay={true}
+                />
               )}
             </div>
 
