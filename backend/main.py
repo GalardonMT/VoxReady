@@ -19,6 +19,7 @@ import progress_store
 import schedule_store
 import spokesperson_store
 import microlessons as microlesson_store
+import metrics_store
 
 # Cargar variables de entorno locales si existen
 try:
@@ -1092,6 +1093,71 @@ class MicrolessonAssignmentRequest(BaseModel):
 
 class MicrolessonAssignmentOrderRequest(BaseModel):
     sortOrder: Annotated[int, Field(strict=True, gt=0)]
+
+
+class MetricThresholdUpdate(BaseModel):
+    key: str
+    thresholds: dict[str, float]
+
+
+class MetricDraftUpdate(BaseModel):
+    revision: int = Field(ge=1)
+    metrics: list[MetricThresholdUpdate]
+
+
+class MetricPublishRequest(BaseModel):
+    revision: int = Field(ge=1)
+
+
+@app.get('/api/master/metrics')
+@app.get('/v1/api/master/metrics')
+def master_metrics(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.current(cursor)
+
+
+@app.get('/api/master/metrics/latest')
+@app.get('/v1/api/master/metrics/latest')
+def master_latest_metrics(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.latest_published(cursor)
+
+
+@app.post('/api/master/metrics/draft', status_code=201)
+@app.post('/v1/api/master/metrics/draft', status_code=201)
+def master_create_metric_draft(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.create_draft(cursor)
+
+
+@app.put('/api/master/metrics/draft/{draft_id}')
+@app.put('/v1/api/master/metrics/draft/{draft_id}')
+def master_save_metric_draft(draft_id: uuid.UUID, payload: MetricDraftUpdate,
+                             user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.save_draft(cursor, draft_id, payload.revision, payload.metrics)
+
+
+@app.post('/api/master/metrics/draft/{draft_id}/publish')
+@app.post('/v1/api/master/metrics/draft/{draft_id}/publish')
+def master_publish_metric_draft(draft_id: uuid.UUID, payload: MetricPublishRequest,
+                                user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.publish_draft(cursor, draft_id, payload.revision)
+
+
+@app.delete('/api/master/metrics/draft/{draft_id}', status_code=204)
+@app.delete('/v1/api/master/metrics/draft/{draft_id}', status_code=204)
+def master_discard_metric_draft(draft_id: uuid.UUID, payload: MetricPublishRequest,
+                                user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        metrics_store.discard_draft(cursor, draft_id, payload.revision)
 
 
 @app.get('/api/master/clients')
