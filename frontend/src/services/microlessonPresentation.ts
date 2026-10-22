@@ -12,18 +12,20 @@ export function latestAssignmentIds(assignments: Pick<MicrolessonAssignment, 'id
   return latest;
 }
 
-export function groupMicrolessons(items: SpokespersonMicrolesson[], history: SpokespersonMicrolesson[]) {
-  const currentAssignmentIds = new Set(items.map(item => item.assignmentId));
-  const historyByAssignmentId = new Map(history.map(item => [item.assignmentId, item]));
+export function groupMicrolessons(items: SpokespersonMicrolesson[] = [], history: SpokespersonMicrolesson[] = []) {
+  const safeItems = Array.isArray(items) ? items : [];
+  const safeHistory = Array.isArray(history) ? history : [];
+  const currentAssignmentIds = new Set(safeItems.map(item => item.assignmentId));
+  const historyByAssignmentId = new Map(safeHistory.map(item => [item.assignmentId, item]));
   return {
-    assigned: items.filter(item => item.assignmentStatus === 'assigned'),
-    inProgress: items.filter(item => item.assignmentStatus === 'in_progress'),
+    assigned: safeItems.filter(item => item.assignmentStatus === 'assigned'),
+    inProgress: safeItems.filter(item => item.assignmentStatus === 'in_progress'),
     completed: [
-      ...items.filter(item => item.assignmentStatus === 'completed').map(item => ({ ...historyByAssignmentId.get(item.assignmentId), ...item })),
-      ...history.filter(item => item.assignmentStatus === 'completed' && item.status !== 'archived' && !currentAssignmentIds.has(item.assignmentId)),
+      ...safeItems.filter(item => item.assignmentStatus === 'completed').map(item => ({ ...historyByAssignmentId.get(item.assignmentId), ...item })),
+      ...safeHistory.filter(item => item.assignmentStatus === 'completed' && item.status !== 'archived' && !currentAssignmentIds.has(item.assignmentId)),
     ],
-    catalog: items.filter(item => item.assignmentStatus === null || item.assignmentStatus === 'revoked'),
-    archived: history.filter(item => item.assignmentStatus === 'revoked' || item.status === 'archived'),
+    catalog: safeItems.filter(item => item.assignmentStatus === null || item.assignmentStatus === 'revoked'),
+    archived: safeHistory.filter(item => item.assignmentStatus === 'revoked' || item.status === 'archived'),
   };
 }
 
