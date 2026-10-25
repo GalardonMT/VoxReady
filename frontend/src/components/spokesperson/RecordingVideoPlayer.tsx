@@ -46,25 +46,29 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
 
   const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Determinar la duración efectiva más confiable
-  const effectiveDuration =
-    duration && isFinite(duration) && duration > 0
-      ? duration
-      : expectedDuration && isFinite(expectedDuration) && expectedDuration > 0
-        ? expectedDuration
-        : 0;
+  const validExpectedDuration =
+    typeof expectedDuration === 'number' && Number.isFinite(expectedDuration) && expectedDuration > 0
+      ? expectedDuration
+      : 0;
+  const hasExpectedDuration = validExpectedDuration > 0;
 
-  // Actualizar duración si expectedDuration cambia y no tenemos una duración finita detectada
-  useEffect(() => {
-    if (expectedDuration && expectedDuration > 0 && (!duration || !isFinite(duration))) {
-      setDuration(expectedDuration);
-    }
-  }, [expectedDuration, duration]);
+  // Priorizar la duración informada por el backend sobre los metadatos incompletos del WebM.
+  const effectiveDuration =
+    hasExpectedDuration
+      ? validExpectedDuration
+      : duration && isFinite(duration) && duration > 0
+        ? duration
+        : 0;
 
   // Resolución del bug de Chromium con archivos WebM de MediaRecorder (duration = Infinity)
   const resolveChromiumDuration = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+
+    if (hasExpectedDuration) {
+      setDuration(validExpectedDuration);
+      return;
+    }
 
     if (isFinite(video.duration) && video.duration > 0) {
       setDuration(video.duration);
@@ -74,8 +78,6 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
         video.removeEventListener('seeked', onSeeked);
         if (isFinite(video.duration) && video.duration > 0) {
           setDuration(video.duration);
-        } else if (expectedDuration && expectedDuration > 0) {
-          setDuration(expectedDuration);
         }
         video.currentTime = 0;
       };
@@ -84,7 +86,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
       // Usar número grande para alcanzar el final del archivo WebM
       video.currentTime = 1e10;
     }
-  }, [expectedDuration]);
+  }, [hasExpectedDuration, validExpectedDuration]);
 
   // Manejo de eventos del elemento <video>
   const handleLoadedMetadata = () => {
@@ -114,7 +116,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
     }
 
     // Si el navegador descubrió la duración durante la reproducción, sincronizarla
-    if (isFinite(video.duration) && video.duration > 0 && Math.abs(duration - video.duration) > 0.5) {
+    if (!hasExpectedDuration && isFinite(video.duration) && video.duration > 0 && Math.abs(duration - video.duration) > 10) {
       setDuration(video.duration);
     }
   };

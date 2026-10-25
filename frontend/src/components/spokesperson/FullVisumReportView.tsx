@@ -39,7 +39,10 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
 
   const activeSessionId = report?.sessionId || sessionId;
   const audio = report?.metrics?.audio;
-  const expectedDuration = report?.durationSeconds || audio?.duracionSegundos;
+  const expectedDuration =
+    report?.durationSeconds ||
+    audio?.duracionSegundos ||
+    report?.metricsSummary?.durationSeconds;
 
   const handleOpenVideo = async () => {
     setShowVideoModal(true);
