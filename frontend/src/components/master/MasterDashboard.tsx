@@ -1,9 +1,11 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useI18n } from '../../context/I18nContext';
+import { metricsService } from '../../services/metricsService';
+import type { MetricsVersion } from '../../services/metricsModel';
 
-export type MasterScreen = 'm1' | 'm2' | 'm3' | 'm4' | 'm5' | 'm6';
+export type MasterScreen = 'm1' | 'm2' | 'm3' | 'm4' | 'm5' | 'm6' | 'm7';
 
 interface MasterDashboardProps {
   onNavigate: (screen: MasterScreen) => void;
@@ -12,6 +14,26 @@ interface MasterDashboardProps {
 export const MasterDashboard: React.FC<MasterDashboardProps> = ({ onNavigate }) => {
   const { t } = useI18n();
   const d = t.L.m1;
+  const [latestVersion, setLatestVersion] = useState<MetricsVersion | null>(null);
+  const [versionLoading, setVersionLoading] = useState(true);
+  const [versionError, setVersionError] = useState('');
+  const [retryVersion, setRetryVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    metricsService.getLatestPublished().then(version => {
+      if (active) setLatestVersion(version);
+    }).catch(cause => {
+      if (active) setVersionError(cause instanceof Error ? cause.message : 'No se pudo consultar la versión publicada.');
+    }).finally(() => { if (active) setVersionLoading(false); });
+    return () => { active = false; };
+  }, [retryVersion]);
+
+  const retryLatestVersion = () => {
+    setVersionError('');
+    setVersionLoading(true);
+    setRetryVersion(value => value + 1);
+  };
 
   const stats = [
     { label: d.st[0], value: '9', sub: 'Tenants corporativos activos' },
@@ -63,7 +85,7 @@ export const MasterDashboard: React.FC<MasterDashboardProps> = ({ onNavigate }) 
                   fontWeight: 600
                 }}
               >
-                ✓ Sincronizado (9/9 tenants)
+                {versionLoading ? 'Consultando' : versionError ? 'No disponible' : latestVersion ? 'Publicada' : 'Sin publicación'}
               </span>
             </div>
 
@@ -75,10 +97,12 @@ export const MasterDashboard: React.FC<MasterDashboardProps> = ({ onNavigate }) 
                 margin: '6px 0'
               }}
             >
-              v0.4 Live
+              {versionLoading ? 'Cargando…' : latestVersion?.versionLabel ?? '—'}
             </div>
             <div className="legend" style={{ marginBottom: '16px', lineHeight: 1.5 }}>
-              {d.verLeg}
+              {versionError ? <span role="alert">{versionError} <button type="button" className="btn ghost" onClick={retryLatestVersion}>Reintentar</button></span> :
+                latestVersion ? 'Última versión de métricas publicada. Las sesiones anteriores conservan su propia versión.' :
+                  versionLoading ? 'Consultando la base de datos…' : 'No hay una versión de métricas publicada.'}
             </div>
 
             <div

@@ -4,9 +4,10 @@ import React, { useState, useEffect } from 'react';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService } from '../../services/sessionService';
 import { FullVisumReport } from '../../types/api';
+import { RecordingVideoPlayer } from './RecordingVideoPlayer';
 
 interface FullVisumReportViewProps {
-  onNavigate: (screen: VoceroScreen) => void;
+  onNavigate: (screen: VoceroScreen, extra?: string) => void;
   sessionId?: string;
 }
 
@@ -36,6 +37,52 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
     loadReport();
   }, [sessionId]);
 
+  const activeSessionId = report?.sessionId || sessionId;
+  const audio = report?.metrics?.audio;
+  const expectedDuration =
+    report?.durationSeconds ||
+    audio?.duracionSegundos ||
+    report?.metricsSummary?.durationSeconds;
+
+  const handleOpenVideo = async () => {
+    setShowVideoModal(true);
+    if (videoUrl) return;
+    setVideoLoading(true);
+    setVideoError('');
+    try {
+      let url = report?.recordingUrl;
+      if (!url) {
+        url = await sessionService.getPlaybackUrl(activeSessionId);
+      }
+      if (url) {
+        setVideoUrl(url);
+      } else {
+        setVideoError('La grabación no está disponible. Es posible que el almacenamiento no esté configurado o que la grabación no se haya completado.');
+      }
+    } catch {
+      setVideoError('Error al obtener la URL de reproducción. Intente nuevamente.');
+    } finally {
+      setVideoLoading(false);
+    }
+  };
+
+  const handleRetryVideo = async () => {
+    setVideoLoading(true);
+    setVideoError('');
+    try {
+      const url = await sessionService.getPlaybackUrl(activeSessionId);
+      if (url) {
+        setVideoUrl(url);
+      } else {
+        setVideoError('La grabación no está disponible.');
+      }
+    } catch {
+      setVideoError('Error al obtener la URL de reproducción.');
+    } finally {
+      setVideoLoading(false);
+    }
+  };
+
   const globalScore = report?.overallScore ?? 75;
 
   const getScoreColor = (sc: number) => {
@@ -59,7 +106,6 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
 
   // Métricas técnicas
   const vision = report?.metrics?.vision;
-  const audio = report?.metrics?.audio;
   const judge = report?.metrics?.judge;
   const dims = judge?.dimensiones || {};
 
@@ -80,7 +126,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
         <button
           type="button"
           className="btn"
-          onClick={() => onNavigate('u6')}
+          onClick={() => onNavigate('u6', activeSessionId)}
           style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}
         >
           <span>←</span> Volver a la Vista Previa
@@ -90,26 +136,9 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             type="button"
             className="btn"
             style={{ fontSize: '13px' }}
-            onClick={async () => {
-              setShowVideoModal(true);
-              setVideoLoading(true);
-              setVideoError('');
-              setVideoUrl('');
-              try {
-                const url = await sessionService.getPlaybackUrl(sessionId);
-                if (url) {
-                  setVideoUrl(url);
-                } else {
-                  setVideoError('La grabación no está disponible o no se ha procesado.');
-                }
-              } catch {
-                setVideoError('Error al obtener la URL de reproducción.');
-              } finally {
-                setVideoLoading(false);
-              }
-            }}
+            onClick={handleOpenVideo}
           >
-            🎬 Ver Grabación de la Sesión
+            ▷ Ver mi grabación
           </button>
         </div>
       </div>
@@ -152,7 +181,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
               Informe Ejecutivo y Pedagógico de Vocería
             </h1>
             <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0 }}>
-              Sesión: <code style={{ color: '#818cf8', fontWeight: 600 }}>{sessionId}</code> · Generado:{' '}
+              Sesión: <code style={{ color: '#818cf8', fontWeight: 600 }}>{activeSessionId}</code> · Generado:{' '}
               {report?.generatedAt ? new Date(report.generatedAt).toLocaleString() : 'Recientemente'}
             </p>
           </div>
@@ -716,12 +745,19 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
         </div>
       )}
 
-      {/* Botones inferiores de acción */}
+      {/* Botones de acción inferiores */}
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '24px' }}>
         <button
           type="button"
           className="btn"
-          onClick={() => onNavigate('u6')}
+          onClick={handleOpenVideo}
+        >
+          ▷ Ver mi grabación
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => onNavigate('u6', activeSessionId)}
         >
           ← Volver a Vista Previa
         </button>
@@ -770,6 +806,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             }}
             onClick={(e) => e.stopPropagation()}
           >
+            {/* Cabecera del modal */}
             <div
               style={{
                 display: 'flex',
@@ -781,10 +818,10 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             >
               <div>
                 <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#f1f5f9', margin: 0 }}>
-                  🎬 Grabación de la Sesión
+                  🎬 Mi Grabación
                 </h3>
                 <p style={{ fontSize: '12px', color: '#64748b', margin: '4px 0 0 0' }}>
-                  Sesión: <code style={{ color: '#818cf8' }}>{sessionId}</code>
+                  Sesión: <code style={{ color: '#818cf8' }}>{activeSessionId}</code>
                 </p>
               </div>
               <button
@@ -801,33 +838,103 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
                   justifyContent: 'center',
                   cursor: 'pointer',
                   color: '#94a3b8',
-                  fontSize: '18px'
+                  fontSize: '18px',
+                  transition: 'all 0.2s'
                 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.15)'; e.currentTarget.style.color = '#f1f5f9'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#94a3b8'; }}
               >
                 ✕
               </button>
             </div>
-            <div style={{ padding: '24px', minHeight: '340px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {videoLoading ? (
-                <div style={{ textAlign: 'center', color: '#94a3b8' }}>
-                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>⏳</div>
-                  <p style={{ fontSize: '14px', margin: 0 }}>Generando enlace seguro de reproducción...</p>
-                </div>
-              ) : videoError ? (
-                <div style={{ textAlign: 'center', color: '#f87171', padding: '20px' }}>
-                  <div style={{ fontSize: '32px', marginBottom: '8px' }}>⚠️</div>
-                  <p style={{ fontSize: '14px', margin: '0 0 8px 0' }}>{videoError}</p>
-                </div>
-              ) : videoUrl ? (
-                <video
-                  src={videoUrl}
-                  controls
-                  autoPlay
-                  style={{ width: '100%', maxHeight: '420px', borderRadius: '8px', background: '#000' }}
+
+            {/* Área del reproductor */}
+            <div style={{ padding: '0' }}>
+              {videoLoading && (
+                <div
+                  style={{
+                    aspectRatio: '16/9',
+                    background: '#0f0f23',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '12px'
+                  }}
                 >
-                  Tu navegador no soporta el reproductor de video HTML5.
-                </video>
-              ) : null}
+                  <div
+                    style={{
+                      width: '40px',
+                      height: '40px',
+                      border: '3px solid rgba(129, 140, 248, 0.2)',
+                      borderTopColor: '#818cf8',
+                      borderRadius: '50%',
+                      animation: 'spin 0.8s linear infinite'
+                    }}
+                  />
+                  <span style={{ color: '#94a3b8', fontSize: '13px' }}>Cargando grabación...</span>
+                  <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                </div>
+              )}
+
+              {!videoLoading && videoError && (
+                <div
+                  style={{
+                    aspectRatio: '16/9',
+                    background: '#0f0f23',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '12px',
+                    padding: '24px'
+                  }}
+                >
+                  <span style={{ fontSize: '36px' }}>⚠️</span>
+                  <p style={{ color: '#f87171', fontSize: '13px', textAlign: 'center', maxWidth: '400px', lineHeight: 1.5 }}>
+                    {videoError}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ marginTop: '8px', fontSize: '12px', color: '#818cf8', borderColor: '#818cf8' }}
+                    onClick={handleRetryVideo}
+                  >
+                    🔄 Reintentar
+                  </button>
+                </div>
+              )}
+
+              {!videoLoading && !videoError && videoUrl && (
+                <RecordingVideoPlayer
+                  src={videoUrl}
+                  expectedDuration={expectedDuration}
+                  autoPlay={true}
+                />
+              )}
+            </div>
+
+            {/* Pie del modal */}
+            <div
+              style={{
+                padding: '14px 24px',
+                borderTop: '1px solid rgba(255,255,255,0.08)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}
+            >
+              <span style={{ fontSize: '11px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>🔒</span> Grabación protegida · Almacenamiento seguro y confidencial
+              </span>
+              <button
+                type="button"
+                className="btn pri"
+                style={{ fontSize: '13px', padding: '8px 20px' }}
+                onClick={() => setShowVideoModal(false)}
+              >
+                Cerrar
+              </button>
             </div>
           </div>
         </div>

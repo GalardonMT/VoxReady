@@ -30,6 +30,7 @@ function SpokespersonContent() {
 
   const [voceroScreen, setVoceroScreen] = useState<VoceroScreen>('u1');
   const [selectedLesson, setSelectedLesson] = useState<string>('');
+  const [lessonReturnScreen, setLessonReturnScreen] = useState<VoceroScreen>('u1');
   const [practiceScenarioId, setPracticeScenarioId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string>('session-crisis-001');
   const [activeScenarioId, setActiveScenarioId] = useState<string>('crisis-voceria-01');
@@ -57,10 +58,10 @@ function SpokespersonContent() {
   if (!user) return null; // guaranteed by ProtectedRoute
 
   const handleVoceroNavigate = (screen: VoceroScreen, extra?: string) => {
-    if (extra && screen === 'lesson') {
-      setSelectedLesson(extra);
+    if (screen === 'lesson') {
+      if (voceroScreen !== 'lesson') setLessonReturnScreen(voceroScreen);
+      setSelectedLesson(extra ?? '');
     }
-    if (screen === 'lesson' && !extra) setSelectedLesson('');
     if (screen === 'u2') setPracticeScenarioId(extra || null);
     if (extra && (screen === 'u8' || screen === 'u6')) {
       setActiveSessionId(extra);
@@ -239,7 +240,7 @@ function SpokespersonContent() {
           />
         )}
         {voceroScreen === 'lesson' && (
-          <LessonView lessonReference={selectedLesson || undefined} onBack={() => handleVoceroNavigate('u1')}
+          <LessonView key={selectedLesson || 'catalog'} lessonReference={selectedLesson || undefined} onBack={() => handleVoceroNavigate(lessonReturnScreen)}
             onPracticeScenario={(scenarioId) => handleVoceroNavigate('u2', scenarioId)} />
         )}
       </main>
