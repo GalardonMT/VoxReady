@@ -144,6 +144,11 @@ class FeedbackPedagogico(BaseModel):
 class EvaluacionLLMResponse(BaseModel):
     evaluacion_dimensiones: EvaluacionDimensiones
     feedback_pedagogico: FeedbackPedagogico
+    infraccion_linea_roja: bool = Field(default=False, description="Indica si el vocero transgredió una línea roja del escenario")
+    evidencia_linea_roja: Optional[str] = Field(default=None, description="Cita textual o detalle de la transgresión")
+    reconocimiento_afectados: Optional[DimensionScore] = Field(
+        default=None, description="Evaluación del impacto humano y empatía verbal hacia afectados"
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -155,10 +160,30 @@ class EvaluacionLLMResponse(BaseModel):
                     data["evaluacion_dimensiones"] = inner["evaluacion_dimensiones"]
                 if "feedback_pedagogico" in inner:
                     data["feedback_pedagogico"] = inner["feedback_pedagogico"]
+                if "infraccion_linea_roja" in inner and "infraccion_linea_roja" not in data:
+                    data["infraccion_linea_roja"] = inner["infraccion_linea_roja"]
+                if "evidencia_linea_roja" in inner and "evidencia_linea_roja" not in data:
+                    data["evidencia_linea_roja"] = inner["evidencia_linea_roja"]
+                if "reconocimiento_afectados" in inner and "reconocimiento_afectados" not in data:
+                    data["reconocimiento_afectados"] = inner["reconocimiento_afectados"]
             if "dimensiones" in data and "evaluacion_dimensiones" not in data:
                 data["evaluacion_dimensiones"] = data["dimensiones"]
             if "feedback" in data and "feedback_pedagogico" not in data:
                 data["feedback_pedagogico"] = data["feedback"]
+            
+            # Aliases para líneas rojas
+            if "infraccion_lineas_rojas" in data and "infraccion_linea_roja" not in data:
+                data["infraccion_linea_roja"] = data["infraccion_lineas_rojas"]
+            if "evidencia_lineas_rojas" in data and "evidencia_linea_roja" not in data:
+                data["evidencia_linea_roja"] = data["evidencia_lineas_rojas"]
+            if "linea_roja_vulnerada" in data and "infraccion_linea_roja" not in data:
+                data["infraccion_linea_roja"] = bool(data["linea_roja_vulnerada"])
+            
+            # Aliases para reconocimiento_afectados
+            if "reconocimiento_afectado" in data and "reconocimiento_afectados" not in data:
+                data["reconocimiento_afectados"] = data["reconocimiento_afectado"]
+            elif "empatia_afectados" in data and "reconocimiento_afectados" not in data:
+                data["reconocimiento_afectados"] = data["empatia_afectados"]
         return data
 
 
@@ -167,3 +192,7 @@ class ReporteJuezConsolidado(BaseModel):
     dimensiones: dict
     feedback: FeedbackPedagogico
     raw_evaluation: EvaluacionLLMResponse
+    infraccion_linea_roja: bool = False
+    evidencia_linea_roja: Optional[str] = None
+    reconocimiento_afectados: Optional[dict] = None
+

@@ -63,7 +63,7 @@ SYSTEM_PROMPT = """
 Eres un consultor senior de Media Training y Manejo de Crisis corporativas, riguroso, crítico y pedagógico.
 Tu tarea es auditar la respuesta transcrita de un vocero frente a una pregunta periodística o de confrontación pública.
 
-Debes evaluar 7 variables específicas utilizando exclusivamente los 5 niveles de desempeño de la escala estándar:
+Debes evaluar las 7 dimensiones estratégicas estándar utilizando exclusivamente los 5 niveles de desempeño (escala 1 a 5):
 - Nivel 1 (Deficiente): La conducta afecta significativamente la efectividad de la vocería o genera un riesgo comunicacional/legal.
 - Nivel 2 (Bajo): Existen brechas frecuentes y perceptibles que dificultan el desempeño o denotan evasión evidente.
 - Nivel 3 (Adecuado): Cumple funcionalmente el estándar, aunque presenta oportunidades claras de mejora en naturalidad o agilidad.
@@ -81,6 +81,19 @@ REGLAS DE EVALUACIÓN OBLIGATORIAS:
    - Hooking: dejar un anzuelo temático para guiar la siguiente pregunta.
 3. CERO PSICOLOGIZACIÓN: No asumas ni intentes adivinar emociones internas ('estaba asustado', 'sintió culpa'). Limítate estrictamente a lo que las palabras observables reflejan.
 4. CONSISTENCIA INSTITUCIONAL: Penaliza severamente cualquier especulación sobre cifras, causas no confirmadas o promesas que comprometan legalmente a la organización.
+5. EVALUACIÓN DE LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS):
+   Revisa exhaustivamente la transcripción frente a las líneas rojas especificadas. Si el vocero confirma, admite explícitamente o transgrede alguna línea roja institucional:
+   - Marca "infraccion_linea_roja": true.
+   - Extrae en "evidencia_linea_roja" la frase exacta del vocero y la línea roja vulnerada.
+   - Asigna Nivel 1 (0 pts) a la dimensión 'consistencia_institucional'.
+   Si no hubo transgresión, marca "infraccion_linea_roja": false y "evidencia_linea_roja": null.
+6. EVALUACIÓN DE RECONOCIMIENTO DEL AFECTADO / EMPATÍA VERBAL:
+   Evalúa en una escala de 1 a 5 cómo abordó el vocero a las personas, víctimas o clientes perjudicados:
+   - Nivel 5: Prioriza de inmediato el impacto humano o a los clientes antes de presentar cualquier descargo corporativo o justificación técnica.
+   - Nivel 4: Muestra empatía genuina y clara hacia los afectados antes de pasar al plan de acción.
+   - Nivel 3: Hace mención secundaria, formal o tardía a los afectados, priorizando la explicación operativa.
+   - Nivel 2: Mención impersonal o condescendiente, minimizando el impacto en las personas.
+   - Nivel 1: Omisión total de las víctimas o afectados; se enfoca exclusivamente en balances económicos, procedimientos internos o en eludir responsabilidades.
 
 Responde ÚNICAMENTE con un objeto JSON válido según la estructura requerida.
 """
@@ -158,7 +171,14 @@ class LLMJudgeService:
         mensajes_clave: List[str],
         contexto_crisis: str,
         transcripcion_vocero: str,
+        lineas_rojas: Optional[List[str]] = None,
     ) -> ReporteJuezConsolidado:
+
+        lineas_rojas_list = lineas_rojas or []
+        if lineas_rojas_list:
+            lineas_rojas_text = "\n".join(f"- \"{rl}\"" for rl in lineas_rojas_list)
+        else:
+            lineas_rojas_text = "- (No hay líneas rojas definidas para este escenario)"
 
         user_prompt = f"""
 CONTEXTO DEL ESCENARIO:
@@ -170,17 +190,29 @@ PREGUNTA FORMULADA POR EL PERIODISTA:
 MENSAJES CLAVE OBLIGATORIOS QUE EL VOCERO DEBÍA TRANSMITIR:
 {json.dumps(mensajes_clave, ensure_ascii=False, indent=2)}
 
+LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS PARA EL VOCERO):
+{lineas_rojas_text}
+
 TRANSCRIPCIÓN DE LA RESPUESTA REAL DEL VOCERO:
 "{transcripcion_vocero}"
 
-REGLA CRÍTICA PARA 'pertinencia_respuesta':
-- Si el vocero NO responde ni delimita la pregunta concreta (ej: ignora la consulta sobre alertas o hechos imputados y salta directo a recitar mensajes clave con bridging), asigna obligatoriamente NIVEL 1 o 2.
-- Si el vocero delimita o responde la pregunta antes de tender el puente al mensaje clave, califica según la solidez demostrada (Nivel 3, 4 o 5).
+REGLAS CRÍTICAS DE AUDITORÍA:
+1. 'pertinencia_respuesta':
+   - Si el vocero NO responde ni delimita la pregunta concreta (ej: ignora la consulta sobre alertas o hechos imputados y salta directo a recitar mensajes clave con bridging), asigna obligatoriamente NIVEL 1 o 2.
+   - Si el vocero delimita o responde la pregunta antes de tender el puente al mensaje clave, califica según la solidez demostrada (Nivel 3, 4 o 5).
+2. 'infraccion_linea_roja':
+   - Si el vocero confirma o transgrede alguna línea roja, marca "infraccion_linea_roja": true, detalla "evidencia_linea_roja" y asigna Nivel 1 a 'consistencia_institucional'.
+   - En caso contrario, "infraccion_linea_roja": false y "evidencia_linea_roja": null.
+3. 'reconocimiento_afectados':
+   - Evalúa el trato y la prioridad hacia las personas/clientes perjudicados (escala 1 a 5).
 
 Genera el análisis en formato JSON estricto con las claves:
 - evaluacion_dimensiones (pertinencia_respuesta, tecnicas_control, alineacion_mensaje_clave, capacidad_sintesis, claridad_mensaje, consistencia_institucional, asertividad_hostilidad)
-  Cada dimensión debe contener: 'nivel' (entero de 1 a 5, donde 1 es deficiente/no observado y 5 es excelente; NUNCA uses 0 ni valores fuera de 1-5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta o texto vacío).
+  Cada dimensión debe contener: 'nivel' (entero de 1 a 5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta o texto vacío).
 - feedback_pedagogico (fortaleza_principal, brecha_critica, recomendacion_accionable)
+- infraccion_linea_roja (boolean)
+- evidencia_linea_roja (string o null)
+- reconocimiento_afectados: {{"nivel": <int 1-5>, "criterio": "<justificación breve>", "evidencia_textual": "<cita o texto vacío>"}}
 """
 
         try:
@@ -220,6 +252,14 @@ Genera el análisis en formato JSON estricto con las claves:
         raw_json = _clean_and_parse_json(content)
         parsed_eval = EvaluacionLLMResponse.model_validate(raw_json)
 
+        # Si hubo infracción de línea roja, asegurar Nivel 1 en consistencia_institucional
+        if parsed_eval.infraccion_linea_roja:
+            parsed_eval.evaluacion_dimensiones.consistencia_institucional.nivel = 1
+            if not parsed_eval.evaluacion_dimensiones.consistencia_institucional.criterio:
+                parsed_eval.evaluacion_dimensiones.consistencia_institucional.criterio = (
+                    f"Transgresión de línea roja institucional: {parsed_eval.evidencia_linea_roja or 'Infracción crítica'}"
+                )
+
         # Cálculo matemático determinista (escala 0 a 100)
         dimensiones_dict = parsed_eval.evaluacion_dimensiones.model_dump()
         puntaje_global_100 = 0.0
@@ -240,11 +280,31 @@ Genera el análisis en formato JSON estricto con las claves:
                 "evidencia": dim_data.get("evidencia_textual"),
             }
 
+        # Procesar reconocimiento de afectados
+        rec_obj = parsed_eval.reconocimiento_afectados
+        if rec_obj:
+            rec_dict = {
+                "nivel": rec_obj.nivel,
+                "score_100": round(((rec_obj.nivel - 1) / 4.0) * 100.0, 1),
+                "criterio": rec_obj.criterio,
+                "evidencia": rec_obj.evidencia_textual or "",
+            }
+        else:
+            rec_dict = {
+                "nivel": 3,
+                "score_100": 50.0,
+                "criterio": "Mención neutra de afectados.",
+                "evidencia": "",
+            }
+
         return ReporteJuezConsolidado(
             puntaje_global_100=round(puntaje_global_100, 2),
             dimensiones=dimensiones_normalizadas,
             feedback=parsed_eval.feedback_pedagogico,
             raw_evaluation=parsed_eval,
+            infraccion_linea_roja=parsed_eval.infraccion_linea_roja,
+            evidencia_linea_roja=parsed_eval.evidencia_linea_roja,
+            reconocimiento_afectados=rec_dict,
         )
 
 
@@ -259,6 +319,7 @@ class LLMJudge(LLMJudgeService):
         crisis_context: Optional[str] = None,
         key_messages: Optional[List[str]] = None,
         question: Optional[str] = None,
+        red_lines: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         if not transcript or not transcript.strip():
             return {
@@ -266,6 +327,9 @@ class LLMJudge(LLMJudgeService):
                 "key_message_adherence_score": 0,
                 "crisis_control_score": 0,
                 "bridging_detected": False,
+                "infraccion_linea_roja": False,
+                "evidencia_linea_roja": None,
+                "reconocimiento_afectados": {"nivel": 1, "score_100": 0.0, "criterio": "Sin transcripción."},
                 "strengths": [],
                 "weaknesses": ["No se detectó audio ni transcripción inteligible."],
                 "executive_summary": "No fue posible evaluar la declaración debido a la ausencia de contenido verbal.",
@@ -277,6 +341,7 @@ class LLMJudge(LLMJudgeService):
                 mensajes_clave=key_messages or ["Nuestra máxima prioridad es la seguridad y el restablecimiento del servicio."],
                 contexto_crisis=crisis_context or "Incidente corporativo y vocería de crisis.",
                 transcripcion_vocero=transcript,
+                lineas_rojas=red_lines,
             )
             reporte_dict = reporte.model_dump()
             # Mapear claves heredadas para compatibilidad con dashboards frontend existentes
@@ -289,6 +354,9 @@ class LLMJudge(LLMJudgeService):
             reporte_dict["bridging_detected"] = len(
                 reporte.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
             ) > 0
+            reporte_dict["infraccion_linea_roja"] = reporte.infraccion_linea_roja
+            reporte_dict["evidencia_linea_roja"] = reporte.evidencia_linea_roja
+            reporte_dict["reconocimiento_afectados"] = reporte.reconocimiento_afectados
             reporte_dict["strengths"] = [reporte.feedback.fortaleza_principal] if reporte.feedback.fortaleza_principal else []
             reporte_dict["weaknesses"] = [reporte.feedback.brecha_critica] if reporte.feedback.brecha_critica else []
             reporte_dict["executive_summary"] = reporte.feedback.recomendacion_accionable

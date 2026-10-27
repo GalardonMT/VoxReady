@@ -13,7 +13,14 @@ from azure.storage.blob import BlobServiceClient
 from core.llm_judge import LLMJudgeService
 from core.narrative_generator import generate_visum_report
 from core.vision_client import VisionClient
-from core.report_builder import calculate_expression_area_score
+from core.report_builder import calculate_expression_area_score, compute_empathy_score
+from core.scoring_rules import (
+    WEIGHT_EXPRESSION,
+    WEIGHT_VOICE,
+    WEIGHT_COHERENCE,
+    WEIGHT_EMPATHY,
+    RED_LINE_SCORE_CAP,
+)
 from services.db_service import DatabaseService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -240,6 +247,7 @@ def process_message(body: dict):
         )
         mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el restablecimiento del servicio."]
         contexto = active_scen.get("context") or "Incidente corporativo y vocería de crisis."
+        red_lines = active_scen.get("red_lines") or []
 
         try:
             judge_svc = LLMJudgeService()
@@ -247,7 +255,8 @@ def process_message(body: dict):
                 pregunta_periodista=pregunta,
                 mensajes_clave=mensajes,
                 contexto_crisis=contexto,
-                transcripcion_vocero=transcript
+                transcripcion_vocero=transcript,
+                lineas_rojas=red_lines,
             )
             llm_metrics = reporte_juez.model_dump()
             llm_metrics["key_message_adherence_score"] = int(
@@ -259,16 +268,24 @@ def process_message(body: dict):
             llm_metrics["bridging_detected"] = len(
                 reporte_juez.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
             ) > 0
+            llm_metrics["infraccion_linea_roja"] = reporte_juez.infraccion_linea_roja
+            llm_metrics["evidencia_linea_roja"] = reporte_juez.evidencia_linea_roja
+            llm_metrics["reconocimiento_afectados"] = reporte_juez.reconocimiento_afectados
             llm_metrics["strengths"] = [reporte_juez.feedback.fortaleza_principal] if reporte_juez.feedback.fortaleza_principal else []
             llm_metrics["weaknesses"] = [reporte_juez.feedback.brecha_critica] if reporte_juez.feedback.brecha_critica else []
             llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
+            
             score_estrategico = float(reporte_juez.puntaje_global_100)
-            score_empatia = float(reporte_juez.dimensiones.get("asertividad_hostilidad", {}).get("score_100", 75.0))
+            if reporte_juez.infraccion_linea_roja:
+                score_estrategico = min(score_estrategico, RED_LINE_SCORE_CAP)
+            
+            rec_af = reporte_juez.reconocimiento_afectados or {}
+            victim_level = rec_af.get("nivel", 3) if isinstance(rec_af, dict) else 3
         except Exception as e:
             logging.warning(f"Evaluación con LLMJudgeService falló ({e}); usando fallback.")
             llm_metrics = evaluate_with_llm(scenario_id, transcript)
             score_estrategico = float((llm_metrics.get("key_message_adherence_score", 75) * 0.5) + (llm_metrics.get("crisis_control_score", 75) * 0.5))
-            score_empatia = 75.0
+            victim_level = 3
 
         # Puntuaciones por área de evaluación (4 Ejes Oficiales de Rúbrica)
         # Expresión (VISUM: 40% contacto visual, 30% estabilidad postural, 30% gesticulación)
@@ -280,12 +297,14 @@ def process_message(body: dict):
             score_visual = round(float((vision_metrics.get("eye_contact_percentage", 0.0) * 0.6) + (vision_metrics.get("average_posture_score", 100.0) * 0.4)), 1)
 
         score_verbal = 75.0
+        score_empatia = compute_empathy_score(score_visual, victim_level)
+
         # Expresión 25%, Voz 25%, Coherencia/Contenido 35%, Empatía 15%
         score_global = round(
-            (score_visual * 0.25) +
-            (score_verbal * 0.25) +
-            (score_estrategico * 0.35) +
-            (score_empatia * 0.15),
+            (score_visual * WEIGHT_EXPRESSION) +
+            (score_verbal * WEIGHT_VOICE) +
+            (score_estrategico * WEIGHT_COHERENCE) +
+            (score_empatia * WEIGHT_EMPATHY),
             1
         )
 

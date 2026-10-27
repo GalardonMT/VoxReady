@@ -8,9 +8,14 @@ import numpy as np
 try:
     from utils.logger import get_logger
     from services.keyvault_service import get_secret
+    from config.scoring_rules import DICTION_FALLBACK_SCORE
 except (ImportError, ValueError):
-    from worker.utils.logger import get_logger
-    from worker.services.keyvault_service import get_secret
+    try:
+        from worker.utils.logger import get_logger
+        from worker.services.keyvault_service import get_secret
+        from worker.config.scoring_rules import DICTION_FALLBACK_SCORE
+    except (ImportError, ValueError):
+        from core.scoring_rules import DICTION_FALLBACK_SCORE
 
 logger = get_logger("core.audio_analyzer")
 
@@ -27,6 +32,24 @@ MULETILLAS_TARGET = {
     "ya",
     "entonces",
 }
+
+
+def compute_diction_score(parakeet_words: List[Dict[str, Any]]) -> float:
+    """Calcula el score de dicción (0-100) a partir del promedio
+    de confianza acústica palabra por palabra devuelta por Parakeet/Riva.
+    """
+    valid_confidences = [
+        float(w["confidence"])
+        for w in parakeet_words
+        if "confidence" in w and w.get("word", "").strip()
+    ]
+
+    if not valid_confidences:
+        return DICTION_FALLBACK_SCORE
+
+    mean_confidence = sum(valid_confidences) / len(valid_confidences)
+    return round(mean_confidence * 100.0, 1)
+
 
 
 class AudioAnalyzer:
@@ -242,8 +265,9 @@ class AudioAnalyzer:
                 "densidad_muletillas_pct": 0.0,
                 "muletillas_detectadas": [],
                 "conteo_muletillas": {},
+                "score_wpm": 0.0,
                 "score_fluidez": 0.0,
-                "score_diccion": 0.0,
+                "score_diccion": DICTION_FALLBACK_SCORE,
             }
 
         # 1. Análisis de pausas entre palabras sucesivas
@@ -276,6 +300,10 @@ class AudioAnalyzer:
         wpm_global = total_words / duracion_minutos_global
         wpm_articulacion = total_words / duracion_minutos_audible
 
+        # Score WPM desacoplado según metodología VISUM:
+        # 120-150 WPM óptimo (>=82 pts), centro en 135 (100 pts)
+        score_wpm = round(max(0.0, min(100.0, 100.0 - abs(135.0 - wpm_global) * 1.2)), 1)
+
         # 3. Muletillas corporativas
         muletillas_encontradas: List[str] = []
         conteo_muletillas: Dict[str, int] = {}
@@ -287,27 +315,28 @@ class AudioAnalyzer:
 
         densidad_muletillas = (len(muletillas_encontradas) / total_words) * 100.0
 
-        # 4. Rúbrica de fluidez y dicción
-        # Penalizaciones: WPM fuera del rango ideal corporativo (120 - 150 WPM), vacilaciones y muletillas
-        penalizacion_wpm = abs(135.0 - wpm_global) * 0.6
+        # 4. Rúbrica de fluidez neta (sin penalizar WPM dos veces dentro de Score Voz)
+        # Penalizaciones: vacilaciones (3.5 pts), pausas prolongadas (6.0 pts) y muletillas (5.0 pts/%)
         penalizacion_vacilacion = len(pausas_vacilacion) * 3.5
         penalizacion_prolongadas = len(pausas_prolongadas) * 6.0
         penalizacion_muletillas = densidad_muletillas * 5.0
 
-        score_fluidez = max(
-            0.0,
-            min(
-                100.0,
-                100.0
-                - penalizacion_wpm
-                - penalizacion_vacilacion
-                - penalizacion_prolongadas
-                - penalizacion_muletillas,
+        score_fluidez = round(
+            max(
+                0.0,
+                min(
+                    100.0,
+                    100.0
+                    - penalizacion_vacilacion
+                    - penalizacion_prolongadas
+                    - penalizacion_muletillas,
+                ),
             ),
+            1,
         )
 
-        avg_confidence = sum(w.get("confidence", 1.0) for w in words) / total_words
-        score_diccion = max(0.0, min(100.0, avg_confidence * 100.0))
+        # 5. Score de dicción acústica real desde Parakeet/Riva
+        score_diccion = compute_diction_score(words)
 
         return {
             "palabras_totales": total_words,
@@ -323,8 +352,9 @@ class AudioAnalyzer:
             "densidad_muletillas_pct": round(densidad_muletillas, 2),
             "muletillas_detectadas": muletillas_encontradas[:20],
             "conteo_muletillas": conteo_muletillas,
-            "score_fluidez": round(score_fluidez, 1),
-            "score_diccion": round(score_diccion, 1),
+            "score_wpm": score_wpm,
+            "score_fluidez": score_fluidez,
+            "score_diccion": score_diccion,
         }
 
     def process_audio(self, audio_path: str) -> Dict[str, Any]:
