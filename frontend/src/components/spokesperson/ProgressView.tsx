@@ -43,6 +43,20 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat('es-CL', { day: 'numeric', month: 'long', year: 'numeric' }).format(date);
 }
 
+function formatDateTime(value: string | undefined | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('es-CL', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(date);
+}
+
 function colorForArea(area: ProgressArea, index: number): string {
   const known: Record<string, string> = {
     expression: '#173955', expresion: '#173955', voice: '#e65f22', tone: '#e65f22',
@@ -490,7 +504,7 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ onNavigate, onSessio
         <div className="progress-recent-list">
           {progress?.recentSessions.map((session) => (
             <div className="progress-recent-item" key={session.sessionId}>
-              <div><strong>{session.scenarioTitle}</strong><span>{formatDate(session.completedAt)} · Puntaje {session.overallScore ?? '—'}</span></div>
+              <div><strong>{session.scenarioTitle}</strong><span>{formatDateTime(session.completedAt)} · Puntaje {session.overallScore ?? '—'}</span></div>
               <button type="button" className="btn" onClick={() => onNavigate('u6', session.sessionId)}>Ver informe</button>
             </div>
           ))}
@@ -772,7 +786,7 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ onNavigate, onSessio
                             </span>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', fontSize: '12px', color: 'var(--muted)' }}>
-                            <span>📅 {formatDate(s.createdAt)}</span>
+                            <span>📅 {formatDateTime(s.createdAt)}</span>
                             <span>•</span>
                             <span title={s.sessionId}>
                               ID: <code style={{ fontSize: '11px', color: 'var(--accent)' }}>{s.sessionId.slice(0, 16)}...</code>
@@ -835,18 +849,17 @@ export const ProgressView: React.FC<ProgressViewProps> = ({ onNavigate, onSessio
                             onNavigate('u8', s.sessionId);
                           }}
                           style={{
-                            background: 'linear-gradient(135deg, #4338ca 0%, #3730a3 100%)',
+                            background: 'var(--accent)',
                             color: '#ffffff',
                             fontWeight: 600,
                             fontSize: '12.5px',
                             padding: '7px 14px',
                             borderRadius: '8px',
-                            border: 'none',
+                            border: '1px solid var(--accent)',
                             cursor: 'pointer',
                             display: 'inline-flex',
                             alignItems: 'center',
-                            gap: '6px',
-                            boxShadow: '0 2px 8px rgba(67, 56, 202, 0.25)'
+                            gap: '6px'
                           }}
                         >
                           <span>📊 Ver Reporte Completo VISUM</span>
@@ -1000,7 +1013,14 @@ function DayPanel({ date, schedules, sessions, overdueBefore, busyId, onEdit, on
     ))}
     {sessions.map((session) => (
       <div className="progress-day-item" key={session.sessionId}>
-        <div><span className="progress-status completed">Realizada</span><strong>{session.scenario.title}</strong><small>Puntaje: {session.report.overallScore ?? '—'}</small></div>
+        <div>
+          <span className="progress-status completed">Realizada</span>
+          <strong>{session.scenario.title}</strong>
+          <small>
+            {session.completedAt ? `Hora: ${new Date(session.completedAt).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hour12: false })} · ` : ''}
+            Puntaje: {session.report.overallScore ?? '—'}
+          </small>
+        </div>
         <button type="button" className="btn" onClick={() => onReport(session.sessionId)}>Ver informe</button>
       </div>
     ))}

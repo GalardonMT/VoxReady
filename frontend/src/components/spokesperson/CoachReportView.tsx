@@ -160,7 +160,8 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
               {d.globalL}
             </div>
             <div style={{ fontSize: '13px', color: 'var(--muted)', marginTop: '2px' }}>
-              Sesión: <code style={{ color: 'var(--accent2)', fontWeight: 600 }}>{sessionId}</code> · Inferencia multimodal NVIDIA & MediaPipe
+              Sesión: <code style={{ color: 'var(--accent2)', fontWeight: 600 }}>{sessionId}</code>
+              {report?.date ? ` · Evaluada el ${report.date}` : ''} · Inferencia multimodal NVIDIA & MediaPipe
             </div>
           </div>
 
@@ -278,13 +279,12 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
           type="button"
           className="btn pri"
           style={{
-            background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-            boxShadow: '0 4px 14px rgba(79, 70, 229, 0.35)',
+            background: 'var(--accent)',
+            borderColor: 'var(--accent)',
             color: '#ffffff',
-            fontWeight: 700,
-            padding: '10px 18px',
-            fontSize: '13.5px',
-            border: 'none',
+            fontWeight: 600,
+            padding: '9px 18px',
+            fontSize: '13px',
             display: 'flex',
             alignItems: 'center',
             gap: '8px'

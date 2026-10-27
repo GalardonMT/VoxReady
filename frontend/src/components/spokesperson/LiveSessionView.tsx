@@ -26,6 +26,8 @@ export const UploadOverlay: React.FC<UploadOverlayProps> = ({
 }) => {
   if (!isUploading) return null;
 
+  const isIndeterminate = uploadProgress === null;
+
   return (
     <div
       role="dialog"
@@ -43,14 +45,17 @@ export const UploadOverlay: React.FC<UploadOverlayProps> = ({
       </p>
       <div className="upload-overlay-bar-track">
         <div
-          className="upload-overlay-bar-fill"
+          className={`upload-overlay-bar-fill ${isIndeterminate ? 'indeterminate' : ''}`}
           style={{
-            width: uploadProgress !== null ? `${uploadProgress}%` : '40%',
-            opacity: uploadProgress !== null ? 1 : 0.6,
-            animation: uploadProgress === null ? 'pulse-red 1.5s infinite' : undefined
+            width: !isIndeterminate ? `${Math.max(0, Math.min(100, uploadProgress))}%` : undefined
           }}
         />
       </div>
+      {!isIndeterminate && (
+        <span style={{ fontSize: '11.5px', color: '#6ee7b7', marginTop: '8px', fontWeight: 600 }}>
+          {Math.round(uploadProgress)}%
+        </span>
+      )}
     </div>
   );
 };
@@ -166,7 +171,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
         try {
           savedCameraId = localStorage.getItem('voxready_selected_camera') || '';
           savedMicId = localStorage.getItem('voxready_selected_mic') || '';
-        } catch {}
+        } catch { }
 
         let stream: MediaStream;
         try {
@@ -265,7 +270,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
           mediaRecorderRef.current.stop();
-        } catch {}
+        } catch { }
       }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());

@@ -377,12 +377,12 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
               width: '64px',
               height: '64px',
               borderRadius: '50%',
-              background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+              background: '#4f46e5',
               color: '#ffffff',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 8px 24px rgba(79, 70, 229, 0.5)',
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
               transform: 'scale(1)',
               transition: 'transform 0.15s ease'
             }}
@@ -477,7 +477,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
               bottom: 0,
               left: 0,
               width: `${Math.min(100, Math.max(0, progressPercent))}%`,
-              background: 'linear-gradient(90deg, #6366f1 0%, #818cf8 100%)',
+              background: '#4f46e5',
               borderRadius: '999px',
               pointerEvents: 'none'
             }}

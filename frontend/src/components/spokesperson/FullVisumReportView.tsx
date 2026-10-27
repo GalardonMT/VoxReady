@@ -214,7 +214,16 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             </h1>
             <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0 }}>
               Sesión: <code style={{ color: '#818cf8', fontWeight: 600 }}>{activeSessionId}</code> · Generado:{' '}
-              {report?.generatedAt ? new Date(report.generatedAt).toLocaleString() : 'Recientemente'}
+              {report?.generatedAt
+                ? new Date(report.generatedAt).toLocaleString('es-CL', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                  })
+                : 'Recientemente'}
             </p>
           </div>
 

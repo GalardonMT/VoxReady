@@ -717,7 +717,27 @@ body {
 .upload-overlay-bar-fill {
   height: 100%;
   background: #10b981;
-  transition: width 0.3s ease;
+  border-radius: 999px;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.upload-overlay-bar-fill.indeterminate {
+  width: 40% !important;
+  animation: indeterminate-bar 1.6s ease-in-out infinite alternate !important;
+}
+
+@keyframes indeterminate-bar {
+  0% {
+    transform: translateX(-40%);
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateX(200%);
+    opacity: 0.6;
+  }
 }
 
 /* Control Bar & Error Banner */

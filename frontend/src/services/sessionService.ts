@@ -153,27 +153,48 @@ export const sessionService = {
 
   /**
    * Sube el blob de video directamente a Azure Blob Storage con x-ms-blob-type: BlockBlob
+   * con seguimiento real de progreso de carga (0% a 100%)
    */
   async uploadDirectToBlob(
     uploadUrl: string,
     videoBlob: Blob,
     onProgress?: (percent: number) => void
   ): Promise<void> {
-    if (onProgress) onProgress(20);
-    const res = await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: {
-        'x-ms-blob-type': 'BlockBlob',
-        'Content-Type': videoBlob.type || 'video/webm'
-      },
-      body: videoBlob
-    });
+    return new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', uploadUrl, true);
+      xhr.setRequestHeader('x-ms-blob-type', 'BlockBlob');
+      xhr.setRequestHeader('Content-Type', videoBlob.type || 'video/webm');
 
-    if (!res.ok) {
-      const errorText = await res.text().catch(() => '');
-      throw new Error(`Error en subida binaria a Blob Storage (${res.status}): ${errorText}`);
-    }
-    if (onProgress) onProgress(100);
+      if (xhr.upload && onProgress) {
+        onProgress(5);
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && event.total > 0) {
+            const rawPercent = Math.round((event.loaded / event.total) * 100);
+            onProgress(Math.min(rawPercent, 99));
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (onProgress) onProgress(100);
+          resolve();
+        } else {
+          reject(new Error(`Error en subida binaria a Blob Storage (${xhr.status}): ${xhr.responseText || xhr.statusText}`));
+        }
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('Fallo de red durante la subida de la grabación.'));
+      };
+
+      xhr.ontimeout = () => {
+        reject(new Error('Tiempo de espera agotado al subir la grabación.'));
+      };
+
+      xhr.send(videoBlob);
+    });
   },
 
   /**
@@ -339,7 +360,11 @@ export const sessionService = {
         return {
           sessionId: raw.sessionId || raw.session_id || sessionId,
           scenarioName: raw.scenarioTitle || scenarioName || 'Incidente Corporativo y Vocería de Crisis',
-          date: raw.generatedAt ? new Date(raw.generatedAt).toLocaleDateString() : (raw.processed_at ? new Date(raw.processed_at).toLocaleDateString() : new Date().toLocaleDateString()),
+          date: raw.generatedAt
+            ? new Date(raw.generatedAt).toLocaleString('es-CL', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+            : raw.processed_at
+            ? new Date(raw.processed_at).toLocaleString('es-CL', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+            : new Date().toLocaleString('es-CL', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }),
           globalScore,
           goodAspects: strengths,
           improveAspects: improvements,
