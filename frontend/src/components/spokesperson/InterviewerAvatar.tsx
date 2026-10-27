@@ -261,7 +261,7 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
           targetY = box.max.y - 0.22;
         }
 
-        camera.position.set(0, targetY + 0.04, 0.85);
+        camera.position.set(0, targetY + 0.18, 1.15);
         camera.lookAt(0, targetY, 0);
 
         setIsLoading(false);
