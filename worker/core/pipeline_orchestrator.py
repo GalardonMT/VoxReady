@@ -19,14 +19,36 @@ try:
     from core.llm_judge import LLMJudgeService
     from core.narrative_generator import generate_visum_report
     from core.vision_client import VisionClient
-    from core.report_builder import calculate_expression_area_score, sanitize_report_json
+    from core.report_builder import calculate_expression_area_score, sanitize_report_json, compute_empathy_score
+    from core.scoring_rules import (
+        WEIGHT_EXPRESSION,
+        WEIGHT_VOICE,
+        WEIGHT_COHERENCE,
+        WEIGHT_EMPATHY,
+        VOICE_WEIGHT_WPM,
+        VOICE_WEIGHT_FLUENCY,
+        VOICE_WEIGHT_DICTION,
+        RED_LINE_SCORE_CAP,
+        DICTION_FALLBACK_SCORE,
+    )
     from services.db_service import DatabaseService
 except (ImportError, ValueError):
     from worker.core.audio_analyzer import AudioAnalyzer
     from worker.core.llm_judge import LLMJudgeService
     from worker.core.narrative_generator import generate_visum_report
     from worker.core.vision_client import VisionClient
-    from worker.core.report_builder import calculate_expression_area_score, sanitize_report_json
+    from worker.core.report_builder import calculate_expression_area_score, sanitize_report_json, compute_empathy_score
+    from worker.config.scoring_rules import (
+        WEIGHT_EXPRESSION,
+        WEIGHT_VOICE,
+        WEIGHT_COHERENCE,
+        WEIGHT_EMPATHY,
+        VOICE_WEIGHT_WPM,
+        VOICE_WEIGHT_FLUENCY,
+        VOICE_WEIGHT_DICTION,
+        RED_LINE_SCORE_CAP,
+        DICTION_FALLBACK_SCORE,
+    )
     from worker.services.db_service import DatabaseService
 
 logger = logging.getLogger("analysis-worker.orchestrator")
@@ -109,7 +131,7 @@ def download_blob(blob_path: str, local_path: str):
 
 
 def split_media(video_path: str, session_tmp_dir: str):
-    """Extrae audio PCM 16kHz y fotogramas muestreados a 0.5 FPS."""
+    """Extrae audio PCM 16kHz y fotogramas muestreados a 2 FPS."""
     audio_path = os.path.join(session_tmp_dir, "audio.wav")
     frames_dir = os.path.join(session_tmp_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
@@ -371,9 +393,15 @@ def process_session_pipeline(
             raise ValueError("El servicio de transcripción (NVIDIA Riva ASR) no detectó palabras inteligibles en el audio.")
 
         audio_metrics = audio_res.get("metrics", {})
+        score_wpm = float(audio_metrics.get("score_wpm", 80.0))
         score_fluidez = float(audio_metrics.get("score_fluidez") if audio_metrics.get("score_fluidez") is not None else 0.0)
-        score_diccion = float(audio_metrics.get("score_diccion") if audio_metrics.get("score_diccion") is not None else 100.0)
-        score_verbal = round((score_fluidez * 0.6) + (score_diccion * 0.4), 1)
+        score_diccion = float(audio_metrics.get("score_diccion") if audio_metrics.get("score_diccion") is not None else DICTION_FALLBACK_SCORE)
+        score_verbal = round(
+            (score_wpm * VOICE_WEIGHT_WPM) +
+            (score_fluidez * VOICE_WEIGHT_FLUENCY) +
+            (score_diccion * VOICE_WEIGHT_DICTION),
+            1
+        )
 
         # 4.1 Mapear transcripción a cada turno/pregunta y persistir respuesta en session_question
         turn_responses = []
@@ -437,6 +465,7 @@ def process_session_pipeline(
         pregunta = "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
         mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el esclarecimiento de los hechos."]
         contexto = active_scen.get("context") or "Incidente corporativo y vocería institucional ante medios de comunicación."
+        red_lines = active_scen.get("red_lines") or []
 
         judge_svc = LLMJudgeService(
             api_key=NVIDIA_API_KEY,
@@ -448,7 +477,8 @@ def process_session_pipeline(
             pregunta_periodista=pregunta,
             mensajes_clave=mensajes,
             contexto_crisis=contexto,
-            transcripcion_vocero=transcript
+            transcripcion_vocero=transcript,
+            lineas_rojas=red_lines
         )
 
         llm_metrics = reporte_juez.model_dump()
@@ -461,11 +491,17 @@ def process_session_pipeline(
         llm_metrics["bridging_detected"] = len(
             reporte_juez.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
         ) > 0
+        llm_metrics["infraccion_linea_roja"] = reporte_juez.infraccion_linea_roja
+        llm_metrics["evidencia_linea_roja"] = reporte_juez.evidencia_linea_roja
+        llm_metrics["reconocimiento_afectados"] = reporte_juez.reconocimiento_afectados
         llm_metrics["strengths"] = [reporte_juez.feedback.fortaleza_principal] if reporte_juez.feedback.fortaleza_principal else []
         llm_metrics["weaknesses"] = [reporte_juez.feedback.brecha_critica] if reporte_juez.feedback.brecha_critica else []
         llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
+        
         score_estrategico = float(reporte_juez.puntaje_global_100)
-        score_empatia = float(reporte_juez.dimensiones.get("asertividad_hostilidad", {}).get("score_100", 0.0))
+        # Salvaguarda determinista: Línea roja trunca Coherencia al techo máximo permitido
+        if reporte_juez.infraccion_linea_roja:
+            score_estrategico = min(score_estrategico, RED_LINE_SCORE_CAP)
 
         # 6. Fusión Multivariable y Puntuaciones por Área (Rúbrica Ponderada v0.4)
         vision_summary = vision_metrics.get("summary") or vision_metrics
@@ -477,12 +513,17 @@ def process_session_pipeline(
             posture_score = float(vision_metrics.get("average_posture_score", 0.0))
             score_visual = round((eye_pct * 0.6) + (posture_score * 0.4), 1)
 
+        # Empatía balanceada (60% verbal / reconocimiento del afectado + 40% no verbal)
+        rec_afectados = reporte_juez.reconocimiento_afectados or {}
+        victim_level = rec_afectados.get("nivel", 3) if isinstance(rec_afectados, dict) else 3
+        score_empatia = compute_empathy_score(score_visual, victim_level)
+
         # Ponderación general: Expresión 25%, Voz 25%, Coherencia/Contenido 35%, Empatía 15%
         score_global = round(
-            (score_visual * 0.25) +
-            (score_verbal * 0.25) +
-            (score_estrategico * 0.35) +
-            (score_empatia * 0.15),
+            (score_visual * WEIGHT_EXPRESSION) +
+            (score_verbal * WEIGHT_VOICE) +
+            (score_estrategico * WEIGHT_COHERENCE) +
+            (score_empatia * WEIGHT_EMPATHY),
             1
         )
 
@@ -507,7 +548,7 @@ def process_session_pipeline(
             "context": contexto,
             "optics": active_scen.get("optics") or "empática, institucional y de control operativo",
             "key_messages": mensajes,
-            "red_lines": ["No especular sobre causas no confirmadas ni evadir la responsabilidad institucional."]
+            "red_lines": red_lines or ["No especular sobre causas no confirmadas ni evadir la responsabilidad institucional."]
         }
         consolidated_intermediate = {
             "score_global": score_global,

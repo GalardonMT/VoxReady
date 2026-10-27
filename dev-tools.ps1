@@ -14,9 +14,10 @@ function Show-Menu {
     Write-Host " 4. Ver Logs en Vivo de Visión (ca-vision-service)" -ForegroundColor DarkYellow
     Write-Host " 5. Verificar Azure SQL desde Docker" -ForegroundColor Green
     Write-Host " 6. Ejecutar pruebas desde Docker" -ForegroundColor Green
-    Write-Host " 7. Salir" -ForegroundColor Gray
+    Write-Host " 7. Desplegar Contenedores a Azure" -ForegroundColor Yellow
+    Write-Host " 8. Salir" -ForegroundColor Gray
     Write-Host "==========================================================" -ForegroundColor Cyan
-    $choice = Read-Host "Seleccione una opción [1-7]"
+    $choice = Read-Host "Seleccione una opción [1-8]"
 
     switch ($choice) {
         "1" { Start-Frontend }
@@ -25,7 +26,8 @@ function Show-Menu {
         "4" { Stream-Vision-Logs }
         "5" { & "$PSScriptRoot\docker.ps1" verify }
         "6" { & "$PSScriptRoot\docker.ps1" test }
-        "7" { exit }
+        "7" { & "$PSScriptRoot\deploy-azure.ps1" }
+        "8" { exit }
         default { Write-Host "Opción inválida."; Start-Sleep -Seconds 1; Show-Menu }
     }
 }
