@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Preparación Docker de Azure SQL: migraciones aditivas, sin seed automático.
+"""Preparación Docker de Azure SQL: migraciones aditivas y métricas iniciales.
 
 --verify-only comprueba conexión y esquema sin escrituras.
-Los ejemplos se cargan explícitamente con seed_master_topics.py.
+Los ejemplos se cargan explícitamente con seed_master_topics.py. La primera
+ejecución crea una rúbrica publicada con las 16 métricas aprobadas.
 """
 import argparse
 import sys
@@ -18,6 +19,8 @@ from progress_migration import (
     USER_AREA_PROGRESS_BACKFILL_DML,
 )
 from microlessons import MICROLESSON_SCHEMA_DDL, MICROLESSON_DATA_DDL, MICROLESSON_CONSTRAINT_DDL
+from microlesson_assignment_migration import ASSIGNMENT_SCHEMA_STEPS, verify_assignment_schema
+from metrics_migration import migrate as migrate_metrics, verify as verify_metrics
 from seed_master_topics import connect, SeedError, SCENARIO_QUESTION_DDL, verify_link_schema
 
 REQUIRED = {
@@ -234,6 +237,8 @@ def verify(cursor):
         row = cursor.fetchone()
         if not row or bool(row[0]) != unique or row[1]:
             raise SeedError(f'Falta el indice activo {index}.')
+    verify_assignment_schema(cursor, SeedError)
+    verify_metrics(cursor)
 
 
 def main(argv=None):
@@ -283,12 +288,15 @@ def main(argv=None):
             cursor.execute(MICROLESSON_SCHEMA_DDL)
             cursor.execute(MICROLESSON_DATA_DDL)
             cursor.execute(MICROLESSON_CONSTRAINT_DDL)
+            for ddl in ASSIGNMENT_SCHEMA_STEPS:
+                cursor.execute(ddl)
+            migrate_metrics(cursor)
         verify(cursor)
         if args.verify_only:
             connection.rollback()
         else:
             connection.commit()
-        print(f'Azure SQL {name}: conexión y esquema verificados. Preparación sin borrados ni seed automático.')
+        print(f'Azure SQL {name}: conexión, esquema y métricas verificados.')
         return 0
     except SeedError as error:
         if connection:

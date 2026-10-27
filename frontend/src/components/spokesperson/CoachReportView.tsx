@@ -5,9 +5,10 @@ import { useI18n } from '../../context/I18nContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService } from '../../services/sessionService';
 import { CoachReport } from '../../types/api';
+import { RecordingVideoPlayer } from './RecordingVideoPlayer';
 
 interface CoachReportViewProps {
-  onNavigate: (screen: VoceroScreen) => void;
+  onNavigate: (screen: VoceroScreen, extra?: string) => void;
   sessionId?: string;
 }
 
@@ -37,6 +38,49 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
     }
     loadReport();
   }, [sessionId]);
+
+  const activeSessionId = report?.sessionId || sessionId;
+  const audioMetrics = (report?.metrics as any)?.audio;
+  const expectedDuration = report?.durationSeconds || audioMetrics?.duracionSegundos || audioMetrics?.duracion_segundos;
+
+  const handleOpenVideo = async () => {
+    setShowVideoModal(true);
+    if (videoUrl) return;
+    setVideoLoading(true);
+    setVideoError('');
+    try {
+      let url = report?.recordingUrl;
+      if (!url) {
+        url = await sessionService.getPlaybackUrl(activeSessionId);
+      }
+      if (url) {
+        setVideoUrl(url);
+      } else {
+        setVideoError('La grabación no está disponible. Es posible que el almacenamiento no esté configurado o que la grabación no se haya completado.');
+      }
+    } catch {
+      setVideoError('Error al obtener la URL de reproducción. Intente nuevamente.');
+    } finally {
+      setVideoLoading(false);
+    }
+  };
+
+  const handleRetryVideo = async () => {
+    setVideoLoading(true);
+    setVideoError('');
+    try {
+      const url = await sessionService.getPlaybackUrl(activeSessionId);
+      if (url) {
+        setVideoUrl(url);
+      } else {
+        setVideoError('La grabación no está disponible.');
+      }
+    } catch {
+      setVideoError('Error al obtener la URL de reproducción.');
+    } finally {
+      setVideoLoading(false);
+    }
+  };
 
   const globalScore = report?.globalScore ?? 75;
   const goodItems = report?.goodAspects && report.goodAspects.length > 0 ? report.goodAspects : d.goodItems;
@@ -194,24 +238,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
         <button
           type="button"
           className="btn"
-          onClick={async () => {
-            setShowVideoModal(true);
-            setVideoLoading(true);
-            setVideoError('');
-            setVideoUrl('');
-            try {
-              const url = await sessionService.getPlaybackUrl(sessionId);
-              if (url) {
-                setVideoUrl(url);
-              } else {
-                setVideoError('La grabación no está disponible. Es posible que el almacenamiento no esté configurado o que la grabación no se haya completado.');
-              }
-            } catch {
-              setVideoError('Error al obtener la URL de reproducción. Intente nuevamente.');
-            } finally {
-              setVideoLoading(false);
-            }
-          }}
+          onClick={handleOpenVideo}
         >
           {d.watch}
         </button>
@@ -230,7 +257,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
             alignItems: 'center',
             gap: '8px'
           }}
-          onClick={() => onNavigate('u8')}
+          onClick={() => onNavigate('u8', activeSessionId)}
         >
           <span>📋</span> Ver Informe Completo y Correcciones de Visum ➔
         </button>
@@ -371,22 +398,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
                     type="button"
                     className="btn"
                     style={{ marginTop: '8px', fontSize: '12px', color: '#818cf8', borderColor: '#818cf8' }}
-                    onClick={async () => {
-                      setVideoLoading(true);
-                      setVideoError('');
-                      try {
-                        const url = await sessionService.getPlaybackUrl(sessionId);
-                        if (url) {
-                          setVideoUrl(url);
-                        } else {
-                          setVideoError('La grabación no está disponible.');
-                        }
-                      } catch {
-                        setVideoError('Error al obtener la URL de reproducción.');
-                      } finally {
-                        setVideoLoading(false);
-                      }
-                    }}
+                    onClick={handleRetryVideo}
                   >
                     🔄 Reintentar
                   </button>
@@ -394,20 +406,11 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
               )}
 
               {!videoLoading && !videoError && videoUrl && (
-                <video
-                  controls
-                  autoPlay
-                  playsInline
-                  style={{
-                    width: '100%',
-                    display: 'block',
-                    background: '#000',
-                    maxHeight: '480px'
-                  }}
-                >
-                  <source src={videoUrl} type="video/webm" />
-                  Tu navegador no soporta la reproducción de video.
-                </video>
+                <RecordingVideoPlayer
+                  src={videoUrl}
+                  expectedDuration={expectedDuration}
+                  autoPlay={true}
+                />
               )}
             </div>
 
@@ -421,8 +424,8 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
                 alignItems: 'center'
               }}
             >
-              <span style={{ fontSize: '11px', color: '#475569' }}>
-                Almacenamiento seguro · Azure Blob Storage · URL válida por 60 min
+              <span style={{ fontSize: '11px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>🔒</span> Grabación protegida · Almacenamiento seguro y confidencial
               </span>
               <button
                 type="button"

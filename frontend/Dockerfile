@@ -36,7 +36,7 @@ RUN npm run build
 FROM dependencies AS test
 COPY src ./src
 COPY tests ./tests
-CMD ["sh", "-c", "node --experimental-strip-types tests/routeAccess.test.mjs && node --experimental-strip-types tests/mediaCheck.test.mjs && node --experimental-strip-types tests/progressModel.test.mjs && node --experimental-strip-types tests/microlessonRules.test.mjs && node --experimental-strip-types tests/clientRules.test.mjs"]
+CMD ["sh", "-c", "node --experimental-strip-types tests/routeAccess.test.mjs && node --experimental-strip-types tests/mediaCheck.test.mjs && node --experimental-strip-types tests/progressModel.test.mjs && node --experimental-strip-types tests/microlessonRules.test.mjs && node --experimental-strip-types tests/microlessonPresentation.test.mjs"]
 
 FROM nginx:1.28-alpine AS runtime
 COPY nginx.conf /etc/nginx/conf.d/default.conf

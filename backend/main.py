@@ -19,7 +19,7 @@ import progress_store
 import schedule_store
 import spokesperson_store
 import microlessons as microlesson_store
-import client_store
+import metrics_store
 
 # Cargar variables de entorno locales si existen
 try:
@@ -84,19 +84,7 @@ def verify_token(authorization: str = Header(None)):
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
 
-    # 1. En desarrollo, el token emitido por /dev/token conserva la identidad
-    # preasignada en app_user. La identidad fija queda como atajo interactivo.
-    if token and token.startswith("dev-user-") and DEV_AUTH:
-        try:
-            dev_user_id = str(uuid.UUID(token.removeprefix("dev-user-")))
-        except (ValueError, AttributeError):
-            raise HTTPException(status_code=401, detail="Token de desarrollo inválido") from None
-        return {
-            "sub": dev_user_id,
-            "oid": dev_user_id,
-            "name": "Dev User",
-        }
-
+    # 1. Si no hay token o es token explícito de dev local:
     if (not token or token.startswith("dev-")) and DEV_AUTH:
         dev_email = os.getenv("DEV_AUTH_TEST_EMAIL", "").strip()
         if not dev_email:
@@ -980,12 +968,14 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     vision_m = metrics_obj.get("vision") or {}
     audio_m = metrics_obj.get("audio") or {}
 
+    dur_secs = float(audio_m.get("duracionSegundos", audio_m.get("duracion_segundos", 0.0)) or 0.0)
     metrics_summary = {
         "eyeContactPct": vision_m.get("eyeContactPct", vision_m.get("contacto_visual_porcentaje", 0.0)),
         "shoulderStabilityScore": vision_m.get("shoulderStabilityScore", vision_m.get("average_posture_score", 0.0)),
         "wpm": audio_m.get("wpmGlobal", audio_m.get("wpm", 0.0)),
         "fillerWordsCount": len(audio_m.get("muletillasDetectadas", audio_m.get("muletillas_detectadas", []))),
-        "fillerWordsDensityPct": audio_m.get("densidadMuletillasPct", audio_m.get("densidad_muletillas_pct", 0.0))
+        "fillerWordsDensityPct": audio_m.get("densidadMuletillasPct", audio_m.get("densidad_muletillas_pct", 0.0)),
+        "durationSeconds": dur_secs
     }
 
     area_scores = final_report.get("areaScores")
@@ -1001,6 +991,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         "scenarioTitle": final_report.get("scenarioTitle") or scenario_title,
         "generatedAt": final_report.get("processedAt") or final_report.get("processed_at") or final_report.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
         "recordingUrl": playback_sas_url,
+        "durationSeconds": dur_secs,
         "narrative": {
             "strengths": narrative_obj.get("strengths", []),
             "improvements": narrative_obj.get("improvements", []),
@@ -1019,7 +1010,6 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
 # Configuración maestra. Los tipos técnicos se mantienen separados de etiquetas UI.
 MasterText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 MasterTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
-ClientName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
 
 
 class MasterQuestionInput(BaseModel):
@@ -1062,16 +1052,6 @@ class MasterStatusRequest(BaseModel):
     status: Literal['active', 'archived']
 
 
-class MasterClientRequest(BaseModel):
-    name: ClientName
-    status: Literal['active', 'suspended'] = 'active'
-    spokespersonIds: list[uuid.UUID] = Field(default_factory=list)
-
-
-class MasterSpokespersonLinkRequest(BaseModel):
-    spokespersonIds: list[uuid.UUID] = Field(default_factory=list)
-
-
 class MicrolessonRequest(BaseModel):
     clientId: uuid.UUID
     scenarioId: uuid.UUID
@@ -1102,51 +1082,97 @@ class MicrolessonVideoFinalizeRequest(MicrolessonVideoUploadRequest):
     blobPath: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
 
 
+class MicrolessonAssignmentRequest(BaseModel):
+    userIds: Annotated[list[uuid.UUID], Field(min_length=1, max_length=100)]
+    sortOrder: Annotated[int, Field(strict=True, gt=0)]
+
+    @field_validator('userIds')
+    @classmethod
+    def distinct_users(cls, users):
+        if len(set(users)) != len(users):
+            raise ValueError('No se puede asignar al mismo vocero dos veces.')
+        return users
+
+
+class MicrolessonAssignmentOrderRequest(BaseModel):
+    sortOrder: Annotated[int, Field(strict=True, gt=0)]
+
+
+class MetricThresholdUpdate(BaseModel):
+    key: str
+    thresholds: dict[str, float]
+
+
+class MetricDraftUpdate(BaseModel):
+    revision: int = Field(ge=1)
+    metrics: list[MetricThresholdUpdate]
+
+
+class MetricPublishRequest(BaseModel):
+    revision: int = Field(ge=1)
+
+
+@app.get('/api/master/metrics')
+@app.get('/v1/api/master/metrics')
+def master_metrics(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.current(cursor)
+
+
+@app.get('/api/master/metrics/latest')
+@app.get('/v1/api/master/metrics/latest')
+def master_latest_metrics(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.latest_published(cursor)
+
+
+@app.post('/api/master/metrics/draft', status_code=201)
+@app.post('/v1/api/master/metrics/draft', status_code=201)
+def master_create_metric_draft(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.create_draft(cursor)
+
+
+@app.put('/api/master/metrics/draft/{draft_id}')
+@app.put('/v1/api/master/metrics/draft/{draft_id}')
+def master_save_metric_draft(draft_id: uuid.UUID, payload: MetricDraftUpdate,
+                             user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.save_draft(cursor, draft_id, payload.revision, payload.metrics)
+
+
+@app.post('/api/master/metrics/draft/{draft_id}/publish')
+@app.post('/v1/api/master/metrics/draft/{draft_id}/publish')
+def master_publish_metric_draft(draft_id: uuid.UUID, payload: MetricPublishRequest,
+                                user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return metrics_store.publish_draft(cursor, draft_id, payload.revision)
+
+
+@app.delete('/api/master/metrics/draft/{draft_id}', status_code=204)
+@app.delete('/v1/api/master/metrics/draft/{draft_id}', status_code=204)
+def master_discard_metric_draft(draft_id: uuid.UUID, payload: MetricPublishRequest,
+                                user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        metrics_store.discard_draft(cursor, draft_id, payload.revision)
+
+
 @app.get('/api/master/clients')
 @app.get('/v1/api/master/clients')
-def master_clients(
-    status: Literal['active', 'suspended', 'all'] = 'active',
-    user: dict = Depends(verify_token),
-):
+def master_clients(user: dict = Depends(verify_token)):
     with master_store.database(SQL_CONN_STR) as cursor:
         master_store.resolve_user(cursor, user, master=True)
-        items = client_store.list_clients(cursor, status)
-        return {"items": items, "total": len(items)}
-
-
-@app.post('/api/master/clients', status_code=201)
-@app.post('/v1/api/master/clients', status_code=201)
-def master_create_client(payload: MasterClientRequest, user: dict = Depends(verify_token)):
-    with master_store.database(SQL_CONN_STR) as cursor:
-        master_store.resolve_user(cursor, user, master=True)
-        client = client_store.create_client(cursor, payload.name, payload.status)
-        client_store.link_spokespersons(cursor, client["id"], payload.spokespersonIds)
-        return client
-
-
-@app.get('/api/master/spokespersons')
-@app.get('/v1/api/master/spokespersons')
-def master_spokespersons(
-    client_id: uuid.UUID | None = Query(None, alias='clientId'),
-    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
-    user: dict = Depends(verify_token),
-):
-    with master_store.database(SQL_CONN_STR) as cursor:
-        master_store.resolve_user(cursor, user, master=True)
-        items = client_store.list_spokespersons(cursor, client_id=client_id, query=query)
-        return {"items": items, "total": len(items)}
-
-
-@app.post('/api/master/clients/{client_id}/spokespersons')
-@app.post('/v1/api/master/clients/{client_id}/spokespersons')
-def master_link_spokespersons(
-    client_id: uuid.UUID,
-    payload: MasterSpokespersonLinkRequest,
-    user: dict = Depends(verify_token),
-):
-    with master_store.database(SQL_CONN_STR) as cursor:
-        master_store.resolve_user(cursor, user, master=True)
-        return client_store.link_spokespersons(cursor, client_id, payload.spokespersonIds)
+        cursor.execute("SELECT id,name,status FROM dbo.client WHERE status='active' AND is_deleted=0 ORDER BY name,id")
+        items = master_store.rows(cursor)
+        for item in items:
+            item['id'] = str(item['id'])
+        return {"items": items}
 
 
 @app.get('/api/master/topics')
@@ -1253,7 +1279,7 @@ def master_scenario_status(scenario_id: uuid.UUID, payload: MasterStatusRequest,
 @app.get('/api/master/microlessons/clients')
 @app.get('/v1/api/master/microlessons/clients')
 def master_microlesson_clients(
-    status: Literal['active', 'suspended', 'all'] = 'all',
+    status: Literal['active', 'archived', 'all'] = 'all',
     user: dict = Depends(verify_token),
 ):
     return microlesson_store.clients(SQL_CONN_STR, user, status)
@@ -1267,6 +1293,12 @@ def master_microlesson_scenarios(
     user: dict = Depends(verify_token),
 ):
     return microlesson_store.scenarios_for_client(SQL_CONN_STR, user, str(client_id), status)
+
+
+@app.get('/api/master/microlessons/clients/{client_id}/spokespersons')
+@app.get('/v1/api/master/microlessons/clients/{client_id}/spokespersons')
+def master_microlesson_spokespersons(client_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.spokespersons_for_client(SQL_CONN_STR, user, str(client_id))
 
 
 @app.get('/api/master/microlessons')
@@ -1283,6 +1315,36 @@ def master_microlessons(
 @app.get('/v1/api/master/microlessons/{microlesson_id}')
 def master_microlesson_detail(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
     return microlesson_store.get_master(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.get('/api/master/microlessons/{microlesson_id}/assignments')
+@app.get('/v1/api/master/microlessons/{microlesson_id}/assignments')
+def master_microlesson_assignments(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.list_assignments_master(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.post('/api/master/microlessons/{microlesson_id}/assignments')
+@app.post('/v1/api/master/microlessons/{microlesson_id}/assignments')
+def master_assign_microlesson(microlesson_id: uuid.UUID, payload: MicrolessonAssignmentRequest,
+                              user: dict = Depends(verify_token)):
+    return microlesson_store.assign_master(SQL_CONN_STR, user, str(microlesson_id), payload)
+
+
+@app.patch('/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/order')
+@app.patch('/v1/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/order')
+def master_order_microlesson_assignment(microlesson_id: uuid.UUID, assignment_id: uuid.UUID,
+                                        payload: MicrolessonAssignmentOrderRequest,
+                                        user: dict = Depends(verify_token)):
+    return microlesson_store.order_assignment_master(SQL_CONN_STR, user, str(microlesson_id),
+                                                     str(assignment_id), payload.sortOrder)
+
+
+@app.post('/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/revoke')
+@app.post('/v1/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/revoke')
+def master_revoke_microlesson_assignment(microlesson_id: uuid.UUID, assignment_id: uuid.UUID,
+                                         user: dict = Depends(verify_token)):
+    return microlesson_store.revoke_assignment_master(SQL_CONN_STR, user, str(microlesson_id),
+                                                      str(assignment_id))
 
 
 @app.post('/api/master/microlessons', status_code=201)
@@ -1462,6 +1524,30 @@ def master_microlesson_video_url(microlesson_id: uuid.UUID, user: dict = Depends
 @app.get('/v1/microlessons')
 def spokesperson_microlessons(user: dict = Depends(verify_token)):
     return microlesson_store.list_spokesperson(SQL_CONN_STR, user)
+
+
+@app.get('/microlessons/recommendations')
+@app.get('/v1/microlessons/recommendations')
+def spokesperson_microlesson_recommendations(user: dict = Depends(verify_token)):
+    return microlesson_store.recommendations(SQL_CONN_STR, user)
+
+
+@app.post('/microlessons/{microlesson_id}/start')
+@app.post('/v1/microlessons/{microlesson_id}/start')
+def spokesperson_start_microlesson(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.start_spokesperson(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.post('/microlessons/{microlesson_id}/complete')
+@app.post('/v1/microlessons/{microlesson_id}/complete')
+def spokesperson_complete_microlesson(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.complete_spokesperson(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.post('/microlessons/{microlesson_id}/restart')
+@app.post('/v1/microlessons/{microlesson_id}/restart')
+def spokesperson_restart_microlesson(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.restart_spokesperson(SQL_CONN_STR, user, str(microlesson_id))
 
 
 @app.get('/microlessons/{microlesson_id}')

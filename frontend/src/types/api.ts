@@ -157,6 +157,70 @@ export interface Microlesson extends MicrolessonInput {
   updatedAt?: string;
 }
 
+export type MicrolessonAssignmentStatus = 'assigned' | 'in_progress' | 'completed' | 'revoked';
+
+export interface SpokespersonMicrolesson {
+  id: string;
+  clientId: string;
+  clientName: string;
+  scenarioId: string;
+  scenarioTitle: string;
+  title: string;
+  topicTag: string | null;
+  durationMinutes: number | null;
+  learningObjective: string;
+  hasVideo: boolean;
+  status: LifecycleStatus;
+  createdAt?: string;
+  updatedAt?: string;
+  assignmentId: string | null;
+  assignmentStatus: MicrolessonAssignmentStatus | null;
+  canOpen: boolean;
+  canPractice: boolean;
+  sortOrder: number | null;
+  assignedAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  revokedAt?: string | null;
+}
+
+export interface SpokespersonMicrolessonDetail extends SpokespersonMicrolesson {
+  theoryContent: string;
+  exampleContent: string | null;
+}
+
+export interface MicrolessonCatalog {
+  items: SpokespersonMicrolesson[];
+  history: SpokespersonMicrolesson[];
+  total: number;
+}
+
+export interface MicrolessonRecommendations {
+  items: SpokespersonMicrolesson[];
+  total: number;
+}
+
+export interface MicrolessonAssignment {
+  id: string;
+  clientId: string;
+  microlessonId: string;
+  userId: string;
+  userDisplayName: string;
+  userEmail: string;
+  status: MicrolessonAssignmentStatus;
+  sortOrder: number;
+  assignedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface MicrolessonSpokesperson {
+  id: string;
+  displayName: string;
+  email: string;
+}
+
 export interface MicrolessonScenario {
   id: string;
   title: string;
@@ -212,6 +276,8 @@ export interface CoachReport {
   crossSignalQuote: string;
   areas: AreaScore[];
   metrics?: Record<string, unknown>;
+  recordingUrl?: string;
+  durationSeconds?: number;
 }
 
 export interface VisumExecutive {
@@ -233,6 +299,7 @@ export interface MetricsSummary {
   wpm?: number;
   fillerWordsCount?: number;
   fillerWordsDensityPct?: number;
+  durationSeconds?: number;
 }
 
 export interface FullVisumReport {
@@ -242,6 +309,7 @@ export interface FullVisumReport {
   scenarioTitle?: string;
   generatedAt?: string;
   recordingUrl?: string;
+  durationSeconds?: number;
   narrative: {
     strengths: string[];
     improvements: string[];
@@ -378,4 +446,3 @@ export interface SessionHistoryItem {
   overallScore: number;
   hasReport: boolean;
 }
-

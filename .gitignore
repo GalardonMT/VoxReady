@@ -152,3 +152,4 @@ frontend/Dockerfile.local
 LOCAL_DOCKER.md
 lab-worker/
 discurso_prueba_entrevista.txt
+indicaciones/

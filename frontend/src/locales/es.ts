@@ -205,12 +205,6 @@ export const es = {
       series: ["Expresión", "Tono de voz", "Coherencia", "Empatía"],
       tblTitle: "Avance por área",
       tblCols: ["Área", "Actual", "Cambio"],
-      recoTitle: "Recomendaciones para ti",
-      recos: [
-        { t: "Trabaja el contacto visual", d: "Tu empatía baja cuando desvías la mirada. Practica mantenerla en momentos difíciles." },
-        { t: "Reduce muletillas", d: "Detectamos 14 “eh/este” por sesión. La microlección de dicción ayuda." },
-        { t: "Refuerza el mensaje puente", d: "Te cuesta volver a tu mensaje clave tras una pregunta trampa." }
-      ],
       calTitle: "Programa tu próxima sesión",
       calHelp: "Elige un día en el calendario para agendar tu práctica.",
       calBtn: "Confirmar fecha",

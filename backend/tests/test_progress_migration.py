@@ -71,28 +71,16 @@ class VerificationCursor:
             table = params[0].removeprefix("dbo.")
             column = params[1]
             self._row = (None if (table, column) == self.missing_column else 16,)
-        elif "select name,type_name(user_type_id),max_length,is_nullable" in normalized:
-            self._rows = [
-                ("id", "uniqueidentifier", 16, False),
-                ("name", "nvarchar", 300, False),
-                ("status", "nvarchar", 40, False),
-                ("created_at", "datetime2", 8, False),
-                ("updated_at", "datetime2", 8, False),
-                ("is_deleted", "bit", 1, False),
-                ("deleted_at", "datetime2", 8, True),
-            ]
         elif "from sys.columns" in normalized and "is_nullable" in normalized:
-            if "dbo.app_user" in normalized or "session_id" in normalized:
-                self._row = (True, "uniqueidentifier")
-            elif "video_blob_path" in normalized:
-                self._row = (True,)
-            elif "dbo.microlesson" in normalized:
-                self._row = (False,)
+            if "microlesson" in normalized:
+                col = params[0] if params else ("video_blob_path" if "video_blob_path" in normalized else "scenario_id")
+                self._row = (True,) if col == "video_blob_path" else (False,)
             else:
-                self._row = (True,)
-        elif "from sys.key_constraints" in normalized:
+                self._row = (True, "uniqueidentifier") if "session_id" in normalized else (True,)
+        elif "from sys.key_constraints" in normalized or "sys.key_constraints" in normalized:
             self._rows = [("id",)]
-        elif "join sys.index_columns" in normalized and params:
+            self._row = (1,)
+        elif "sys.index_columns" in normalized:
             index = params[-1]
             shapes = {
                 "UQ_schedule_session": [("session_id", 1, False, 1)],
@@ -115,22 +103,22 @@ class VerificationCursor:
                 self._rows[0] = ("wrong_column", 1, False, 1)
         elif "from sys.indexes" in normalized:
             index = params[-1]
-            filtered = index in {
-                "UQ_session_external_id", "UQ_session_idempotency", "UQ_schedule_session",
-            }
-            unique = index in {
-                "UQ_session_external_id", "UQ_session_idempotency", "UQ_schedule_session",
-                "UQ_user_area_progress_user_area", "UQ_scenario_id_client",
-            }
-            filter_definition = "[session_id] IS NOT NULL" if index == "UQ_schedule_session" else None
-            self._row = ((not unique), 0, filtered, filter_definition) if index == self.bad_index else (unique, 0, filtered, filter_definition)
-        elif "from sys.foreign_keys" in normalized:
-            if "dbo.schedule" in normalized:
-                self._row = None if self.missing_fk else (False, False, "session_id", "id")
+            if index in {"idx_microlesson_client_status", "idx_microlesson_scenario"}:
+                self._row = (False, 0)
+            elif index == "UQ_scenario_id_client":
+                self._row = (True, 0)
             else:
+                filtered = index in {
+                    "UQ_session_external_id", "UQ_session_idempotency", "UQ_schedule_session",
+                }
+                unique = index != "IX_schedule_client_user_date"
+                filter_definition = "[session_id] IS NOT NULL" if index == "UQ_schedule_session" else None
+                self._row = ((not unique), 0, filtered, filter_definition) if index == self.bad_index else (unique, 0, filtered, filter_definition)
+        elif "from sys.foreign_keys" in normalized or "from sys.check_constraints" in normalized:
+            if "microlesson" in normalized:
                 self._row = (False, False)
-        elif "from sys.check_constraints" in normalized:
-            self._row = (False, False)
+            else:
+                self._row = None if self.missing_fk else (False, False, "session_id", "id")
         else:
             raise AssertionError(f"Consulta de verificación inesperada: {sql}")
         return self
@@ -144,6 +132,8 @@ class VerificationCursor:
 
 def test_verify_requires_progress_columns_indexes_and_schedule_foreign_key(monkeypatch):
     monkeypatch.setattr(prepare, "verify_link_schema", lambda cursor: None)
+    monkeypatch.setattr(prepare, "verify_assignment_schema", lambda cursor, error_type: None)
+    monkeypatch.setattr(prepare, "verify_metrics", lambda cursor: None)
 
     prepare.verify(VerificationCursor())
 

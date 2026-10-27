@@ -176,6 +176,10 @@ def _profile(cursor, claims, *, master=False, spokesperson=False):
     return profile
 
 
+def _same_uid(left, right):
+    return store.uid(left) == store.uid(right)
+
+
 def _base_select():
     return """SELECT ml.id,ml.client_id AS clientId,c.name AS clientName,
         ml.scenario_id AS scenarioId,s.title AS scenarioTitle,ml.title,
@@ -285,9 +289,14 @@ def save(connection_string, claims, payload, microlesson_id=None):
         _validate_relation(cursor, client_id, scenario_id, payload.status == "active")
         if microlesson_id:
             microlesson_id = store.uid(microlesson_id)
-            cursor.execute("SELECT id FROM dbo.microlesson WITH (UPDLOCK,HOLDLOCK) WHERE id=? AND is_deleted=0", microlesson_id)
-            if not cursor.fetchone():
+            cursor.execute("SELECT client_id FROM dbo.microlesson WITH (UPDLOCK,HOLDLOCK) WHERE id=? AND is_deleted=0", microlesson_id)
+            previous = cursor.fetchone()
+            if not previous:
                 raise HTTPException(404, "Microleccion no encontrada.")
+            if not _same_uid(previous[0], client_id):
+                cursor.execute("SELECT TOP 1 id FROM dbo.microlesson_assignment WHERE microlesson_id=?", microlesson_id)
+                if cursor.fetchone():
+                    raise HTTPException(409, "No se puede cambiar de empresa una microleccion con asignaciones.")
             cursor.execute("""UPDATE dbo.microlesson SET client_id=?,scenario_id=?,title=?,topic_tag=?,
                 duration_minutes=?,learning_objective=?,theory_content=?,example_content=?,status=?,
                 updated_at=SYSUTCDATETIME() WHERE id=?""",
@@ -360,32 +369,117 @@ def clear_video(connection_string, claims, microlesson_id):
     return old_path
 
 
+def _public_catalog_sql():
+    # El catalogo nunca selecciona teoria, ejemplo ni ruta del video.
+    return """SELECT ml.id,ml.client_id AS clientId,c.name AS clientName,
+        ml.scenario_id AS scenarioId,s.title AS scenarioTitle,ml.title,
+        ml.topic_tag AS topicTag,ml.duration_minutes AS durationMinutes,
+        ml.learning_objective AS learningObjective,ml.status,ml.created_at AS createdAt,
+        ml.updated_at AS updatedAt,
+        CAST(CASE WHEN ml.video_blob_path IS NULL THEN 0 ELSE 1 END AS bit) AS hasVideo,
+        a.id AS assignmentId,a.status AS assignmentStatus,a.sort_order AS sortOrder,
+        s.status AS scenarioStatus,t.status AS topicStatus
+        FROM dbo.microlesson ml
+        JOIN dbo.client c ON c.id=ml.client_id
+        JOIN dbo.scenario s ON s.id=ml.scenario_id AND s.client_id=ml.client_id
+        JOIN dbo.topic t ON t.id=s.topic_id
+        OUTER APPLY (SELECT TOP 1 ma.id,ma.status,ma.sort_order
+            FROM dbo.microlesson_assignment ma
+            WHERE ma.client_id=ml.client_id AND ma.microlesson_id=ml.id AND ma.user_id=?
+            ORDER BY ma.assigned_at DESC,ma.created_at DESC,ma.id DESC) a
+        WHERE ml.client_id=? AND ml.status='active' AND ml.is_deleted=0
+        AND c.status='active' AND c.is_deleted=0 AND s.is_deleted=0 AND t.is_deleted=0"""
+
+
+def _catalog_item(item):
+    item["id"] = str(item["id"])
+    item["clientId"] = str(item["clientId"])
+    item["scenarioId"] = str(item["scenarioId"])
+    item["assignmentId"] = str(item["assignmentId"]) if item["assignmentId"] else None
+    item["hasVideo"] = bool(item["hasVideo"])
+    scenario_active = item.pop("scenarioStatus") == "active"
+    topic_active = item.pop("topicStatus") == "active"
+    item["canOpen"] = item["assignmentStatus"] in ("assigned", "in_progress", "completed")
+    item["canPractice"] = item["canOpen"] and scenario_active and topic_active
+    return item
+
+
+def _assignment_history(cursor, profile):
+    cursor.execute("""SELECT ma.id AS assignmentId,ma.status AS assignmentStatus,
+        ma.sort_order AS sortOrder,ma.assigned_at AS assignedAt,ma.started_at AS startedAt,
+        ma.completed_at AS completedAt,ma.revoked_at AS revokedAt,
+        ml.id,ml.client_id AS clientId,c.name AS clientName,
+        ml.scenario_id AS scenarioId,ml.title,ml.topic_tag AS topicTag,
+        ml.learning_objective AS learningObjective,ml.duration_minutes AS durationMinutes,
+        ml.status,s.title AS scenarioTitle,ml.created_at AS createdAt,
+        ml.updated_at AS updatedAt,
+        CAST(CASE WHEN ml.video_blob_path IS NULL THEN 0 ELSE 1 END AS bit) AS hasVideo
+        FROM dbo.microlesson_assignment ma
+        JOIN dbo.microlesson ml ON ml.id=ma.microlesson_id AND ml.client_id=ma.client_id
+        JOIN dbo.client c ON c.id=ma.client_id
+        JOIN dbo.scenario s ON s.id=ml.scenario_id AND s.client_id=ml.client_id
+        WHERE ma.client_id=? AND ma.user_id=?
+        AND (ma.status IN ('completed','revoked') OR ml.status='archived')
+        ORDER BY ma.assigned_at DESC,ma.created_at DESC,ma.id DESC""",
+        profile["client_id"], profile["id"])
+    history = store.rows(cursor)
+    for item in history:
+        for key in ("id", "clientId", "scenarioId", "assignmentId"):
+            item[key] = str(item[key])
+        item["hasVideo"] = bool(item["hasVideo"])
+        item["canOpen"] = False
+        item["canPractice"] = False
+    return history
+
+
 def list_spokesperson(connection_string, claims):
     with store.database(connection_string) as cursor:
         profile = _profile(cursor, claims, spokesperson=True)
-        cursor.execute(_base_select() + """ JOIN dbo.topic t ON t.id=s.topic_id
-            WHERE ml.client_id=? AND ml.status='active' AND ml.is_deleted=0
-            AND s.client_id=ml.client_id AND s.status='active' AND s.is_deleted=0
-            AND t.status='active' AND t.is_deleted=0 AND c.status='active' AND c.is_deleted=0
-            ORDER BY ml.updated_at DESC,ml.id""", profile["client_id"])
-        items = _serialize(store.rows(cursor))
-        for item in items:
-            item.pop("videoBlobPath", None)
-        return {"items": items, "total": len(items)}
+        cursor.execute(_public_catalog_sql() + " ORDER BY ml.updated_at DESC,ml.id",
+                       profile["id"], profile["client_id"])
+        items = [_catalog_item(item) for item in store.rows(cursor)]
+        return {"items": items, "history": _assignment_history(cursor, profile), "total": len(items)}
+
+
+def recommendations(connection_string, claims):
+    catalog = list_spokesperson(connection_string, claims)
+    pending = [item for item in catalog["items"] if item["assignmentStatus"] in ("assigned", "in_progress")]
+    pending.sort(key=lambda item: (item["sortOrder"], item["title"].casefold(), item["id"]))
+    return {"items": pending[:3], "total": len(pending)}
+
+
+def _spokesperson_detail(cursor, profile, microlesson_id):
+    sql = _base_select().replace(
+        "ml.updated_at AS updatedAt",
+        "ml.updated_at AS updatedAt,a.id AS assignmentId,"
+        "a.status AS assignmentStatus,a.sort_order AS sortOrder,"
+        "s.status AS scenarioStatus,t.status AS topicStatus",
+    ) + """ JOIN dbo.topic t ON t.id=s.topic_id
+        CROSS APPLY (SELECT TOP 1 ma.id,ma.status,ma.sort_order
+            FROM dbo.microlesson_assignment ma
+            WHERE ma.client_id=ml.client_id AND ma.microlesson_id=ml.id AND ma.user_id=?
+            ORDER BY ma.assigned_at DESC,ma.created_at DESC,ma.id DESC) a
+        WHERE ml.id=? AND ml.client_id=? AND ml.status='active' AND ml.is_deleted=0
+        AND s.client_id=ml.client_id AND s.is_deleted=0 AND t.is_deleted=0
+        AND c.status='active' AND c.is_deleted=0
+        AND a.status IN ('assigned','in_progress','completed')"""
+    cursor.execute(sql, profile["id"], store.uid(microlesson_id), profile["client_id"])
+    items = _serialize(store.rows(cursor))
+    if not items:
+        raise HTTPException(404, "Microleccion no asignada o no disponible.")
+    item = items[0]
+    item["assignmentId"] = str(item["assignmentId"])
+    item["canOpen"] = True
+    scenario_active = item.pop("scenarioStatus") == "active"
+    topic_active = item.pop("topicStatus") == "active"
+    item["canPractice"] = scenario_active and topic_active
+    return item
 
 
 def get_spokesperson(connection_string, claims, microlesson_id):
     with store.database(connection_string) as cursor:
         profile = _profile(cursor, claims, spokesperson=True)
-        cursor.execute(_base_select() + """ JOIN dbo.topic t ON t.id=s.topic_id
-            WHERE ml.id=? AND ml.client_id=? AND ml.status='active' AND ml.is_deleted=0
-            AND s.client_id=ml.client_id AND s.status='active' AND s.is_deleted=0
-            AND t.status='active' AND t.is_deleted=0 AND c.status='active' AND c.is_deleted=0""",
-            store.uid(microlesson_id), profile["client_id"])
-        items = _serialize(store.rows(cursor))
-        if not items:
-            raise HTTPException(404, "Microleccion no disponible para tu empresa.")
-        item = items[0]
+        item = _spokesperson_detail(cursor, profile, microlesson_id)
         item.pop("videoBlobPath", None)
         return item
 
@@ -394,13 +488,220 @@ def playback_path(connection_string, claims, microlesson_id, master=False):
     if master:
         item = get_master(connection_string, claims, microlesson_id)
     else:
-        item = get_spokesperson(connection_string, claims, microlesson_id)
-        # La ruta nunca sale en la respuesta publica; se vuelve a consultar tras autorizar.
         with store.database(connection_string) as cursor:
-            _profile(cursor, claims, spokesperson=True)
-            cursor.execute("SELECT video_blob_path FROM dbo.microlesson WHERE id=?", store.uid(microlesson_id))
-            row = cursor.fetchone()
-            item["videoBlobPath"] = row[0] if row else None
+            profile = _profile(cursor, claims, spokesperson=True)
+            item = _spokesperson_detail(cursor, profile, microlesson_id)
     if not item.get("videoBlobPath"):
         raise HTTPException(404, "La microleccion no tiene video.")
     return item["videoBlobPath"]
+
+
+def _require_lesson(cursor, microlesson_id, *, active=False, lock=False):
+    hint = " WITH (UPDLOCK,HOLDLOCK)" if lock else ""
+    sql = """SELECT ml.client_id FROM dbo.microlesson ml{hint}
+        JOIN dbo.client c ON c.id=ml.client_id
+        JOIN dbo.scenario s ON s.id=ml.scenario_id AND s.client_id=ml.client_id
+        JOIN dbo.topic t ON t.id=s.topic_id
+        WHERE ml.id=? AND ml.is_deleted=0 AND c.is_deleted=0
+        AND s.is_deleted=0 AND t.is_deleted=0""".format(hint=hint)
+    if active:
+        sql += " AND ml.status='active' AND c.status='active' AND s.status='active' AND t.status='active'"
+    cursor.execute(sql, store.uid(microlesson_id))
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(404, "Microleccion no encontrada o no disponible.")
+    return store.uid(row[0])
+
+
+def _latest_assignment(cursor, client_id, microlesson_id, user_id, *, lock=False):
+    hint = " WITH (UPDLOCK,HOLDLOCK)" if lock else ""
+    cursor.execute("""SELECT TOP 1 id,status,sort_order,assigned_at,assigned_by
+        FROM dbo.microlesson_assignment{hint}
+        WHERE client_id=? AND microlesson_id=? AND user_id=?
+        ORDER BY assigned_at DESC,created_at DESC,id DESC""".format(hint=hint),
+        client_id, microlesson_id, user_id)
+    return cursor.fetchone()
+
+
+def _assignment_public(cursor, assignment_id):
+    cursor.execute("""SELECT ma.id,ma.client_id AS clientId,
+        ma.microlesson_id AS microlessonId,ma.user_id AS userId,
+        u.display_name AS userDisplayName,u.email AS userEmail,
+        ma.status,ma.sort_order AS sortOrder,ma.assigned_by AS assignedBy,
+        ma.assigned_at AS assignedAt,ma.started_at AS startedAt,
+        ma.completed_at AS completedAt,ma.revoked_at AS revokedAt
+        FROM dbo.microlesson_assignment ma
+        JOIN dbo.app_user u ON u.id=ma.user_id
+        WHERE ma.id=?""", assignment_id)
+    item = store.rows(cursor)[0]
+    for key in ("id", "clientId", "microlessonId", "userId", "assignedBy"):
+        item[key] = str(item[key])
+    return item
+
+
+def _require_speaker_cycle(cursor, claims, microlesson_id):
+    profile = _profile(cursor, claims, spokesperson=True)
+    microlesson_id = store.uid(microlesson_id)
+    client_id = _require_lesson(cursor, microlesson_id)
+    if not _same_uid(client_id, profile["client_id"]):
+        raise HTTPException(404, "Microleccion no asignada o no disponible.")
+    cursor.execute("""SELECT ml.status,c.status FROM dbo.microlesson ml
+        JOIN dbo.client c ON c.id=ml.client_id WHERE ml.id=?""", microlesson_id)
+    states = cursor.fetchone()
+    if states[0] != "active" or states[1] != "active":
+        raise HTTPException(404, "Microleccion no asignada o no disponible.")
+    row = _latest_assignment(cursor, client_id, microlesson_id, profile["id"], lock=True)
+    if not row or row[1] == "revoked":
+        raise HTTPException(404, "Microleccion no asignada o no disponible.")
+    return profile, row
+
+
+def start_spokesperson(connection_string, claims, microlesson_id):
+    with store.database(connection_string) as cursor:
+        _, row = _require_speaker_cycle(cursor, claims, microlesson_id)
+        if row[1] == "completed":
+            raise HTTPException(409, "Usa Volver a realizar para iniciar un nuevo ciclo.")
+        if row[1] == "assigned":
+            cursor.execute("""UPDATE dbo.microlesson_assignment
+                SET status='in_progress',started_at=SYSUTCDATETIME(),updated_at=SYSUTCDATETIME()
+                WHERE id=? AND status='assigned'""", str(row[0]))
+        return {"assignmentId": str(row[0]), "assignmentStatus": "in_progress", "sortOrder": row[2]}
+
+
+def complete_spokesperson(connection_string, claims, microlesson_id):
+    with store.database(connection_string) as cursor:
+        _, row = _require_speaker_cycle(cursor, claims, microlesson_id)
+        if row[1] == "assigned":
+            raise HTTPException(409, "Abre la microleccion antes de completarla.")
+        if row[1] == "in_progress":
+            cursor.execute("""UPDATE dbo.microlesson_assignment
+                SET status='completed',completed_at=SYSUTCDATETIME(),updated_at=SYSUTCDATETIME()
+                WHERE id=? AND status='in_progress'""", str(row[0]))
+        return {"assignmentId": str(row[0]), "assignmentStatus": "completed", "sortOrder": row[2]}
+
+
+def restart_spokesperson(connection_string, claims, microlesson_id):
+    with store.database(connection_string) as cursor:
+        profile, row = _require_speaker_cycle(cursor, claims, microlesson_id)
+        if row[1] != "completed":
+            raise HTTPException(409, "Solo se puede volver a realizar una microleccion completada.")
+        new_id = str(uuid.uuid4())
+        cursor.execute("""INSERT INTO dbo.microlesson_assignment
+            (id,client_id,microlesson_id,user_id,status,sort_order,assigned_by,assigned_at)
+            VALUES(?,?,?,?,'assigned',?,?,
+                CASE WHEN SYSUTCDATETIME()<=? THEN DATEADD(millisecond,1,?) ELSE SYSUTCDATETIME() END)""",
+            new_id, profile["client_id"], store.uid(microlesson_id), profile["id"], row[2],
+            str(row[4]), row[3], row[3])
+        return {"assignmentId": new_id, "assignmentStatus": "assigned", "sortOrder": row[2]}
+
+
+def spokespersons_for_client(connection_string, claims, client_id):
+    with store.database(connection_string) as cursor:
+        _profile(cursor, claims, master=True)
+        client_id = store.uid(client_id)
+        cursor.execute("SELECT id FROM dbo.client WHERE id=? AND status='active' AND is_deleted=0", client_id)
+        if not cursor.fetchone():
+            raise HTTPException(404, "Cliente activo no encontrado.")
+        cursor.execute("""SELECT id,display_name AS displayName,email FROM dbo.app_user
+            WHERE client_id=? AND role='spokesperson' AND (is_deleted IS NULL OR is_deleted=0)
+            ORDER BY display_name,email,id""", client_id)
+        items = store.rows(cursor)
+        for item in items:
+            item["id"] = str(item["id"])
+        return {"items": items}
+
+
+def list_assignments_master(connection_string, claims, microlesson_id):
+    with store.database(connection_string) as cursor:
+        _profile(cursor, claims, master=True)
+        microlesson_id = store.uid(microlesson_id)
+        _require_lesson(cursor, microlesson_id)
+        cursor.execute("""SELECT id FROM dbo.microlesson_assignment
+            WHERE microlesson_id=? ORDER BY assigned_at DESC,created_at DESC,id DESC""", microlesson_id)
+        ids = [str(row[0]) for row in cursor.fetchall()]
+        return {"items": [_assignment_public(cursor, assignment_id) for assignment_id in ids], "total": len(ids)}
+
+
+def assign_master(connection_string, claims, microlesson_id, payload):
+    with store.database(connection_string) as cursor:
+        master = _profile(cursor, claims, master=True)
+        microlesson_id = store.uid(microlesson_id)
+        client_id = _require_lesson(cursor, microlesson_id, active=True, lock=True)
+        user_ids = sorted(str(user_id) for user_id in payload.userIds)
+        for user_id in user_ids:
+            cursor.execute("""SELECT id FROM dbo.app_user WHERE id=? AND client_id=?
+                AND role='spokesperson' AND (is_deleted IS NULL OR is_deleted=0)""", user_id, client_id)
+            if not cursor.fetchone():
+                raise HTTPException(422, "Uno o mas voceros no pertenecen al cliente activo.")
+        assignment_ids = []
+        for user_id in user_ids:
+            latest = _latest_assignment(cursor, client_id, microlesson_id, user_id, lock=True)
+            if latest and latest[1] in ("assigned", "in_progress"):
+                assignment_ids.append(str(latest[0]))
+                continue
+            assignment_id = str(uuid.uuid4())
+            if latest:
+                cursor.execute("""INSERT INTO dbo.microlesson_assignment
+                    (id,client_id,microlesson_id,user_id,status,sort_order,assigned_by,assigned_at)
+                    VALUES(?,?,?,?,'assigned',?,?,
+                    CASE WHEN SYSUTCDATETIME()<=? THEN DATEADD(millisecond,1,?) ELSE SYSUTCDATETIME() END)""",
+                    assignment_id, client_id, microlesson_id, user_id, payload.sortOrder,
+                    master["id"], latest[3], latest[3])
+            else:
+                cursor.execute("""INSERT INTO dbo.microlesson_assignment
+                    (id,client_id,microlesson_id,user_id,status,sort_order,assigned_by)
+                    VALUES(?,?,?,?,'assigned',?,?)""",
+                    assignment_id, client_id, microlesson_id, user_id, payload.sortOrder, master["id"])
+            assignment_ids.append(assignment_id)
+        items = [_assignment_public(cursor, assignment_id) for assignment_id in assignment_ids]
+        return {"items": items, "total": len(items)}
+
+
+def _master_assignment(cursor, claims, microlesson_id, assignment_id):
+    _profile(cursor, claims, master=True)
+    microlesson_id = store.uid(microlesson_id)
+    assignment_id = store.uid(assignment_id)
+    client_id = _require_lesson(cursor, microlesson_id)
+    cursor.execute("""SELECT id,user_id,status,sort_order,assigned_at
+        FROM dbo.microlesson_assignment WITH (UPDLOCK,HOLDLOCK)
+        WHERE id=? AND microlesson_id=? AND client_id=?""", assignment_id, microlesson_id, client_id)
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(404, "Asignacion no encontrada.")
+    latest = _latest_assignment(cursor, client_id, microlesson_id, str(row[1]), lock=True)
+    if not _same_uid(latest[0], assignment_id):
+        raise HTTPException(409, "La asignacion ya no es el ciclo actual.")
+    return client_id, microlesson_id, assignment_id, row
+
+
+def order_assignment_master(connection_string, claims, microlesson_id, assignment_id, sort_order):
+    with store.database(connection_string) as cursor:
+        _, _, assignment_id, row = _master_assignment(cursor, claims, microlesson_id, assignment_id)
+        if row[2] not in ("assigned", "in_progress"):
+            raise HTTPException(409, "Solo se pueden ordenar asignaciones pendientes.")
+        cursor.execute("""UPDATE dbo.microlesson_assignment
+            SET sort_order=?,updated_at=SYSUTCDATETIME() WHERE id=?""", sort_order, assignment_id)
+        return _assignment_public(cursor, assignment_id)
+
+
+def revoke_assignment_master(connection_string, claims, microlesson_id, assignment_id):
+    with store.database(connection_string) as cursor:
+        master = _profile(cursor, claims, master=True)
+        client_id, microlesson_id, assignment_id, row = _master_assignment(
+            cursor, claims, microlesson_id, assignment_id)
+        if row[2] == "revoked":
+            return _assignment_public(cursor, assignment_id)
+        if row[2] == "completed":
+            # El ciclo completado permanece intacto; una revocacion posterior bloquea su acceso.
+            revoked_id = str(uuid.uuid4())
+            cursor.execute("""INSERT INTO dbo.microlesson_assignment
+                (id,client_id,microlesson_id,user_id,status,sort_order,assigned_by,assigned_at,revoked_at)
+                VALUES(?,?,?,?,'revoked',?,?,
+                    CASE WHEN SYSUTCDATETIME()<=? THEN DATEADD(millisecond,1,?) ELSE SYSUTCDATETIME() END,
+                    SYSUTCDATETIME())""",
+                revoked_id, client_id, microlesson_id, str(row[1]), row[3], master["id"], row[4], row[4])
+            return _assignment_public(cursor, revoked_id)
+        cursor.execute("""UPDATE dbo.microlesson_assignment
+            SET status='revoked',revoked_at=SYSUTCDATETIME(),updated_at=SYSUTCDATETIME()
+            WHERE id=? AND status IN ('assigned','in_progress')""", assignment_id)
+        return _assignment_public(cursor, assignment_id)

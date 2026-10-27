@@ -276,7 +276,12 @@ export const sessionService = {
     try {
       const raw = await this.getRawReport(sessionId);
       if (raw && (raw.status === 'completed' || raw.overallScore !== undefined)) {
-        return raw as FullVisumReport;
+        const full = raw as FullVisumReport;
+        if (!full.durationSeconds) {
+          const d = full.metrics?.audio?.duracionSegundos || (full as any)?.metricsSummary?.durationSeconds;
+          if (d) full.durationSeconds = d;
+        }
+        return full;
       }
       return null;
     } catch (e) {
@@ -329,6 +334,7 @@ export const sessionService = {
         const wpmVal = (a as any)?.wpmGlobal ?? (a as any)?.wpm ?? 128;
         const fillersCount = (a as any)?.fillerWordsCount ?? (a as any)?.fillers_count ?? ((a as any)?.muletillasDetectadas?.length || 0);
         const pausesCount = (a as any)?.pausasProlongadas ?? (a as any)?.silence_pauses ?? 0;
+        const durationSecs = Number((a as any)?.duracionSegundos ?? (a as any)?.duracion_segundos ?? (raw as any)?.durationSeconds ?? 0);
 
         return {
           sessionId: raw.sessionId || raw.session_id || sessionId,
@@ -338,6 +344,8 @@ export const sessionService = {
           goodAspects: strengths,
           improveAspects: improvements,
           crossSignalQuote,
+          recordingUrl: raw.recordingUrl,
+          durationSeconds: durationSecs > 0 ? durationSecs : undefined,
           areas: [
             {
               name: 'Imagen / no verbal',
@@ -379,9 +387,13 @@ export const sessionService = {
   async getPlaybackUrl(sessionId: string): Promise<string> {
     try {
       // 1. Probar desde getRawReport (si ya incluye recordingUrl con SAS prefirmada)
-      const raw = await this.getRawReport(sessionId);
-      if (raw && raw.recordingUrl) {
-        return raw.recordingUrl;
+      try {
+        const raw = await this.getRawReport(sessionId);
+        if (raw && raw.recordingUrl) {
+          return raw.recordingUrl;
+        }
+      } catch (errReport) {
+        console.warn('Aviso: getRawReport en getPlaybackUrl no retornó recordingUrl:', errReport);
       }
       // 2. Fallback al endpoint /recording-url
       const res = await apiFetch<{ playback_url: string; session_id: string; message?: string }>(
