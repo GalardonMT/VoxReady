@@ -172,6 +172,35 @@ class TestScoringRules(unittest.TestCase):
         self.assertEqual(report["puntuacion_global"]["areas"]["empathy"], 100.0)
         self.assertEqual(report["puntuacion_global"]["score_general"], 100.0)
 
+    def test_evaluacion_llm_response_resilience(self):
+        from core.schemas import EvaluacionLLMResponse
+
+        raw_llm_output = {
+            "evaluacion_dimensiones": {
+                "pertinencia_respuesta": {"nivel": 1, "criterio": "Evade la pregunta", "evidencia_textual": "Buenas tardes"},
+                "tecnicas_control": {"nivel": 2, "criterio": "Bridging prematuro"},
+                "alineacion_mensaje_clave": {"nivel": 3, "criterio": "Menciona mensajes"},
+                "capacidad_sintesis": {"nivel": 3, "criterio": "Adecuada"},
+                "claridad_mensaje": {"nivel": 3, "criterio": "Claro"},
+                "consistencia_institucional": {"nivel": 1, "criterio": "Transgrede linea roja"},
+                "asertividad_hostilidad": {"nivel": 4, "criterio": "Calmado"}
+            },
+            "feedback_pedagogico": {
+                "fortaleza_principal": None,
+                "brecha_critica": "Violacion de linea roja al admitir culpabilidad",
+                "recomendacion_accionable": "No admitir hechos en investigacion"
+            },
+            "infraccion_linea_roja": {"boolean": True, "evidencia": "afectan a nuestros clientes."},
+            "reconocimiento_afectados": 2
+        }
+
+        parsed = EvaluacionLLMResponse.model_validate(raw_llm_output)
+        self.assertTrue(parsed.infraccion_linea_roja)
+        self.assertEqual(parsed.evidencia_linea_roja, "afectan a nuestros clientes.")
+        self.assertEqual(parsed.feedback_pedagogico.fortaleza_principal, "")
+        self.assertEqual(parsed.reconocimiento_afectados.nivel, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -209,9 +209,9 @@ REGLAS CRÍTICAS DE AUDITORÍA:
 Genera el análisis en formato JSON estricto con las claves:
 - evaluacion_dimensiones (pertinencia_respuesta, tecnicas_control, alineacion_mensaje_clave, capacidad_sintesis, claridad_mensaje, consistencia_institucional, asertividad_hostilidad)
   Cada dimensión debe contener: 'nivel' (entero de 1 a 5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta o texto vacío).
-- feedback_pedagogico (fortaleza_principal, brecha_critica, recomendacion_accionable)
-- infraccion_linea_roja (boolean)
-- evidencia_linea_roja (string o null)
+- feedback_pedagogico: {{"fortaleza_principal": "<texto (si no hay aspectos positivos, describir brevemente la ausencia de fortalezas en vez de null)>", "brecha_critica": "<texto>", "recomendacion_accionable": "<texto>"}}
+- infraccion_linea_roja: true o false (booleano primitivo true o false, NUNCA un objeto o diccionario)
+- evidencia_linea_roja: string con la cita textual de transgresión, o null si no hubo infracción
 - reconocimiento_afectados: {{"nivel": <int 1-5>, "criterio": "<justificación breve>", "evidencia_textual": "<cita o texto vacío>"}}
 """
 
