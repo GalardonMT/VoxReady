@@ -26,6 +26,21 @@ def _catalog(cursor):
             for row in cursor.fetchall()]
 
 
+def _published_version_number(cursor, version_id):
+    cursor.execute("""WITH published_versions AS (
+                        SELECT id,ROW_NUMBER() OVER (
+                            ORDER BY published_at,created_at,id
+                        ) AS version_number
+                        FROM dbo.rubric_version
+                        WHERE status='published'
+                      )
+                      SELECT version_number FROM published_versions WHERE id=?""", version_id)
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(503, "No se pudo determinar el número de la versión publicada.")
+    return int(row[0])
+
+
 def _version(cursor, version_id, draft=False):
     if not version_id:
         return None
@@ -38,6 +53,7 @@ def _version(cursor, version_id, draft=False):
     row = cursor.fetchone()
     if not row:
         return None
+    version_number = None if draft else _published_version_number(cursor, version_id)
     definition = _catalog(cursor)
     source_table = "rubric_metric_draft_value" if draft else "rubric_metric_value"
     fk = "draft_id" if draft else "rubric_version_id"
@@ -56,7 +72,8 @@ def _version(cursor, version_id, draft=False):
         metrics.append(item)
     result = {"id": str(row[0]), "versionLabel": row[1], "status": "draft" if draft else "published",
               "revision": int(row[2]), "createdAt": row[3].isoformat(),
-              "publishedAt": None if draft else row[4].isoformat(), "metrics": metrics}
+              "publishedAt": None if draft else row[4].isoformat(),
+              "versionNumber": version_number, "metrics": metrics}
     return result
 
 

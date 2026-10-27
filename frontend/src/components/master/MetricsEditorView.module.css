@@ -3,9 +3,10 @@
 .eyebrow { color: var(--accent2); font-size: 10px; letter-spacing: .13em; font-weight: 700; }
 .hero h2 { color: var(--accent); font-size: clamp(23px, 3vw, 30px); margin: 5px 0 7px; }
 .hero p { color: var(--muted); max-width: 560px; font-size: 13px; }
-.versionBox { display: grid; min-width: 180px; gap: 2px; padding: 14px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--card-shadow); }
+.versionBox { display: grid; min-width: 230px; gap: 2px; padding: 14px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--card-shadow); }
 .versionBox span, .versionBox small { color: var(--muted); font-size: 11px; }
-.versionBox strong { color: var(--accent); font-size: 20px; }
+.versionBox strong { color: var(--accent); font-size: 17px; margin: 2px 0; }
+.versionBox .versionId { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 0 2px; }
 .toolbar strong { color: var(--accent); }
 .toolbar span, .saveState { color: var(--muted); font-size: 12px; }

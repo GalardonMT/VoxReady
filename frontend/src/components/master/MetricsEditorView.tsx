@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ApiError } from '../../services/apiClient';
-import { changedThresholds, thresholdFields, updateThreshold, validateMetricThresholds } from '../../services/metricsModel';
+import { changedThresholds, formatPublishedDate, thresholdFields, updateThreshold, validateMetricThresholds } from '../../services/metricsModel';
 import type { MetricDefinition, MetricsVersion } from '../../services/metricsModel';
 import { metricsService } from '../../services/metricsService';
 import styles from './MetricsEditorView.module.css';
@@ -252,7 +252,9 @@ export function MetricsEditorView() {
           <p>Ajusta los intervalos por categoría y publica una nueva versión para su integración posterior.</p>
         </div>
         <div className={styles.versionBox}>
-          <span>Versión publicada</span><strong>{published ? published.versionLabel : 'Sin versión'}</strong>
+          <span>Versión publicada</span>
+          <strong>{published ? `${formatPublishedDate(published.publishedAt)} · Versión ${published.versionNumber}` : 'Sin versión'}</strong>
+          {published && <small className={styles.versionId}>ID: {published.versionLabel}</small>}
           <small>{draft ? `Borrador ${draft.versionLabel} en edición` : 'Sin borrador activo'}</small>
         </div>
       </div>
