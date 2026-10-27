@@ -259,6 +259,26 @@ class DatabaseService:
                 WHERE topic_id = ? AND status = 'active' ORDER BY sort_order
             """, row[9])
             key_messages = [message[0] for message in cur.fetchall()]
+
+            red_lines = []
+            try:
+                cur.execute("""
+                    SELECT text FROM dbo.topic_red_line
+                    WHERE topic_id = ? AND (status IS NULL OR status = 'active')
+                    ORDER BY sort_order ASC
+                """, row[9])
+                red_lines = [rl[0] for rl in cur.fetchall()]
+            except Exception as ex_rl:
+                logger.warning(f"Aviso al consultar dbo.topic_red_line, intentando fallback dbo.red_line: {ex_rl}")
+                try:
+                    cur.execute("""
+                        SELECT text FROM dbo.red_line
+                        WHERE topic_id = ? ORDER BY sort_order ASC
+                    """, row[9])
+                    red_lines = [rl[0] for rl in cur.fetchall()]
+                except Exception:
+                    red_lines = []
+
             cur.execute("""
                 SELECT id, area_key, weight FROM dbo.rubric_area
                 WHERE rubric_version_id = ?
@@ -277,6 +297,7 @@ class DatabaseService:
                     "optics": row[7],
                     "audience": row[8],
                     "key_messages": key_messages,
+                    "red_lines": red_lines,
                 },
                 "rubric_version_id": str(row[4]),
                 "rubric_areas": areas,

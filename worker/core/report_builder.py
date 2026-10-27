@@ -1,6 +1,60 @@
 import datetime
 from typing import Dict, Any, Optional
 
+try:
+    from config.scoring_rules import (
+        WEIGHT_EXPRESSION,
+        WEIGHT_VOICE,
+        WEIGHT_COHERENCE,
+        WEIGHT_EMPATHY,
+        VOICE_WEIGHT_WPM,
+        VOICE_WEIGHT_FLUENCY,
+        VOICE_WEIGHT_DICTION,
+        RED_LINE_SCORE_CAP,
+        EMPATHY_WEIGHT_VERBAL,
+        EMPATHY_WEIGHT_NONVERBAL,
+        DICTION_FALLBACK_SCORE,
+    )
+except (ImportError, ValueError):
+    try:
+        from core.scoring_rules import (
+            WEIGHT_EXPRESSION,
+            WEIGHT_VOICE,
+            WEIGHT_COHERENCE,
+            WEIGHT_EMPATHY,
+            VOICE_WEIGHT_WPM,
+            VOICE_WEIGHT_FLUENCY,
+            VOICE_WEIGHT_DICTION,
+            RED_LINE_SCORE_CAP,
+            EMPATHY_WEIGHT_VERBAL,
+            EMPATHY_WEIGHT_NONVERBAL,
+            DICTION_FALLBACK_SCORE,
+        )
+    except (ImportError, ValueError):
+        from worker.config.scoring_rules import (
+            WEIGHT_EXPRESSION,
+            WEIGHT_VOICE,
+            WEIGHT_COHERENCE,
+            WEIGHT_EMPATHY,
+            VOICE_WEIGHT_WPM,
+            VOICE_WEIGHT_FLUENCY,
+            VOICE_WEIGHT_DICTION,
+            RED_LINE_SCORE_CAP,
+            EMPATHY_WEIGHT_VERBAL,
+            EMPATHY_WEIGHT_NONVERBAL,
+            DICTION_FALLBACK_SCORE,
+        )
+
+
+def compute_empathy_score(non_verbal_score: float, victim_level: int) -> float:
+    """Calcula el área de empatía combinando el reconocimiento del afectado (verbal 60%)
+    con la compostura y contacto visual no verbal (40%).
+    """
+    safe_level = max(1, min(5, int(round(float(victim_level or 3)))))
+    verbal_score = ((safe_level - 1) / 4.0) * 100.0
+    final_empathy = (non_verbal_score * EMPATHY_WEIGHT_NONVERBAL) + (verbal_score * EMPATHY_WEIGHT_VERBAL)
+    return round(final_empathy, 1)
+
 
 def calculate_expression_area_score(vision_summary: dict) -> dict:
     """
@@ -72,31 +126,46 @@ class ReportBuilder:
         else:
             score_visual = round(max(0.0, min(100.0, (contacto_pct * 0.60) + (postura_score * 0.40))), 1)
 
-        # Audio: fluidez y dicción
+        # Audio: WPM, fluidez neta y dicción real
         audio_metrics = audio_result.get("metrics", {})
+        score_wpm = float(audio_metrics.get("score_wpm", 80.0))
         score_fluidez = float(audio_metrics.get("score_fluidez", 75.0))
-        score_diccion = float(audio_metrics.get("score_diccion", 100.0))
-        score_verbal = round(max(0.0, min(100.0, (score_fluidez * 0.60) + (score_diccion * 0.40))), 1)
+        score_diccion = float(audio_metrics.get("score_diccion", DICTION_FALLBACK_SCORE))
+        score_verbal = round(max(0.0, min(100.0,
+            (score_wpm * VOICE_WEIGHT_WPM) +
+            (score_fluidez * VOICE_WEIGHT_FLUENCY) +
+            (score_diccion * VOICE_WEIGHT_DICTION)
+        )), 1)
 
         # LLM: Juez Visum o apego a mensajes
+        infraccion_linea_roja = bool(llm_result.get("infraccion_linea_roja", False))
+        evidencia_linea_roja = llm_result.get("evidencia_linea_roja")
+
         if "puntaje_global_100" in llm_result:
             score_estrategico = float(llm_result["puntaje_global_100"])
             score_adherencia = float(llm_result.get("dimensiones", {}).get("alineacion_mensaje_clave", {}).get("score_100", score_estrategico))
             score_control = float(llm_result.get("dimensiones", {}).get("tecnicas_control", {}).get("score_100", score_estrategico))
-            score_empatia = float(llm_result.get("dimensiones", {}).get("asertividad_hostilidad", {}).get("score_100", 75.0))
         else:
             score_adherencia = float(llm_result.get("key_message_adherence_score", 70.0))
             score_control = float(llm_result.get("crisis_control_score", 70.0))
             score_estrategico = round(max(0.0, min(100.0, (score_adherencia * 0.50) + (score_control * 0.50))), 1)
-            score_empatia = 75.0
+
+        # Salvaguarda determinista: Si se vulneró una línea roja, Coherencia no puede superar RED_LINE_SCORE_CAP (20 pts)
+        if infraccion_linea_roja:
+            score_estrategico = min(score_estrategico, RED_LINE_SCORE_CAP)
+
+        # Empatía balanceada: 60% verbal (reconocimiento del afectado) + 40% no verbal (contacto visual y postura)
+        rec_afectados = llm_result.get("reconocimiento_afectados") or {}
+        victim_level = rec_afectados.get("nivel", 3) if isinstance(rec_afectados, dict) else 3
+        score_empatia = compute_empathy_score(score_visual, victim_level)
 
         # 2. Score Global Compuesto de la Sesión (4 Ejes Oficiales)
         # Expresión 25% | Voz 25% | Coherencia (Estrategia) 35% | Empatía 15%
         score_global = round(
-            (score_visual * 0.25) +
-            (score_verbal * 0.25) +
-            (score_estrategico * 0.35) +
-            (score_empatia * 0.15),
+            (score_visual * WEIGHT_EXPRESSION) +
+            (score_verbal * WEIGHT_VOICE) +
+            (score_estrategico * WEIGHT_COHERENCE) +
+            (score_empatia * WEIGHT_EMPATHY),
             1,
         )
 
@@ -127,6 +196,9 @@ class ReportBuilder:
                 "key_message_adherence_score": score_adherencia,
                 "crisis_control_score": score_control,
                 "bridging_detected": llm_result.get("bridging_detected", False),
+                "infraccion_linea_roja": infraccion_linea_roja,
+                "evidencia_linea_roja": evidencia_linea_roja,
+                "reconocimiento_afectados": rec_afectados,
                 "strengths": llm_result.get("strengths", []),
                 "weaknesses": llm_result.get("weaknesses", []),
                 "executive_summary": llm_result.get("executive_summary", ""),
@@ -158,6 +230,7 @@ class ReportBuilder:
                 "densidad_muletillas_pct": audio_metrics.get("densidad_muletillas_pct", 0.0),
                 "muletillas_detectadas": audio_metrics.get("muletillas_detectadas", []),
                 "conteo_muletillas": audio_metrics.get("conteo_muletillas", {}),
+                "score_wpm": score_wpm,
                 "score_fluidez": score_fluidez,
                 "score_diccion": score_diccion,
             },
@@ -253,8 +326,9 @@ def sanitize_report_json(
         "pausasProlongadas": int(audio_metrics.get("pausas_prolongadas", audio_metrics.get("pausasProlongadas", 0))),
         "densidadMuletillasPct": float(audio_metrics.get("densidad_muletillas_pct", audio_metrics.get("densidadMuletillasPct", 0.0))),
         "muletillasDetectadas": audio_metrics.get("muletillas_detectadas") or audio_metrics.get("muletillasDetectadas") or [],
+        "scoreWpm": float(audio_metrics.get("score_wpm", audio_metrics.get("scoreWpm", 80.0))),
         "scoreFluidez": float(audio_metrics.get("score_fluidez", audio_metrics.get("scoreFluidez", 0.0))),
-        "scoreDiccion": float(audio_metrics.get("score_diccion", audio_metrics.get("scoreDiccion", 100.0)))
+        "scoreDiccion": float(audio_metrics.get("score_diccion", audio_metrics.get("scoreDiccion", DICTION_FALLBACK_SCORE)))
     }
 
     # 4. Normalizar Dimensiones del Juez
@@ -280,16 +354,33 @@ def sanitize_report_json(
         else:
             clean_dims[camel_k] = v
 
+    infraccion_lr = bool(judge_metrics.get("infraccion_linea_roja", judge_metrics.get("infraccionLineaRoja", False)))
+    evidencia_lr = judge_metrics.get("evidencia_linea_roja") or judge_metrics.get("evidenciaLineaRoja")
+    rec_afectados_raw = judge_metrics.get("reconocimiento_afectados") or judge_metrics.get("reconocimientoAfectados") or {}
+    
     clean_judge = {
         "puntajeGlobal100": float(judge_metrics.get("puntaje_global_100", judge_metrics.get("puntajeGlobal100", 0.0))),
         "dimensiones": clean_dims,
-        "feedback": judge_metrics.get("feedback", {})
+        "feedback": judge_metrics.get("feedback", {}),
+        "infraccionLineaRoja": infraccion_lr,
+        "evidenciaLineaRoja": evidencia_lr,
+        "reconocimientoAfectados": {
+            "nivel": rec_afectados_raw.get("nivel", 3) if isinstance(rec_afectados_raw, dict) else 3,
+            "score": float(rec_afectados_raw.get("score_100", rec_afectados_raw.get("score", 50.0))) if isinstance(rec_afectados_raw, dict) else 50.0,
+            "criterio": rec_afectados_raw.get("criterio", "Mención neutra de afectados.") if isinstance(rec_afectados_raw, dict) else "Mención neutra de afectados."
+        }
     }
 
     # 5. Narrativa y Señal Cruzada
     strengths = visum_narrative.get("desempeno_observado", {}).get("fortalezas", [])
-    improvements = visum_narrative.get("desempeno_observado", {}).get("oportunidades_desarrollo", [])
+    improvements = list(visum_narrative.get("desempeno_observado", {}).get("oportunidades_desarrollo", []))
     cross_signal = str(visum_narrative.get("observacion_senal_cruzada", ""))
+
+    # Si hubo infracción de línea roja, inyectar alerta prioritaria en narrative improvements
+    if infraccion_lr:
+        alerta_lr = f"ALERTA CRÍTICA: Vulneraste una línea roja del escenario ({evidencia_lr or 'Infracción de política institucional'})."
+        if alerta_lr not in improvements:
+            improvements.insert(0, alerta_lr)
 
     return {
         "sessionId": session_id,

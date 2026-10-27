@@ -4,7 +4,21 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _PytestMock:
+        class raises:
+            def __init__(self, expected_exc, match=None):
+                self.expected_exc = expected_exc
+                self.match = match
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_type is None:
+                    raise AssertionError(f"Expected {self.expected_exc} but no exception was raised.")
+                return issubclass(exc_type, self.expected_exc)
+    pytest = _PytestMock()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from services.db_service import DatabaseService
@@ -41,7 +55,7 @@ def session_row(client_id="client-a", job_rubric="rubric-a"):
 def test_context_comes_from_exact_job_session_and_tenant():
     cursor = MagicMock()
     cursor.fetchone.return_value = session_row()
-    cursor.fetchall.side_effect = [[("Mensaje A",)], [("area-a", "expression", 25)]]
+    cursor.fetchall.side_effect = [[("Mensaje A",)], [("Línea roja 1",)], [("area-a", "expression", 25)]]
 
     context = service_with_cursor(cursor).get_session_context("session-public", "job-a")
 
@@ -57,6 +71,7 @@ def test_context_comes_from_exact_job_session_and_tenant():
     assert context["user_id"] == "owner-a"
     assert context["scenario"]["scenario_id"] == "scenario-a"
     assert context["scenario"]["key_messages"] == ["Mensaje A"]
+    assert context["scenario"]["red_lines"] == ["Línea roja 1"]
     assert context["rubric_version_id"] == "rubric-a"
     assert context["rubric_areas"]["expression"]["id"] == "area-a"
 
