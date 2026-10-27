@@ -271,6 +271,7 @@ export interface MetricsSummary {
   wpm?: number;
   fillerWordsCount?: number;
   fillerWordsDensityPct?: number;
+  durationSeconds?: number;
 }
 
 export interface FullVisumReport {
@@ -417,4 +418,3 @@ export interface SessionHistoryItem {
   overallScore: number;
   hasReport: boolean;
 }
-
