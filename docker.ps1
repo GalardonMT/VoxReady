@@ -1,7 +1,8 @@
 param(
     [ValidateSet('up', 'build', 'verify', 'test', 'seed', 'logs', 'stop')]
     [string]$Action = 'up',
-    [switch]$LocalDevAuth
+    [switch]$LocalDevAuth,
+    [string]$EnvFile = '.env'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,10 +25,10 @@ try {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         throw 'Instala Docker Desktop y abre su motor Linux.'
     }
-    if (-not (Test-Path -LiteralPath '.env')) {
-        throw 'Configura .env en la raíz siguiendo .env.example antes de ejecutar Docker.'
+    if (-not (Test-Path -LiteralPath $EnvFile)) {
+        throw "Configura $EnvFile siguiendo una plantilla .env.*.example antes de ejecutar Docker."
     }
-    $ComposeFiles = @('compose', '-f', 'docker-compose.azure.yml')
+    $ComposeFiles = @('compose', '--env-file', $EnvFile, '-f', 'docker-compose.azure.yml')
     if ($LocalDevAuth) {
         $ComposeFiles += @('-f', 'docker-compose.local-auth.yml')
     }

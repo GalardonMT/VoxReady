@@ -1,6 +1,7 @@
 export type Role = 'spokesperson' | 'client_admin' | 'master_config';
 
 export type LifecycleStatus = 'active' | 'archived';
+export type ClientStatus = 'active' | 'suspended';
 export type MasterOptics = 'empathetic' | 'formal' | 'technical';
 export type MasterAudience = 'leadership' | 'frontline' | 'technical';
 export type MasterCategory = 'health' | 'operational' | 'reputational';
@@ -9,7 +10,34 @@ export type MasterDifficulty = 'basic' | 'intermediate' | 'hard';
 export interface ClientInfo {
   id: string;
   name: string;
-  status?: LifecycleStatus;
+  status?: ClientStatus;
+  createdAt?: string;
+  updatedAt?: string;
+  isDeleted?: boolean;
+  deletedAt?: string | null;
+}
+
+export interface ClientInput {
+  name: string;
+  status: ClientStatus;
+  spokespersonIds?: string[];
+}
+
+export type SpokespersonLinkState = 'available' | 'linked' | 'assigned_elsewhere';
+
+export interface SpokespersonCandidate {
+  id: string;
+  displayName: string;
+  email: string;
+  clientId: string | null;
+  clientName: string | null;
+  linkState: SpokespersonLinkState;
+}
+
+export interface SpokespersonLinkResult {
+  clientId: string;
+  spokespersonIds: string[];
+  total: number;
 }
 
 export interface MasterQuestion {

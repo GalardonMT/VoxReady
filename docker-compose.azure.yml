@@ -73,6 +73,8 @@ services:
       target: test
     environment:
       <<: *api-env
+      ENVIRONMENT: development
+      DEV_AUTH: "true"
       VOXREADY_TEST_AZURE_SQL: "1"
     depends_on:
       init:

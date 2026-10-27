@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from master_topics import MASTER_SCHEMA_DDL
+from client_store import CLIENT_SCHEMA_DDL
 from spokesperson_store import SESSION_SCHEMA_DDL, SESSION_INDEX_DDL
 from progress_migration import (
     PROGRESS_SCHEMA_DDL,
@@ -23,6 +24,7 @@ from metrics_migration import migrate as migrate_metrics, verify as verify_metri
 from seed_master_topics import connect, SeedError, SCENARIO_QUESTION_DDL, verify_link_schema
 
 REQUIRED = {
+    'client': ('id', 'name', 'status', 'created_at', 'updated_at', 'is_deleted', 'deleted_at'),
     'topic': ('client_id',), 'question': ('client_id', 'sort_order'),
     'topic_key_message': ('status',), 'topic_red_line': ('status',),
     'scenario_question': ('status', 'sequence_no'),
@@ -73,6 +75,54 @@ def verify(cursor):
         row = cursor.fetchone()
         if not row or not row[0]:
             raise SeedError(f'dbo.{table}.client_id no admite los temas maestros globales.')
+    cursor.execute("""SELECT name,TYPE_NAME(user_type_id),max_length,is_nullable
+                      FROM sys.columns WHERE object_id=OBJECT_ID(N'dbo.client')""")
+    client_columns = {row[0].lower(): tuple(row[1:]) for row in cursor.fetchall()}
+    if client_columns.get('id') != ('uniqueidentifier', 16, False):
+        raise SeedError('dbo.client.id debe ser UNIQUEIDENTIFIER NOT NULL.')
+    if client_columns.get('name') != ('nvarchar', 300, False):
+        raise SeedError('dbo.client.name debe ser NVARCHAR(150) NOT NULL.')
+    expected_client_columns = {
+        'status': ('nvarchar', 40, False),
+        'created_at': ('datetime2', 8, False),
+        'updated_at': ('datetime2', 8, False),
+        'is_deleted': ('bit', 1, False),
+        'deleted_at': ('datetime2', 8, True),
+    }
+    for column, expected in expected_client_columns.items():
+        if client_columns.get(column) != expected:
+            raise SeedError(f'dbo.client.{column} no coincide con el modelo requerido.')
+    cursor.execute("""SELECT c.name FROM sys.key_constraints kc
+        JOIN sys.index_columns ic ON ic.object_id=kc.parent_object_id AND ic.index_id=kc.unique_index_id
+        JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+        WHERE kc.parent_object_id=OBJECT_ID('dbo.client') AND kc.type='PK'""")
+    if [row[0].lower() for row in cursor.fetchall()] != ['id']:
+        raise SeedError('dbo.client debe usar id como clave primaria unica.')
+    for constraint in ('CK_client_status', 'CK_client_name'):
+        cursor.execute("""SELECT is_disabled,is_not_trusted FROM sys.check_constraints
+                          WHERE parent_object_id=OBJECT_ID('dbo.client') AND name=?""", constraint)
+        row = cursor.fetchone()
+        if not row or row[0] or row[1]:
+            raise SeedError(f'Falta la restriccion activa y confiable {constraint}.')
+    cursor.execute("""SELECT c.is_nullable,TYPE_NAME(c.user_type_id)
+                      FROM sys.columns c
+                      WHERE c.object_id=OBJECT_ID(N'dbo.app_user') AND c.name=N'client_id'""")
+    app_user_client = cursor.fetchone()
+    if not app_user_client or not app_user_client[0] or app_user_client[1].lower() != 'uniqueidentifier':
+        raise SeedError('dbo.app_user.client_id debe ser UNIQUEIDENTIFIER NULL para permitir al maestro sin empresa.')
+    cursor.execute("""SELECT fk.is_disabled,fk.is_not_trusted
+                      FROM sys.foreign_keys fk
+                      JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id=fk.object_id
+                      JOIN sys.columns parent_col ON parent_col.object_id=fkc.parent_object_id
+                                                   AND parent_col.column_id=fkc.parent_column_id
+                      JOIN sys.columns referenced_col ON referenced_col.object_id=fkc.referenced_object_id
+                                                       AND referenced_col.column_id=fkc.referenced_column_id
+                      WHERE fk.parent_object_id=OBJECT_ID(N'dbo.app_user')
+                        AND fk.referenced_object_id=OBJECT_ID(N'dbo.client')
+                        AND parent_col.name=N'client_id' AND referenced_col.name=N'id'""")
+    app_user_client_fk = cursor.fetchone()
+    if not app_user_client_fk or app_user_client_fk[0] or app_user_client_fk[1]:
+        raise SeedError('Falta la clave foranea activa de app_user.client_id a client.id.')
     verify_link_schema(cursor)
     cursor.execute("""SELECT is_nullable, TYPE_NAME(user_type_id)
                       FROM sys.columns
@@ -225,6 +275,7 @@ def main(argv=None):
             cursor.execute(SCENARIO_QUESTION_DDL)
             # Batches separados para compilar después de añadir cada columna.
             cursor.execute(MASTER_SCHEMA_DDL)
+            cursor.execute(CLIENT_SCHEMA_DDL)
             cursor.execute("""UPDATE q SET sort_order=assigned.position FROM dbo.question q
                 JOIN (SELECT question_id,MIN(sequence_no) AS position FROM dbo.scenario_question
                       WHERE status='active' GROUP BY question_id) assigned

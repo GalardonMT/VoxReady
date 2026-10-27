@@ -5,7 +5,7 @@ import { useI18n } from '../../context/I18nContext';
 import { metricsService } from '../../services/metricsService';
 import type { MetricsVersion } from '../../services/metricsModel';
 
-export type MasterScreen = 'm1' | 'm2' | 'm3' | 'm4' | 'm5' | 'm6' | 'm7';
+export type MasterScreen = 'm1' | 'm2' | 'm3' | 'm4' | 'm5' | 'm6' | 'm7' | 'm8';
 
 interface MasterDashboardProps {
   onNavigate: (screen: MasterScreen) => void;
