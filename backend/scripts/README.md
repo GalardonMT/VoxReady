@@ -1,5 +1,19 @@
 # Fase 1: temas maestros y escenarios de ejemplo
 
+## Editor de métricas de la rúbrica
+
+`prepare_azure_database.py` añade cuatro tablas para el catálogo fijo, los
+intervalos publicados y un único borrador. En su primera ejecución copia la
+última rúbrica publicada y sus áreas con nuevos identificadores, y publica los
+16 intervalos iniciales aprobados para español. No modifica las versiones ni
+las sesiones anteriores. A partir de esa ejecución, las sesiones nuevas toman
+la nueva versión publicada; el worker conserva su comportamiento actual.
+
+La API de `master_config` permite crear un borrador, guardar los 16 límites con
+control de revisión, descartarlo o publicar una nueva versión transaccional. La migración se
+ejecuta automáticamente al iniciar mediante el servicio `init` de Compose; por
+eso el despliegue requiere revisar y aprobar primero el cambio de versión.
+
 El script `seed_master_topics.py` implementa las secciones 4.2, 5 y 8 del
 plan técnico. Los textos completos en español están en
 `master_topics_seed.json`; los códigos persistidos están en inglés técnico.

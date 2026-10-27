@@ -107,6 +107,38 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
     return '#ef4444'; // Rojo crítico
   };
 
+  if (loading) {
+    return (
+      <div className="canvas-content" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '360px', padding: '40px 20px' }}>
+        <div
+          className="card"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '48px 32px',
+            maxWidth: '460px',
+            width: '100%',
+            textAlign: 'center',
+            background: 'var(--panel)',
+            border: '1px solid var(--line)',
+            borderRadius: '16px',
+            boxShadow: 'var(--card-shadow, 0 8px 32px rgba(0,0,0,0.06))'
+          }}
+        >
+          <div className="upload-overlay-spinner" style={{ width: '48px', height: '48px', borderWidth: '3.5px', marginBottom: '20px' }} />
+          <h3 style={{ fontSize: '18px', fontWeight: 700, margin: '0 0 8px 0', color: 'var(--ink)' }}>
+            Cargando evaluación...
+          </h3>
+          <p style={{ fontSize: '13px', color: 'var(--muted)', margin: 0, lineHeight: 1.5 }}>
+            Recuperando métricas, análisis multimodal y dictamen del juez para la sesión.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="canvas-content">
       {/* Global Evaluation Card */}

@@ -205,12 +205,6 @@ export const en = {
       series: ["Expression", "Tone of voice", "Coherence", "Empathy"],
       tblTitle: "Dimensional improvement",
       tblCols: ["Area", "Current", "Change"],
-      recoTitle: "Actionable recommendations",
-      recos: [
-        { t: "Strengthen eye contact", d: "Your empathy rating drops when looking away under pressure. Practice steady gaze." },
-        { t: "Minimize vocal fillers", d: "Logged 14 filler sounds per session. Diction microlesson helps streamline delivery." },
-        { t: "Master bridging transitions", d: "Difficulties pivoting back to core messages after hostile questions." }
-      ],
       calTitle: "Schedule your next practice",
       calHelp: "Pick a date on the calendar to reserve your next practice slot.",
       calBtn: "Confirm schedule",

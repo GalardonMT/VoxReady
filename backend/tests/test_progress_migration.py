@@ -132,6 +132,8 @@ class VerificationCursor:
 
 def test_verify_requires_progress_columns_indexes_and_schedule_foreign_key(monkeypatch):
     monkeypatch.setattr(prepare, "verify_link_schema", lambda cursor: None)
+    monkeypatch.setattr(prepare, "verify_assignment_schema", lambda cursor, error_type: None)
+    monkeypatch.setattr(prepare, "verify_metrics", lambda cursor: None)
 
     prepare.verify(VerificationCursor())
 
