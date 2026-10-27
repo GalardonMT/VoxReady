@@ -161,6 +161,25 @@ def test_latest_published_selects_actual_latest_even_if_metrics_missing(monkeypa
     assert 'JOIN dbo.rubric_metric_value' not in cursor.sql
 
 
+def test_published_version_number_uses_chronological_order():
+    class Cursor:
+        def execute(self, sql, *args):
+            self.sql = sql
+            self.args = args
+            return self
+
+        def fetchone(self):
+            return (3,)
+
+    cursor = Cursor()
+    version_id = '00000000-0000-0000-0000-000000000003'
+    assert metrics_store._published_version_number(cursor, version_id) == 3
+    assert 'ROW_NUMBER() OVER' in cursor.sql
+    assert 'ORDER BY published_at,created_at,id' in cursor.sql
+    assert "WHERE status='published'" in cursor.sql
+    assert cursor.args == (version_id,)
+
+
 def test_save_draft_rejects_stale_revision_before_writes():
     class Cursor:
         def execute(self, sql, *args):

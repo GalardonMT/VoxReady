@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { changedThresholds, validateMetricThresholds, updateThreshold } from '../src/services/metricsModel.ts';
+import { changedThresholds, formatPublishedDate, validateMetricThresholds, updateThreshold } from '../src/services/metricsModel.ts';
 
 const metric = {
   key: 'voice.wpm', category: 'voice', label: 'Ritmo', description: '', unit: 'WPM',
@@ -33,4 +33,10 @@ test('a scalar configuration must stay within its fixed scale', () => {
   assert.ok(validateMetricThresholds({ ...rate, thresholds: { rate: 31 } }).length > 0);
   assert.ok(validateMetricThresholds({ ...rate, thresholds: { rate: 10.5 } }).length > 0);
   assert.ok(validateMetricThresholds({ ...rate, thresholds: { rate: 10, extra: 2 } }).length > 0);
+});
+
+test('published dates use the agreed day, month and year format', () => {
+  assert.equal(formatPublishedDate('2026-10-27T15:16:48.000000'), '27/10/2026');
+  assert.equal(formatPublishedDate(null), 'Fecha no disponible');
+  assert.equal(formatPublishedDate('invalid'), 'Fecha no disponible');
 });

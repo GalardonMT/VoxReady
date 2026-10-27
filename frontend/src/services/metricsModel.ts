@@ -15,11 +15,17 @@ export interface MetricDefinition {
 export interface MetricsVersion {
   id: string;
   versionLabel: string;
+  versionNumber: number | null;
   status: 'draft' | 'published';
   revision: number;
   createdAt: string;
   publishedAt: string | null;
   metrics: MetricDefinition[];
+}
+
+export function formatPublishedDate(publishedAt: string | null): string {
+  const date = publishedAt?.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return date ? `${date[3]}/${date[2]}/${date[1]}` : 'Fecha no disponible';
 }
 
 export interface ThresholdChange {
