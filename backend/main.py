@@ -1081,6 +1081,22 @@ class MicrolessonVideoFinalizeRequest(MicrolessonVideoUploadRequest):
     blobPath: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
 
 
+class MicrolessonAssignmentRequest(BaseModel):
+    userIds: Annotated[list[uuid.UUID], Field(min_length=1, max_length=100)]
+    sortOrder: Annotated[int, Field(strict=True, gt=0)]
+
+    @field_validator('userIds')
+    @classmethod
+    def distinct_users(cls, users):
+        if len(set(users)) != len(users):
+            raise ValueError('No se puede asignar al mismo vocero dos veces.')
+        return users
+
+
+class MicrolessonAssignmentOrderRequest(BaseModel):
+    sortOrder: Annotated[int, Field(strict=True, gt=0)]
+
+
 @app.get('/api/master/clients')
 @app.get('/v1/api/master/clients')
 def master_clients(user: dict = Depends(verify_token)):
@@ -1213,6 +1229,12 @@ def master_microlesson_scenarios(
     return microlesson_store.scenarios_for_client(SQL_CONN_STR, user, str(client_id), status)
 
 
+@app.get('/api/master/microlessons/clients/{client_id}/spokespersons')
+@app.get('/v1/api/master/microlessons/clients/{client_id}/spokespersons')
+def master_microlesson_spokespersons(client_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.spokespersons_for_client(SQL_CONN_STR, user, str(client_id))
+
+
 @app.get('/api/master/microlessons')
 @app.get('/v1/api/master/microlessons')
 def master_microlessons(
@@ -1227,6 +1249,36 @@ def master_microlessons(
 @app.get('/v1/api/master/microlessons/{microlesson_id}')
 def master_microlesson_detail(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
     return microlesson_store.get_master(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.get('/api/master/microlessons/{microlesson_id}/assignments')
+@app.get('/v1/api/master/microlessons/{microlesson_id}/assignments')
+def master_microlesson_assignments(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.list_assignments_master(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.post('/api/master/microlessons/{microlesson_id}/assignments')
+@app.post('/v1/api/master/microlessons/{microlesson_id}/assignments')
+def master_assign_microlesson(microlesson_id: uuid.UUID, payload: MicrolessonAssignmentRequest,
+                              user: dict = Depends(verify_token)):
+    return microlesson_store.assign_master(SQL_CONN_STR, user, str(microlesson_id), payload)
+
+
+@app.patch('/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/order')
+@app.patch('/v1/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/order')
+def master_order_microlesson_assignment(microlesson_id: uuid.UUID, assignment_id: uuid.UUID,
+                                        payload: MicrolessonAssignmentOrderRequest,
+                                        user: dict = Depends(verify_token)):
+    return microlesson_store.order_assignment_master(SQL_CONN_STR, user, str(microlesson_id),
+                                                     str(assignment_id), payload.sortOrder)
+
+
+@app.post('/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/revoke')
+@app.post('/v1/api/master/microlessons/{microlesson_id}/assignments/{assignment_id}/revoke')
+def master_revoke_microlesson_assignment(microlesson_id: uuid.UUID, assignment_id: uuid.UUID,
+                                         user: dict = Depends(verify_token)):
+    return microlesson_store.revoke_assignment_master(SQL_CONN_STR, user, str(microlesson_id),
+                                                      str(assignment_id))
 
 
 @app.post('/api/master/microlessons', status_code=201)
@@ -1406,6 +1458,30 @@ def master_microlesson_video_url(microlesson_id: uuid.UUID, user: dict = Depends
 @app.get('/v1/microlessons')
 def spokesperson_microlessons(user: dict = Depends(verify_token)):
     return microlesson_store.list_spokesperson(SQL_CONN_STR, user)
+
+
+@app.get('/microlessons/recommendations')
+@app.get('/v1/microlessons/recommendations')
+def spokesperson_microlesson_recommendations(user: dict = Depends(verify_token)):
+    return microlesson_store.recommendations(SQL_CONN_STR, user)
+
+
+@app.post('/microlessons/{microlesson_id}/start')
+@app.post('/v1/microlessons/{microlesson_id}/start')
+def spokesperson_start_microlesson(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.start_spokesperson(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.post('/microlessons/{microlesson_id}/complete')
+@app.post('/v1/microlessons/{microlesson_id}/complete')
+def spokesperson_complete_microlesson(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.complete_spokesperson(SQL_CONN_STR, user, str(microlesson_id))
+
+
+@app.post('/microlessons/{microlesson_id}/restart')
+@app.post('/v1/microlessons/{microlesson_id}/restart')
+def spokesperson_restart_microlesson(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
+    return microlesson_store.restart_spokesperson(SQL_CONN_STR, user, str(microlesson_id))
 
 
 @app.get('/microlessons/{microlesson_id}')

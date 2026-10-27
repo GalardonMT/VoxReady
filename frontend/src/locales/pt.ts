@@ -205,12 +205,6 @@ export const pt = {
       series: ["Expressão", "Tom de voz", "Coerência", "Empatia"],
       tblTitle: "Avanço por área",
       tblCols: ["Área", "Atual", "Variação"],
-      recoTitle: "Recomendações para você",
-      recos: [
-        { t: "Trabalhe o contato visual", d: "Sua empatia cai quando desvia o olhar sob tensão. Pratique mantê-lo firme." },
-        { t: "Reduza vícios de linguagem", d: "Detectamos 14 'é/né' por sessão. A microlição de dicção ajuda bastante." },
-        { t: "Reforce a mensagem-ponte", d: "Dificuldade em retornar à mensagem central após perguntas provocativas." }
-      ],
       calTitle: "Agende sua próxima sessão",
       calHelp: "Escolha um dia no calendário para marcar seu treino.",
       calBtn: "Confirmar data",

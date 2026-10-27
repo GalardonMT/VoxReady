@@ -5,6 +5,11 @@ import type {
   Microlesson,
   MicrolessonInput,
   MicrolessonScenario,
+  MicrolessonAssignment,
+  MicrolessonCatalog,
+  MicrolessonRecommendations,
+  MicrolessonSpokesperson,
+  SpokespersonMicrolessonDetail,
 } from '../types/api';
 
 const masterBase = '/api/master/microlessons';
@@ -21,6 +26,21 @@ interface UploadTicket {
 }
 
 export const masterMicrolessonService = {
+  async spokespersons(clientId: string): Promise<MicrolessonSpokesperson[]> {
+    return (await apiFetch<{ items: MicrolessonSpokesperson[] }>(`${masterBase}/clients/${id(clientId)}/spokespersons`)).items;
+  },
+  async assignments(microlessonId: string): Promise<MicrolessonAssignment[]> {
+    return (await apiFetch<{ items: MicrolessonAssignment[] }>(`${masterBase}/${id(microlessonId)}/assignments`)).items;
+  },
+  async assign(microlessonId: string, userIds: string[], sortOrder: number): Promise<MicrolessonAssignment[]> {
+    return (await apiFetch<{ items: MicrolessonAssignment[] }>(`${masterBase}/${id(microlessonId)}/assignments`, json('POST', { userIds, sortOrder }))).items;
+  },
+  reorder(microlessonId: string, assignmentId: string, sortOrder: number): Promise<MicrolessonAssignment> {
+    return apiFetch(`${masterBase}/${id(microlessonId)}/assignments/${id(assignmentId)}/order`, json('PATCH', { sortOrder }));
+  },
+  revoke(microlessonId: string, assignmentId: string): Promise<MicrolessonAssignment> {
+    return apiFetch(`${masterBase}/${id(microlessonId)}/assignments/${id(assignmentId)}/revoke`, { method: 'POST' });
+  },
   async clients(): Promise<ClientInfo[]> {
     return (await apiFetch<{ items: ClientInfo[] }>(`${masterBase}/clients?status=all`)).items;
   },
@@ -75,11 +95,23 @@ export const masterMicrolessonService = {
 };
 
 export const microlessonService = {
-  async list(): Promise<Microlesson[]> {
-    return (await apiFetch<{ items: Microlesson[] }>('/microlessons')).items;
+  list(): Promise<MicrolessonCatalog> {
+    return apiFetch('/microlessons');
   },
-  detail(microlessonId: string): Promise<Microlesson> {
+  recommendations(): Promise<MicrolessonRecommendations> {
+    return apiFetch('/microlessons/recommendations');
+  },
+  detail(microlessonId: string): Promise<SpokespersonMicrolessonDetail> {
     return apiFetch(`/microlessons/${id(microlessonId)}`);
+  },
+  start(microlessonId: string): Promise<{ assignmentId: string; assignmentStatus: 'in_progress'; sortOrder: number }> {
+    return apiFetch(`/microlessons/${id(microlessonId)}/start`, { method: 'POST' });
+  },
+  complete(microlessonId: string): Promise<{ assignmentId: string; assignmentStatus: 'completed'; sortOrder: number }> {
+    return apiFetch(`/microlessons/${id(microlessonId)}/complete`, { method: 'POST' });
+  },
+  restart(microlessonId: string): Promise<{ assignmentId: string; assignmentStatus: 'assigned'; sortOrder: number }> {
+    return apiFetch(`/microlessons/${id(microlessonId)}/restart`, { method: 'POST' });
   },
   async playbackUrl(microlessonId: string): Promise<string> {
     return (await apiFetch<{ playbackUrl: string }>(`/microlessons/${id(microlessonId)}/video-url`)).playbackUrl;
