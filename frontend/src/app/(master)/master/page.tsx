@@ -9,6 +9,7 @@ import { TopicCatalogView } from '../../../components/master/TopicCatalogView';
 import { MasterTopicEditorView } from '../../../components/master/MasterTopicEditorView';
 import { MicrolessonManagerView } from '../../../components/master/MicrolessonManagerView';
 import { MetricsEditorView } from '../../../components/master/MetricsEditorView';
+import { ClientManagerView } from '../../../components/master/ClientManagerView';
 import { useI18n } from '../../../context/I18nContext';
 import { useAuth } from '../../../context/AuthContext';
 import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
@@ -44,7 +45,8 @@ function MasterContent() {
     { id: 'm3', label: 'Cola de Etiquetado', icon: '🎯' },
     { id: 'm4', label: t.masterTopics.catalog, icon: '📚' },
     { id: 'm5', label: t.masterTopics.editor, icon: '✏️' },
-    { id: 'm6', label: 'Microlecciones', icon: '📖' }
+    { id: 'm6', label: 'Microlecciones', icon: '📖' },
+    { id: 'm8', label: 'Clientes', icon: '🏢' }
   ];
 
   return (
@@ -123,6 +125,7 @@ function MasterContent() {
         {masterScreen === 'm5' && <MasterTopicEditorView key={`${user.userId}:${selectedTopicId || 'new'}`} topicId={selectedTopicId}
           onCreated={setSelectedTopicId} onBack={() => handleMasterNavigate('m4')} />}
         {masterScreen === 'm6' && <MicrolessonManagerView />}
+        {masterScreen === 'm8' && <ClientManagerView />}
       </main>
     </div>
   );
