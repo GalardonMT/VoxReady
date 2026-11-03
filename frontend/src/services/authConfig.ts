@@ -8,34 +8,32 @@ import { Configuration, LogLevel, PublicClientApplication } from '@azure/msal-br
 
 const tenantId = process.env.NEXT_PUBLIC_AZURE_TENANT_ID ?? '';
 const clientId = process.env.NEXT_PUBLIC_AZURE_CLIENT_ID ?? '';
-const redirectUri = process.env.NEXT_PUBLIC_REDIRECT_URI ?? process.env.NEXT_PUBLIC_AZURE_REDIRECT_URI ?? 'http://localhost:3000';
+const redirectUri = process.env.NEXT_PUBLIC_REDIRECT_URI ?? process.env.NEXT_PUBLIC_AZURE_REDIRECT_URI ?? '';
 const apiScope = process.env.NEXT_PUBLIC_AZURE_API_SCOPE ?? '';
-const authority = process.env.NEXT_PUBLIC_AZURE_AUTHORITY || `https://login.microsoftonline.com/${tenantId}`;
+const authority = process.env.NEXT_PUBLIC_AZURE_AUTHORITY ?? '';
 
 /**
  * Whether Azure auth is fully configured.
- * When false the app falls back to the demo/mock login flow.
+ * When false the app uses only the explicitly configured local-development flow.
  */
-export const isAzureConfigured = Boolean(tenantId && clientId);
+export const isAzureConfigured = Boolean(tenantId && clientId && redirectUri && apiScope && authority);
 
-let authorityHost = 'login.microsoftonline.com';
+let authorityHost = '';
 try {
   authorityHost = new URL(authority).hostname;
 } catch {
-  // fallback default host
+  // An invalid or absent authority keeps Azure authentication disabled.
 }
 
 const msalConfig: Configuration = {
   auth: {
     clientId,
     authority,
-    knownAuthorities: [authorityHost, 'login.microsoftonline.com'],
+    knownAuthorities: authorityHost ? [authorityHost] : [],
     redirectUri,
     postLogoutRedirectUri: redirectUri,
   },
-  cache: {
-    cacheLocation: 'localStorage',
-  },
+  cache: { cacheLocation: 'sessionStorage' },
   system: {
     loggerOptions: {
       logLevel: LogLevel.Warning,

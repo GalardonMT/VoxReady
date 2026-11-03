@@ -1,20 +1,15 @@
 /**
  * Service for Rubric and Labeling queue management (Master Configurator)
  */
-import { apiFetch, isAccessError } from './apiClient';
+import { apiFetch } from './apiClient';
 import { MasterRubric, LabelingCase } from '../types/api';
-import { INITIAL_MASTER_RUBRIC, INITIAL_LABELING_QUEUE } from '../mock/mockData';
 
 export const rubricService = {
   /**
    * Obtiene la versión activa de la rúbrica maestra
    */
   async getMasterRubric(): Promise<MasterRubric> {
-    try {
-      return await apiFetch<MasterRubric>('/master/rubric/active');
-    } catch (error) { if (isAccessError(error)) throw error;
-      return INITIAL_MASTER_RUBRIC;
-    }
+    return apiFetch<MasterRubric>('/master/rubric/active');
   },
 
   /**
@@ -35,11 +30,7 @@ export const rubricService = {
    * Obtiene los casos pendientes en la cola de etiquetado
    */
   async getLabelingCases(): Promise<LabelingCase[]> {
-    try {
-      return await apiFetch<LabelingCase[]>('/master/labeling-cases');
-    } catch (error) { if (isAccessError(error)) throw error;
-      return INITIAL_LABELING_QUEUE;
-    }
+    return apiFetch<LabelingCase[]>('/master/labeling-cases');
   },
 
   /**

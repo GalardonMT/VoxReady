@@ -44,11 +44,9 @@ class AudioAnalyzer:
         language_code: Optional[str] = None,
     ):
         self.api_key = api_key or get_secret("NVIDIA_API_KEY")
-        self.server = server or get_secret("NVIDIA_RIVA_SERVER", "grpc.nvcf.nvidia.com:443")
-        self.function_id = function_id or get_secret(
-            "NVIDIA_FUNCTION_ID", "71203149-d3b7-4460-8231-1be2543a1fca"
-        )
-        self.language_code = language_code or get_secret("NVIDIA_LANGUAGE_CODE", "es-US")
+        self.server = server or get_secret("NVIDIA_RIVA_SERVER")
+        self.function_id = function_id or get_secret("NVIDIA_FUNCTION_ID")
+        self.language_code = language_code or get_secret("NVIDIA_LANGUAGE_CODE")
 
     def calcular_acustica_rms(
         self, audio_path: str, frame_duration_ms: int = 30
@@ -158,9 +156,18 @@ class AudioAnalyzer:
             logger.error("riva.client (nvidia-riva-client) no está instalado.")
             raise ImportError("nvidia-riva-client es requerido para la transcripción ASR.") from e
 
-        if not self.api_key:
-            logger.error("NVIDIA_API_KEY no configurada para transcripción Riva ASR.")
-            raise ValueError("NVIDIA_API_KEY no configurada para el servicio de transcripción Riva ASR.")
+        missing = [
+            name
+            for name, value in (
+                ("NVIDIA_API_KEY", self.api_key),
+                ("NVIDIA_RIVA_SERVER", self.server),
+                ("NVIDIA_FUNCTION_ID", self.function_id),
+                ("NVIDIA_LANGUAGE_CODE", self.language_code),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"Falta configurar el servicio Riva: {', '.join(missing)}.")
 
         auth = riva.client.Auth(
             use_ssl=True,

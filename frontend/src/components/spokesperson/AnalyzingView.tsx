@@ -7,20 +7,19 @@ import { sessionService, AzureReportResponse } from '../../services/sessionServi
 
 interface AnalyzingViewProps {
   onNavigate: (screen: VoceroScreen) => void;
-  sessionId?: string;
+  sessionId: string;
   onReportReady?: (report: AzureReportResponse) => void;
 }
 
 export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
   onNavigate,
-  sessionId = 'session-e2e-final-002',
+  sessionId,
   onReportReady
 }) => {
   const { t } = useI18n();
   const d = t.L.u5;
 
   const [isCompleted, setIsCompleted] = useState(false);
-  const [step1Done, setStep1Done] = useState(true);
   const [step2Done, setStep2Done] = useState(false);
   const [step3Done, setStep3Done] = useState(false);
   const [step4Done, setStep4Done] = useState(false);
@@ -53,7 +52,6 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
       pollCountRef.current += 1;
 
       if (raw && (raw.status === 'completed' || raw.puntuacion_global)) {
-        setStep1Done(true);
         setStep2Done(true);
         setStep3Done(true);
         setStep4Done(true);
@@ -88,11 +86,12 @@ export const AnalyzingView: React.FC<AnalyzingViewProps> = ({
       if (done && interval) clearInterval(interval);
     }, 5000);
 
-    // Primera verificación inmediata
-    checkStatus();
+    // Primera verificación al ceder el control al navegador.
+    const initialCheck = window.setTimeout(() => void checkStatus(), 0);
 
     return () => {
       cancelled = true;
+      clearTimeout(initialCheck);
       clearInterval(interval);
     };
   }, [checkStatus]);

@@ -41,7 +41,12 @@ def session_row(client_id="client-a", job_rubric="rubric-a"):
 def test_context_comes_from_exact_job_session_and_tenant():
     cursor = MagicMock()
     cursor.fetchone.return_value = session_row()
-    cursor.fetchall.side_effect = [[("Mensaje A",)], [("area-a", "expression", 25)]]
+    cursor.fetchall.side_effect = [
+        [("Mensaje A",)],
+        [("Línea roja A",)],
+        [("Pregunta A",)],
+        [("area-a", "expression", 25)],
+    ]
 
     context = service_with_cursor(cursor).get_session_context("session-public", "job-a")
 
@@ -57,6 +62,8 @@ def test_context_comes_from_exact_job_session_and_tenant():
     assert context["user_id"] == "owner-a"
     assert context["scenario"]["scenario_id"] == "scenario-a"
     assert context["scenario"]["key_messages"] == ["Mensaje A"]
+    assert context["scenario"]["red_lines"] == ["Línea roja A"]
+    assert context["scenario"]["questions"] == ["Pregunta A"]
     assert context["rubric_version_id"] == "rubric-a"
     assert context["rubric_areas"]["expression"]["id"] == "area-a"
 

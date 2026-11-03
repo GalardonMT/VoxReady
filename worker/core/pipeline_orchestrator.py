@@ -6,6 +6,7 @@ import uuid
 import shutil
 import logging
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
@@ -32,10 +33,12 @@ except (ImportError, ValueError):
 logger = logging.getLogger("analysis-worker.orchestrator")
 
 STORAGE_CONN = os.getenv("STORAGE_CONNECTION_STRING")
-CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
+CONTAINER_NAME = (os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME") or "").strip()
+REPORT_CONTAINER_NAME = os.getenv("STORAGE_REPORT_CONTAINER_NAME", "").strip()
+REPORT_BLOB_PREFIX = os.getenv("STORAGE_REPORT_PREFIX", "").strip().strip("/")
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
-NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "").strip()
+LLM_MODEL = os.getenv("LLM_MODEL_NAME", "").strip()
 VISION_URL = os.getenv("VISION_SERVICE_URL")
 SQL_CONN_STR = os.getenv("SQL_CONNECTION_STRING") or os.getenv("DATABASE_URL")
 
@@ -48,7 +51,9 @@ def download_blob(blob_path: str, local_path: str):
     blob_service = BlobServiceClient.from_connection_string(STORAGE_CONN)
 
     clean_path = (blob_path or "").strip().lstrip("/")
-    default_container = CONTAINER_NAME or "recordings"
+    if not CONTAINER_NAME:
+        raise ValueError("STORAGE_CONTAINER_NAME no está configurada")
+    default_container = CONTAINER_NAME
 
     candidates = []
 
@@ -225,18 +230,21 @@ def analyze_vision(frame_files: list) -> dict:
 
 
 def upload_report_to_blob(session_id: str, report_data: dict):
-    """Guarda el informe consolidado en formato JSON en el contenedor 'reports' de Azure Blob Storage."""
+    """Guarda el informe consolidado en el contenedor configurado de Azure Blob Storage."""
     if not STORAGE_CONN:
         return
     try:
         blob_service = BlobServiceClient.from_connection_string(STORAGE_CONN)
-        container_client = blob_service.get_container_client("reports")
+        if not REPORT_CONTAINER_NAME:
+            raise RuntimeError("STORAGE_REPORT_CONTAINER_NAME no está configurada")
+        container_client = blob_service.get_container_client(REPORT_CONTAINER_NAME)
         if not container_client.exists():
             container_client.create_container()
-        report_blob = f"{session_id}_report.json"
+        report_file_name = f"{session_id}_report.json"
+        report_blob = f"{REPORT_BLOB_PREFIX}/{report_file_name}" if REPORT_BLOB_PREFIX else report_file_name
         blob_client = container_client.get_blob_client(report_blob)
         blob_client.upload_blob(json.dumps(report_data, indent=2, ensure_ascii=False), overwrite=True)
-        logger.info(f"Reporte consolidado subido a Azure Blob: reports/{report_blob}")
+        logger.info("Reporte consolidado persistido en el contenedor configurado.")
     except Exception as e:
         logger.warning(f"Aviso al persistir reporte en Blob Storage: {e}")
 
@@ -302,8 +310,19 @@ def process_session_pipeline(
     Si cualquier paso no cuenta con información suficiente o falla, se lanza una excepción explícita.
     """
     logger.info(f"=== Iniciando Pipeline Multimodal Estricto: Sesión {session_id} (Job: {job_id}) ===")
-    session_tmp_dir = os.path.join("/tmp", f"session_{session_id}")
-    os.makedirs(session_tmp_dir, exist_ok=True)
+    required_config = {
+        "STORAGE_CONNECTION_STRING": STORAGE_CONN,
+        "SQL_CONNECTION_STRING": SQL_CONN_STR,
+        "NVIDIA_API_KEY": NVIDIA_API_KEY,
+        "NVIDIA_BASE_URL": NVIDIA_BASE_URL,
+        "LLM_MODEL_NAME": LLM_MODEL,
+        "VISION_SERVICE_URL": VISION_URL,
+    }
+    missing = [name for name, value in required_config.items() if not value]
+    if missing:
+        raise RuntimeError(f"Falta configuración obligatoria del worker: {', '.join(missing)}.")
+
+    session_tmp_dir = tempfile.mkdtemp(prefix="voxready-session-")
     local_video_path = os.path.join(session_tmp_dir, "input.webm")
 
     db_svc = None
@@ -316,7 +335,7 @@ def process_session_pipeline(
         internal_session_id = str(db_metadata["session_id"])
         if rubric_version_id and str(rubric_version_id).lower() != db_metadata["rubric_version_id"].lower():
             raise ValueError("La rubrica solicitada no coincide con la sesion.")
-        if blob_path != f"recordings/{session_id}.webm" and not blob_path.endswith(f"{session_id}.webm") and not blob_path.endswith(f"{session_id}.mp4"):
+        if not blob_path.endswith(f"{session_id}.webm") and not blob_path.endswith(f"{session_id}.mp4"):
             raise ValueError("La grabacion solicitada no corresponde a la sesion.")
         session_verified = True
 
@@ -345,9 +364,9 @@ def process_session_pipeline(
 
         audio_analyzer = AudioAnalyzer(
             api_key=NVIDIA_API_KEY,
-            server=os.getenv("NVIDIA_RIVA_SERVER", "grpc.nvcf.nvidia.com:443"),
-            function_id=os.getenv("NVIDIA_FUNCTION_ID", "71203149-d3b7-4460-8231-1be2543a1fca"),
-            language_code=os.getenv("NVIDIA_LANGUAGE_CODE", "es-US")
+            server=os.getenv("NVIDIA_RIVA_SERVER"),
+            function_id=os.getenv("NVIDIA_FUNCTION_ID"),
+            language_code=os.getenv("NVIDIA_LANGUAGE_CODE"),
         )
         audio_res = audio_analyzer.process_audio(audio_path)
 
@@ -434,9 +453,12 @@ def process_session_pipeline(
         # 5. Evaluación de Contenido con LLM Juez
         logger.info("Evaluando adherencia y control de crisis con LLM Juez (NVIDIA NIM)...")
         active_scen = db_metadata.get("scenario", {}) if isinstance(db_metadata, dict) else {}
-        pregunta = "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
-        mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el esclarecimiento de los hechos."]
-        contexto = active_scen.get("context") or "Incidente corporativo y vocería institucional ante medios de comunicación."
+        preguntas = active_scen.get("questions") or []
+        mensajes = active_scen.get("key_messages") or []
+        contexto = active_scen.get("context")
+        if not preguntas or not mensajes or not contexto:
+            raise RuntimeError("El escenario no contiene preguntas, mensajes clave o contexto configurados.")
+        pregunta = preguntas[0]
 
         judge_svc = LLMJudgeService(
             api_key=NVIDIA_API_KEY,
@@ -495,7 +517,7 @@ def process_session_pipeline(
 
         # 7. Generación Narrativa Ejecutiva VISUM (Llamada 2 a LLM)
         logger.info("Generando Síntesis Ejecutiva VISUM con NVIDIA NIM...")
-        http_client = httpx.Client(verify=False, timeout=120.0)
+        http_client = httpx.Client(timeout=120.0)
         client_visum = OpenAI(
             base_url=NVIDIA_BASE_URL.rstrip("/").rstrip("/chat/completions"),
             api_key=NVIDIA_API_KEY,
@@ -503,11 +525,11 @@ def process_session_pipeline(
             http_client=http_client
         )
         scenario_meta = {
-            "title": active_scen.get("title") or "Incidente Corporativo y Vocería de Crisis",
+            "title": active_scen.get("title"),
             "context": contexto,
-            "optics": active_scen.get("optics") or "empática, institucional y de control operativo",
+            "optics": active_scen.get("optics"),
             "key_messages": mensajes,
-            "red_lines": ["No especular sobre causas no confirmadas ni evadir la responsabilidad institucional."]
+            "red_lines": active_scen.get("red_lines") or [],
         }
         consolidated_intermediate = {
             "score_global": score_global,
@@ -549,7 +571,8 @@ def process_session_pipeline(
         resolved_rubric_id = db_metadata["rubric_version_id"]
 
         processed_at_iso = datetime.now(timezone.utc).isoformat()
-        video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
+        # El reporte persiste la referencia lógica; la API genera una SAS de lectura al solicitarla.
+        video_blob_url = ""
 
         # Construir JSON consolidado y saneado (Sección 1)
         cleaned_report = sanitize_report_json(

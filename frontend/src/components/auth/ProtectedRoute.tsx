@@ -23,26 +23,11 @@ export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) 
   const { user, loading } = useAuth();
   const router = useRouter();
 
-  // Check localStorage as fallback during MSAL transitions where user may
-  // temporarily be null while the token is being refreshed.
-  const savedRole = React.useMemo(() => {
-    if (typeof window === 'undefined') return null;
-    try {
-      const saved = localStorage.getItem('voxready_user');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return parsed.role as AppRole | null;
-      }
-    } catch { /* ignore */ }
-    return null;
-  }, [user]); // re-evaluate when user changes
-
   useEffect(() => {
-    if (!loading && !user && !savedRole) {
-      // Only redirect to login if there's truly no user anywhere
+    if (!loading && !user) {
       router.replace('/login');
     }
-  }, [user, loading, router, savedRole]);
+  }, [user, loading, router]);
 
   // Loading state
   if (loading) {
@@ -53,27 +38,12 @@ export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) 
     );
   }
 
-  // Determine the effective role: prefer live user, fall back to localStorage
-  const effectiveRole = (user?.role ?? savedRole) as AppRole | null;
-  const effectiveUser = user;
-
-  // Not authenticated at all (no user in state, no user in localStorage)
-  if (!effectiveUser && !effectiveRole) {
+  if (!user) {
     return null;
   }
 
-  // Authenticated but wrong role → show AccessDenied persistently
-  if (effectiveRole && !allowedRoles.includes(effectiveRole)) {
-    return <AccessDenied userRole={effectiveRole} />;
-  }
-
-  // User has no role info yet but appears to be transitioning (MSAL refresh)
-  if (!effectiveUser) {
-    return (
-      <div className="protected-loading">
-        <p>Verificando acceso…</p>
-      </div>
-    );
+  if (!allowedRoles.includes(user.role)) {
+    return <AccessDenied userRole={user.role} />;
   }
 
   return <>{children}</>;

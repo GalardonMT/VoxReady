@@ -1,13 +1,12 @@
-fastapi==0.115.0
+fastapi==0.162.0
 uvicorn[standard]==0.31.0
 pydantic==2.9.2
 pydantic-settings==2.5.2
 azure-storage-blob==12.23.1
-azure-servicebus==7.12.3
 pyodbc==5.1.0
 sqlalchemy[asyncio]==2.0.35
-PyJWT[crypto]==2.9.0
-requests==2.32.3
+PyJWT[crypto]==2.15.1
+requests==2.34.2
 aioodbc>=0.5.0
 aiosqlite>=0.19
 asyncpg>=0.29

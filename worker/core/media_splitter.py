@@ -21,11 +21,8 @@ except ImportError:
 def get_temp_base_dir() -> Path:
     """
     Retorna el directorio base para archivos volátiles.
-    En Linux serverless (Azure Functions/Container Apps) es `/tmp`.
-    En Windows utiliza el directorio temporal del sistema.
+    Usa el directorio temporal que expone el sistema operativo.
     """
-    if os.name != "nt" and os.path.exists("/tmp"):
-        return Path("/tmp")
     return Path(tempfile.gettempdir())
 
 

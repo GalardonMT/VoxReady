@@ -3,10 +3,11 @@
  * Handles RFC 7807 Problem Details errors, authentication tokens, and correlation IDs.
  */
 
-export const API_BASE_URL =
+const configuredApiBaseUrl =
   process.env.NEXT_PUBLIC_API_URL ||
   process.env.NEXT_PUBLIC_BACKEND_API_URL ||
-  'http://localhost:8000/v1';
+  '';
+export const API_BASE_URL = configuredApiBaseUrl.replace(/\/$/, '');
 
 const TOKEN_KEY = 'voxready_access_token';
 let tokenProvider: (() => Promise<string | null>) | null = null;
@@ -19,7 +20,7 @@ export interface ProblemDetails {
   type?: string;
   title: string;
   status: number;
-  detail?: string;
+  detail?: unknown;
   correlationId?: string;
   code?: string;
 }
@@ -32,16 +33,18 @@ export class ApiError extends Error {
       msg = detail;
     } else if (Array.isArray(detail)) {
       msg = detail
-        .map((item: any) => {
+        .map((item: unknown) => {
           if (typeof item === 'string') return item;
           if (item && typeof item === 'object') {
-            return item.msg || item.message || JSON.stringify(item);
+            const record = item as Record<string, unknown>;
+            return String(record.msg || record.message || JSON.stringify(item));
           }
           return String(item);
         })
         .join(', ');
     } else if (detail && typeof detail === 'object') {
-      msg = (detail as any).msg || (detail as any).message || JSON.stringify(detail);
+      const record = detail as Record<string, unknown>;
+      msg = String(record.msg || record.message || JSON.stringify(detail));
     } else {
       msg = problem.title || 'Error en la petición';
     }
@@ -63,17 +66,15 @@ export function isAccessError(error: unknown): boolean {
 
 export function getAccessToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem('voxready_token');
+  return sessionStorage.getItem(TOKEN_KEY);
 }
 
 export function setAccessToken(token: string): void {
   sessionStorage.setItem(TOKEN_KEY, token);
-  localStorage.setItem('voxready_token', token);
 }
 
 export function clearAccessToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem('voxready_token');
 }
 
 async function getAuthToken(): Promise<string | null> {
@@ -92,7 +93,7 @@ async function getAuthToken(): Promise<string | null> {
 
   // 2. Try MSAL silent token renewal (if configured and user is signed in)
   try {
-    const { msalInstance, loginRequest, loginRedirectRequest, isAzureConfigured } = await import('./authConfig');
+    const { msalInstance, loginRequest, isAzureConfigured } = await import('./authConfig');
     if (isAzureConfigured) {
       const accounts = msalInstance.getAllAccounts();
       if (accounts.length > 0) {
@@ -121,30 +122,6 @@ async function getAuthToken(): Promise<string | null> {
     }
   }
 
-  // 3. Fallback: if user is logged in as a demo/dev user, try dev token if available
-  const userJson = localStorage.getItem('voxready_user');
-  if (userJson) {
-    try {
-      const user = JSON.parse(userJson);
-      if (user.token) return user.token;
-      const email = user.email || 'vocero@demo.voxready.io';
-      const res = await fetch(`${API_BASE_URL}/dev/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.accessToken) {
-          setAccessToken(data.accessToken);
-          return data.accessToken;
-        }
-      }
-    } catch {
-      // Backend offline or dev token not enabled
-    }
-  }
-
   return null;
 }
 
@@ -152,6 +129,9 @@ export async function apiFetch<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
+  if (!API_BASE_URL) {
+    throw new NetworkError();
+  }
   const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
   const token = await getAuthToken();
 

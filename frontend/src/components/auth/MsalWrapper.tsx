@@ -19,7 +19,7 @@ interface MsalWrapperProps {
  *
  * When Azure credentials are not configured (e.g. pure local dev without
  * Entra), the wrapper renders children directly without MsalProvider so the
- * app can still function with the mock/demo login flow.
+ * app can still show the explicitly configured local-development login flow.
  */
 export function MsalWrapper({ children }: MsalWrapperProps) {
   const [ready, setReady] = useState(!isAzureConfigured);
@@ -35,7 +35,7 @@ export function MsalWrapper({ children }: MsalWrapperProps) {
       })
       .catch((err) => {
         console.error('[MSAL] Initialization failed:', err);
-        // Still render the app so the fallback / test-user login works
+        // Render the app so it can display the explicit authentication error.
         setReady(true);
       });
   }, []);

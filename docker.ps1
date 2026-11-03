@@ -37,7 +37,7 @@ try {
             Invoke-Compose -Arguments @('up', '--build', '--detach', '--wait', '--wait-timeout', '240')
             Invoke-Compose -Arguments @('ps')
         }
-        'build' { Invoke-Compose -Arguments @('build', 'api', 'client') }
+        'build' { Invoke-Compose -Arguments @('build', 'api', 'client', 'worker', 'vision') }
         'verify' {
             Invoke-Compose -Arguments @('run', '--rm', '--no-deps', 'init', 'python', 'scripts/prepare_azure_database.py', '--verify-only')
         }

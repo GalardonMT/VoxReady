@@ -8,15 +8,16 @@ import { RecordingVideoPlayer } from './RecordingVideoPlayer';
 
 interface FullVisumReportViewProps {
   onNavigate: (screen: VoceroScreen, extra?: string) => void;
-  sessionId?: string;
+  sessionId: string;
 }
 
 export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
   onNavigate,
-  sessionId = 'session-e2e-final-002'
+  sessionId
 }) => {
   const [report, setReport] = useState<FullVisumReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [videoUrl, setVideoUrl] = useState<string>('');
   const [videoLoading, setVideoLoading] = useState(false);
@@ -30,6 +31,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
         setReport(data);
       } catch (e) {
         console.warn('Error cargando informe completo Visum:', e);
+        setLoadError(e instanceof Error ? e.message : 'No se pudo cargar el informe.');
       } finally {
         setLoading(false);
       }
@@ -83,13 +85,17 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
     }
   };
 
-  const globalScore = report?.overallScore ?? 75;
+  if (loading) return <div className="canvas-content"><div className="card">Cargando informe…</div></div>;
+  if (!report) return <div className="canvas-content"><div className="card">{loadError || 'El informe no está disponible.'}</div></div>;
+
+  const globalScore = report.overallScore;
 
   const getScoreColor = (sc: number) => {
     if (sc >= 75) return '#10b981'; // Verde sobresaliente
     if (sc >= 50) return '#f59e0b'; // Amarillo aceptable
     return '#ef4444'; // Rojo crítico
   };
+  const optionalScoreColor = (score: number | undefined) => score === undefined ? 'var(--muted)' : getScoreColor(score);
 
   const getScoreBadgeText = (sc: number) => {
     if (sc >= 75) return 'Sobresaliente';
@@ -100,8 +106,8 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
   // Datos de Visum
   const visum = report?.visumExecutive || report?.narrative?.visum;
   const sintesis = visum?.sintesisEjecutiva;
-  const formulaRec = visum?.formulaRecomendada || 'Secuencia de 3 pasos: Reconocer el impacto ➔ Explicar certezas ➔ Acciones en curso.';
-  const hallazgos = visum?.hallazgosTransversales || 'El vocero requiere afianzar la conducción estratégica y el control pedagógico en momentos de presión mediática.';
+  const formulaRec = visum?.formulaRecomendada || '';
+  const hallazgos = visum?.hallazgosTransversales || '';
   const crossSignal = report?.narrative?.crossSignal;
 
   // Métricas técnicas
@@ -174,7 +180,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
                 VISUM Media Training & AI
               </span>
               <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                · {report?.scenarioTitle || 'Simulación de Vocería en Crisis'}
+                · {report.scenarioTitle || 'Escenario no informado'}
               </span>
             </div>
             <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f8fafc', margin: '0 0 6px 0', letterSpacing: '-0.5px' }}>
@@ -413,7 +419,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
                 </span>
               </div>
               <p style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--ink)', margin: 0 }}>
-                {sintesis?.fortalezaPrincipal || 'Demostró aplomo inicial y compostura ante las preguntas.'}
+                {sintesis?.fortalezaPrincipal || 'No informado en el reporte.'}
               </p>
             </div>
 
@@ -432,7 +438,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
                 </span>
               </div>
               <p style={{ fontSize: '13.5px', lineHeight: 1.6, color: 'var(--ink)', margin: 0 }}>
-                {sintesis?.focoDesarrollo || 'Evolucionar de responder reactivamente a liderar la conversación con técnicas de puente.'}
+                {sintesis?.focoDesarrollo || 'No informado en el reporte.'}
               </p>
             </div>
           </div>
@@ -531,16 +537,16 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '12px' }}>
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Contacto Visual a Cámara</div>
-                <div style={{ fontSize: '22px', fontWeight: 800, color: getScoreColor(vision?.eyeContactPct ?? 70) }}>
-                  {vision?.eyeContactPct ?? 70}%
+                <div style={{ fontSize: '22px', fontWeight: 800, color: optionalScoreColor(vision?.eyeContactPct) }}>
+                  {vision?.eyeContactPct ?? '—'}{vision?.eyeContactPct === undefined ? '' : '%'}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Mirada fija en lente</div>
               </div>
 
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Estabilidad de Hombros</div>
-                <div style={{ fontSize: '22px', fontWeight: 800, color: getScoreColor(vision?.shoulderStabilityScore ?? 85) }}>
-                  {vision?.shoulderStabilityScore ?? 85}%
+                <div style={{ fontSize: '22px', fontWeight: 800, color: optionalScoreColor(vision?.shoulderStabilityScore) }}>
+                  {vision?.shoulderStabilityScore ?? '—'}{vision?.shoulderStabilityScore === undefined ? '' : '%'}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Alineación postural</div>
               </div>
@@ -556,7 +562,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Visibilidad de Manos</div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink)' }}>
-                  {vision?.handsVisiblePct ?? 15}%
+                  {vision?.handsVisiblePct ?? '—'}{vision?.handsVisiblePct === undefined ? '' : '%'}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Gesticulación activa</div>
               </div>
@@ -564,7 +570,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Cuadros Procesados</div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink)' }}>
-                  {vision?.totalFramesAnalyzed ?? 100}
+                  {vision?.totalFramesAnalyzed ?? '—'}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Muestreo continuo</div>
               </div>
@@ -582,8 +588,8 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '12px' }}>
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Ritmo de Habla (WPM)</div>
-                <div style={{ fontSize: '22px', fontWeight: 800, color: (audio?.wpmGlobal ?? 130) >= 110 && (audio?.wpmGlobal ?? 130) <= 150 ? '#10b981' : '#f59e0b' }}>
-                  {audio?.wpmGlobal ?? 130} WPM
+                <div style={{ fontSize: '22px', fontWeight: 800, color: audio?.wpmGlobal === undefined ? 'var(--muted)' : audio.wpmGlobal >= 110 && audio.wpmGlobal <= 150 ? '#10b981' : '#f59e0b' }}>
+                  {audio?.wpmGlobal ?? '—'}{audio?.wpmGlobal === undefined ? '' : ' WPM'}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Rango óptimo: 120–150</div>
               </div>
@@ -591,23 +597,23 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Ratio de Fonación</div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink)' }}>
-                  {audio?.ratioFonacion ? (audio.ratioFonacion * 100).toFixed(0) : '60'}%
+                  {audio?.ratioFonacion === undefined ? '—' : `${(audio.ratioFonacion * 100).toFixed(0)}%`}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Tiempo de voz activa</div>
               </div>
 
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Pausas Prolongadas</div>
-                <div style={{ fontSize: '22px', fontWeight: 800, color: (audio?.pausasProlongadas ?? 0) > 3 ? '#ef4444' : '#10b981' }}>
-                  {audio?.pausasProlongadas ?? 0}
+                <div style={{ fontSize: '22px', fontWeight: 800, color: audio?.pausasProlongadas === undefined ? 'var(--muted)' : audio.pausasProlongadas > 3 ? '#ef4444' : '#10b981' }}>
+                  {audio?.pausasProlongadas ?? '—'}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Silencios &gt; 1.5s</div>
               </div>
 
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Densidad de Muletillas</div>
-                <div style={{ fontSize: '22px', fontWeight: 800, color: (audio?.densidadMuletillasPct ?? 0) > 3 ? '#ef4444' : '#10b981' }}>
-                  {audio?.densidadMuletillasPct ? audio.densidadMuletillasPct.toFixed(1) : '1.5'}%
+                <div style={{ fontSize: '22px', fontWeight: 800, color: audio?.densidadMuletillasPct === undefined ? 'var(--muted)' : audio.densidadMuletillasPct > 3 ? '#ef4444' : '#10b981' }}>
+                  {audio?.densidadMuletillasPct === undefined ? '—' : `${audio.densidadMuletillasPct.toFixed(1)}%`}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>Tolerancia máx: 3.0%</div>
               </div>
@@ -615,7 +621,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
               <div style={{ background: 'var(--soft)', padding: '12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Palabras Totales</div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: 'var(--ink)' }}>
-                  {audio?.palabrasTotales ?? 120}
+                  {audio?.palabrasTotales ?? '—'}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>
                   {audio?.duracionSegundos ? `${audio.duracionSegundos.toFixed(0)} segundos` : 'Duración grabada'}
@@ -665,7 +671,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
                   Evaluación Pedagógica del LLM Juez (NVIDIA Llama 3.2 90B)
                 </h3>
                 <p style={{ fontSize: '12.5px', color: 'var(--muted)', margin: '2px 0 0 0' }}>
-                  Puntaje global del juez: <strong style={{ color: getScoreColor(judge?.puntajeGlobal100 ?? 50) }}>{judge?.puntajeGlobal100 ?? 50} / 100</strong>
+                  Puntaje global del juez: <strong style={{ color: optionalScoreColor(judge?.puntajeGlobal100) }}>{judge?.puntajeGlobal100 ?? '—'}{judge?.puntajeGlobal100 === undefined ? '' : ' / 100'}</strong>
                 </p>
               </div>
             </div>
@@ -674,9 +680,9 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {Object.keys(dims).length > 0 ? (
                 Object.entries(dims).map(([key, item], idx) => {
-                  const scoreVal = typeof item === 'object' && item !== null ? item.score : 50;
-                  const criterioText = typeof item === 'object' && item !== null ? item.criterio : '';
-                  const nivelVal = typeof item === 'object' && item !== null ? item.nivel : 1;
+                  const scoreVal = item.score;
+                  const criterioText = item.criterio;
+                  const nivelVal = item.nivel;
                   const label = dimensionLabels[key] || key;
 
                   return (

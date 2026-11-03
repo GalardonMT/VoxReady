@@ -1,11 +1,8 @@
 /**
  * Service for Topics & Scenarios management (Client Admin)
  */
-import { apiFetch, isAccessError } from './apiClient';
+import { apiFetch } from './apiClient';
 import { TopicConfig, RetentionSettings, InstitutionalOptics, InternalAudience } from '../types/api';
-import { INITIAL_TOPICS, INITIAL_RETENTION_SETTINGS } from '../mock/mockData';
-
-const TOPICS_STORAGE_KEY = 'voxready_topics';
 
 interface BackendTopic {
   id: string;
@@ -38,34 +35,14 @@ const opticsToFrontendMap: Record<string, InstitutionalOptics> = {
   'Técnica': 'Técnica'
 };
 
-function getStoredTopics(): TopicConfig[] {
-  if (typeof window === 'undefined') return INITIAL_TOPICS;
-  const stored = localStorage.getItem(TOPICS_STORAGE_KEY);
-  if (stored) {
-    try {
-      return JSON.parse(stored);
-    } catch {
-      // Ignorar error de parsing
-    }
-  }
-  localStorage.setItem(TOPICS_STORAGE_KEY, JSON.stringify(INITIAL_TOPICS));
-  return INITIAL_TOPICS;
-}
-
-function setStoredTopics(topics: TopicConfig[]) {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(TOPICS_STORAGE_KEY, JSON.stringify(topics));
-}
-
 export const topicService = {
   /**
    * Obtiene la lista de temas configurados por el cliente
    */
   async getTopics(): Promise<TopicConfig[]> {
-    try {
-      const res = await apiFetch<{ items: BackendTopic[]; total: number }>('/topics');
-      if (res && Array.isArray(res.items)) {
-        const mapped: TopicConfig[] = res.items.map((item) => ({
+    const res = await apiFetch<{ items: BackendTopic[]; total: number }>('/topics');
+    if (res && Array.isArray(res.items)) {
+      return res.items.map((item) => ({
           id: String(item.id),
           name: item.name,
           context: item.context || '',
@@ -76,19 +53,8 @@ export const topicService = {
           keyMessages: item.keyMessages || [],
           redLines: item.redLines || []
         }));
-
-        // Combinar con temas creados localmente que aún no estén en backend
-        const localOnly = getStoredTopics().filter(
-          (loc) => !mapped.some((rem) => rem.id === loc.id || rem.name.toLowerCase() === loc.name.toLowerCase())
-        );
-        const combined = [...mapped, ...localOnly];
-        setStoredTopics(combined);
-        return combined;
-      }
-    } catch (error) { if (isAccessError(error)) throw error;
-      // Fallback a localStorage o datos iniciales
     }
-    return getStoredTopics();
+    return [];
   },
 
   /**
@@ -103,9 +69,8 @@ export const topicService = {
    * Guarda o actualiza un tema institucional
    */
   async saveTopic(topicData: Partial<TopicConfig>): Promise<TopicConfig> {
-    const currentList = getStoredTopics();
     const isNew = !topicData.id || topicData.id === 'new';
-    const topicId = isNew ? `top-${Date.now()}` : topicData.id!;
+    const topicId = topicData.id || '';
 
     const opticsVal = topicData.optics || 'Empática';
     const backendOptics = opticsToBackendMap[opticsVal] || 'empathetic';
@@ -135,26 +100,22 @@ export const topicService = {
       redLines: validRedLines
     };
 
-    let savedId = topicId;
-
-    // Intentar sincronizar con backend si está disponible
-    try {
-      if (!isNew && !topicId.startsWith('top-')) {
-        await apiFetch(`/topics/${topicId}`, {
-          method: 'PUT',
-          body: JSON.stringify(payload)
-        });
-      } else {
-        const res = await apiFetch<{ id: string; name: string }>('/topics', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-        if (res && res.id) {
-          savedId = res.id;
-        }
+    let savedId: string;
+    if (!isNew) {
+      const res = await apiFetch<{ id?: string }>(`/topics/${topicId}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+      savedId = res.id || topicId;
+    } else {
+      const res = await apiFetch<{ id: string }>('/topics', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if (!res.id) {
+        throw new Error('La API no entregó el identificador del tema creado.');
       }
-    } catch (error) {
-      throw error;
+      savedId = res.id;
     }
 
     const savedTopic: TopicConfig = {
@@ -169,14 +130,6 @@ export const topicService = {
       redLines: validRedLines
     };
 
-    let updatedList: TopicConfig[];
-    if (isNew) {
-      updatedList = [savedTopic, ...currentList];
-    } else {
-      updatedList = currentList.map((t) => (t.id === topicId ? savedTopic : t));
-    }
-
-    setStoredTopics(updatedList);
     return savedTopic;
   },
 
@@ -184,29 +137,15 @@ export const topicService = {
    * Elimina un tema
    */
   async deleteTopic(id: string): Promise<TopicConfig[]> {
-    try {
-      if (!id.startsWith('top-')) {
-        await apiFetch(`/topics/${id}`, { method: 'DELETE' });
-      }
-    } catch (error) {
-      throw error;
-    }
-
-    const currentList = getStoredTopics();
-    const filtered = currentList.filter((t) => t.id !== id);
-    setStoredTopics(filtered);
-    return filtered;
+    await apiFetch(`/topics/${id}`, { method: 'DELETE' });
+    return this.getTopics();
   },
 
   /**
    * Obtiene la configuración de política de retención
    */
   async getRetentionSettings(): Promise<RetentionSettings> {
-    try {
-      return await apiFetch<RetentionSettings>('/privacy/retention');
-    } catch (error) { if (isAccessError(error)) throw error;
-      return INITIAL_RETENTION_SETTINGS;
-    }
+    return apiFetch<RetentionSettings>('/privacy/retention');
   },
 
   /**

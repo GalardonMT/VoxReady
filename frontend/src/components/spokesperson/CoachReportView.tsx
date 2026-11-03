@@ -9,18 +9,19 @@ import { RecordingVideoPlayer } from './RecordingVideoPlayer';
 
 interface CoachReportViewProps {
   onNavigate: (screen: VoceroScreen, extra?: string) => void;
-  sessionId?: string;
+  sessionId: string;
 }
 
 export const CoachReportView: React.FC<CoachReportViewProps> = ({
   onNavigate,
-  sessionId = 'session-e2e-final-002'
+  sessionId
 }) => {
   const { t } = useI18n();
   const d = t.L.u6;
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [report, setReport] = useState<CoachReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string>('');
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoError, setVideoError] = useState<string>('');
@@ -32,6 +33,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
         setReport(data);
       } catch (e) {
         console.warn('Error cargando coach report:', e);
+        setLoadError(e instanceof Error ? e.message : 'No se pudo cargar el informe.');
       } finally {
         setLoading(false);
       }
@@ -40,7 +42,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
   }, [sessionId]);
 
   const activeSessionId = report?.sessionId || sessionId;
-  const audioMetrics = (report?.metrics as any)?.audio;
+  const audioMetrics = report?.metrics?.audio;
   const expectedDuration = report?.durationSeconds || audioMetrics?.duracionSegundos || audioMetrics?.duracion_segundos;
 
   const handleOpenVideo = async () => {
@@ -82,24 +84,20 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
     }
   };
 
-  const globalScore = report?.globalScore ?? 75;
-  const goodItems = report?.goodAspects && report.goodAspects.length > 0 ? report.goodAspects : d.goodItems;
-  const improveItems = report?.improveAspects && report.improveAspects.length > 0 ? report.improveAspects : d.improveItems;
-  const quote = report?.crossSignalQuote || d.quote;
+  if (loading) return <div className="canvas-content"><div className="card">Cargando informe…</div></div>;
+  if (!report) return <div className="canvas-content"><div className="card">{loadError || 'El informe no está disponible.'}</div></div>;
 
-  const areaScores = report?.areas && report.areas.length === 4
-    ? [
-        { name: d.areas[0], score: report.areas[0].score, icon: '👁️', channel: report.areas[0].criteria || 'MediaPipe Vision' },
-        { name: d.areas[1], score: report.areas[1].score, icon: '🎙️', channel: report.areas[1].criteria || 'Voz / Parakeet' },
-        { name: d.areas[2], score: report.areas[2].score, icon: '📄', channel: report.areas[2].criteria || 'NVIDIA LLM Apego' },
-        { name: d.areas[3], score: report.areas[3].score, icon: '🤝', channel: report.areas[3].criteria || 'Control de Crisis' }
-      ]
-    : [
-        { name: d.areas[0], score: 70, icon: '👁️', channel: 'Contacto visual: 30% · Estabilidad: 91%' },
-        { name: d.areas[1], score: 80, icon: '🎙️', channel: '128 WPM · 2 muletillas' },
-        { name: d.areas[2], score: 85, icon: '📄', channel: 'Apego a mensajes clave institucionales' },
-        { name: d.areas[3], score: 80, icon: '🤝', channel: 'Técnica puente detectada' }
-      ];
+  const globalScore = report.globalScore;
+  const goodItems = report.goodAspects;
+  const improveItems = report.improveAspects;
+  const quote = report.crossSignalQuote;
+  const icons = ['👁️', '🎙️', '📄', '🤝'];
+  const areaScores = report.areas.map((area, index) => ({
+    name: d.areas[index] || area.name,
+    score: area.score,
+    icon: icons[index] || '•',
+    channel: area.criteria || area.channel,
+  }));
 
   const getScoreColor = (sc: number) => {
     if (sc >= 75) return '#10b981'; // Verde sobresaliente

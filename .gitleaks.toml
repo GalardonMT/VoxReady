@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Dependencias y artefactos locales excluidos de la entrega"
+paths = [
+  '''(^|/)frontend/node_modules/''',
+  '''(^|/)frontend/\.next/''',
+]

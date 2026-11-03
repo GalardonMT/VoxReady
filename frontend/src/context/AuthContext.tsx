@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { UserSession } from '../types/api';
-import { TEST_USERS } from '../mock/mockData';
 import {
   loginRequest,
   loginRedirectRequest,
@@ -19,7 +18,6 @@ interface AuthContextType {
   loginWithEmail: (email: string) => Promise<boolean>;
   loginWithAzure: () => Promise<void>;
   logout: () => void;
-  testUsers: UserSession[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -91,7 +89,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
   const { instance, accounts, inProgress } = useMsal();
   const [user, setUser] = useState<UserSession | null>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('voxready_user');
+      const saved = sessionStorage.getItem('voxready_user');
       if (saved) {
         try {
           return JSON.parse(saved);
@@ -128,16 +126,16 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
           const session = await profileForToken(storedToken);
           setUser(session);
           setAuthError(null);
-          localStorage.setItem('voxready_user', JSON.stringify(session));
+          sessionStorage.setItem('voxready_user', JSON.stringify(session));
         } catch (error) {
           setUser(null);
           clearAccessToken();
-          localStorage.removeItem('voxready_user');
+          sessionStorage.removeItem('voxready_user');
           setAuthError(error instanceof Error ? error.message : 'No se pudo validar la sesión.');
         }
       } else {
         setUser(null);
-        localStorage.removeItem('voxready_user');
+        sessionStorage.removeItem('voxready_user');
       }
       setLoading(false);
       return;
@@ -154,12 +152,12 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
       const session = await profileForToken(accessToken);
       setUser(session);
       setAuthError(null);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
+      sessionStorage.setItem('voxready_user', JSON.stringify(session));
     } catch (err) {
       console.warn('[Auth] Token acquisition or backend profile fetch failed:', err);
       setUser(null);
       clearAccessToken();
-      localStorage.removeItem('voxready_user');
+      sessionStorage.removeItem('voxready_user');
       setAuthError(err instanceof Error ? err.message : 'No se pudo validar la sesión.');
     } finally {
       setLoading(false);
@@ -191,12 +189,12 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const session = await authenticateDevelopmentUser(email);
       setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
+      sessionStorage.setItem('voxready_user', JSON.stringify(session));
       return true;
     } catch (error) {
       setUser(null);
       clearAccessToken();
-      localStorage.removeItem('voxready_user');
+      sessionStorage.removeItem('voxready_user');
       setAuthError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
       return false;
     } finally {
@@ -207,7 +205,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
   const logout = () => {
     setUser(null);
     setAuthError(null);
-    localStorage.removeItem('voxready_user');
+    sessionStorage.removeItem('voxready_user');
     clearAccessToken();
 
     if (accounts.length > 0) {
@@ -224,7 +222,6 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
         loginWithEmail,
         loginWithAzure,
         logout,
-        testUsers: TEST_USERS,
       }}
     >
       {children}
@@ -243,16 +240,16 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const storedToken = getAccessToken();
     if (!storedToken) {
-      localStorage.removeItem('voxready_user');
-      setLoading(false);
+      sessionStorage.removeItem('voxready_user');
+      queueMicrotask(() => setLoading(false));
       return;
     }
     profileForToken(storedToken).then(session => {
       setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
+      sessionStorage.setItem('voxready_user', JSON.stringify(session));
     }).catch(error => {
       clearAccessToken();
-      localStorage.removeItem('voxready_user');
+      sessionStorage.removeItem('voxready_user');
       setAuthError(error instanceof Error ? error.message : 'No se pudo validar la sesión.');
     }).finally(() => setLoading(false));
   }, []);
@@ -263,12 +260,12 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const session = await authenticateDevelopmentUser(email);
       setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
+      sessionStorage.setItem('voxready_user', JSON.stringify(session));
       return true;
     } catch (error) {
       setUser(null);
       clearAccessToken();
-      localStorage.removeItem('voxready_user');
+      sessionStorage.removeItem('voxready_user');
       setAuthError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
       return false;
     } finally {
@@ -283,7 +280,7 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
   const logout = () => {
     setUser(null);
     setAuthError(null);
-    localStorage.removeItem('voxready_user');
+    sessionStorage.removeItem('voxready_user');
     clearAccessToken();
   };
 
@@ -296,7 +293,6 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
         loginWithEmail,
         loginWithAzure,
         logout,
-        testUsers: TEST_USERS,
       }}
     >
       {children}

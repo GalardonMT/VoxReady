@@ -247,7 +247,7 @@ export interface CoachReport {
   improveAspects: string[];
   crossSignalQuote: string;
   areas: AreaScore[];
-  metrics?: Record<string, unknown>;
+  metrics?: FullVisumReport['metrics'];
   recordingUrl?: string;
   durationSeconds?: number;
 }
@@ -299,6 +299,8 @@ export interface FullVisumReport {
       handsVisiblePct?: number;
       totalFramesAnalyzed?: number;
       frames_analyzed?: number;
+      eye_contact_percentage?: number;
+      average_posture_score?: number;
     };
     audio?: {
       palabrasTotales?: number;
@@ -312,11 +314,20 @@ export interface FullVisumReport {
       muletillasDetectadas?: string[];
       scoreFluidez?: number;
       scoreDiccion?: number;
+      duracion_segundos?: number;
+      wpm?: number;
+      fillers_count?: number;
+      silence_pauses?: number;
     };
     judge?: {
       puntajeGlobal100?: number;
       dimensiones?: Record<string, { nivel: number; score: number; criterio: string }>;
       feedback?: Record<string, unknown>;
+      key_message_adherence_score?: number;
+      strengths?: string[];
+      weaknesses?: string[];
+      executive_summary?: string;
+      bridging_detected?: boolean;
     };
   };
   transcript?: string;

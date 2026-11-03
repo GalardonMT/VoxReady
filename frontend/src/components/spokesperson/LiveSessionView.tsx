@@ -6,7 +6,6 @@ import { useAuth } from '../../context/AuthContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService, type QuestionMark } from '../../services/sessionService';
 import type { SessionSetup } from '../../services/sessionFlowService';
-import type { TurnInterval } from '../../types/api';
 import { InterviewerAvatar } from './InterviewerAvatar';
 import { CancelExerciseModal, type CancelModalReason } from './CancelExerciseModal';
 
@@ -68,7 +67,7 @@ interface LiveSessionViewProps {
 export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   onNavigate,
   sessionId,
-  scenarioId = 'crisis-voceria-01',
+  scenarioId,
   tenantId,
   setup,
   onSessionComplete,
@@ -78,26 +77,14 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const d = t.L.u4;
   const { user } = useAuth();
 
-  const effectiveTenantId = tenantId || user?.clientId || 'tenant-voxready-dev';
+  const effectiveTenantId = tenantId || user?.clientId || null;
 
-  const [generatedSessionId] = useState(() => typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`);
-  const activeSessionId = sessionId || setup?.sessionId || generatedSessionId;
-  const activeScenarioId = scenarioId || setup?.scenarioId || 'crisis-voceria-01';
-
-  const defaultQuestions = [
-    '¿Cuál es la gravedad real de la falla detectada en el lote de producción?',
-    '¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?',
-    d.qEx,
-    '¿Qué compensación inmediata recibirán los clientes perjudicados?',
-    '¿Existen sanciones internas contra los responsables de la supervisión de calidad?',
-    '¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?',
-    '¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?',
-    'Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?'
-  ];
+  const activeSessionId = sessionId || setup?.sessionId || '';
+  const activeScenarioId = scenarioId || setup?.scenarioId || '';
 
   const questions = (setup?.questions && setup.questions.length > 0)
     ? setup.questions.map((q) => q.text)
-    : defaultQuestions;
+    : [];
 
   const [isPaused, setIsPaused] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(1);
@@ -366,7 +353,9 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   }, [isUploading, showCancelModal, isPaused]);
 
   const openModalRef = useRef(handleOpenCancelModal);
-  openModalRef.current = handleOpenCancelModal;
+  useEffect(() => {
+    openModalRef.current = handleOpenCancelModal;
+  }, [handleOpenCancelModal]);
 
   // Continuar la ejercitación (cerrar modal y restaurar estado de pausa)
   const handleContinueFromModal = () => {
@@ -452,8 +441,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
     try {
       setUploadStatus(d.preparingUpload || 'Preparando la subida…');
-      const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
-      const { uploadUrl, blobPath } = await sessionService.getUploadUrl(activeSessionId, ext);
+      const { uploadUrl, blobPath } = await sessionService.getUploadUrl(activeSessionId);
 
       setUploadStatus(d.uploading || 'Subiendo tu grabación…');
       await sessionService.uploadDirectToBlob(uploadUrl, blob, (pct) => {

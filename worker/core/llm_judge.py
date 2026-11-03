@@ -115,8 +115,9 @@ class LLMJudgeService:
         # Sanitizar base_url: OpenAI SDK concatena /chat/completions por defecto.
         raw_base_url = (
             base_url
-            or kv_get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-            or os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+            or kv_get("NVIDIA_BASE_URL")
+            or os.getenv("NVIDIA_BASE_URL")
+            or ""
         ).strip().rstrip("/")
         if raw_base_url.endswith("/chat/completions"):
             raw_base_url = raw_base_url[:-len("/chat/completions")].rstrip("/")
@@ -124,8 +125,14 @@ class LLMJudgeService:
 
         self.model = (
             model
-            or kv_get("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
-            or os.getenv("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
+            or kv_get("LLM_MODEL_NAME")
+            or os.getenv("LLM_MODEL_NAME")
+            or ""
+        )
+        self.fallback_model = (
+            kv_get("LLM_FALLBACK_MODEL_NAME")
+            or os.getenv("LLM_FALLBACK_MODEL_NAME")
+            or ""
         )
         
         # Timeout amplio (120s por defecto) para permitir que NVIDIA NIM termine la inferencia
@@ -133,8 +140,17 @@ class LLMJudgeService:
             kv_get("LLM_TIMEOUT", "120.0") or os.getenv("LLM_TIMEOUT", "120.0")
         )
 
-        if not self.api_key:
-            logger.warning("NVIDIA_API_KEY no configurada en variables de entorno o Key Vault")
+        missing = [
+            name
+            for name, value in (
+                ("NVIDIA_API_KEY", self.api_key),
+                ("NVIDIA_BASE_URL", self.base_url),
+                ("LLM_MODEL_NAME", self.model),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"Falta configurar el juez LLM: {', '.join(missing)}.")
 
         self._client = None
 
@@ -142,7 +158,7 @@ class LLMJudgeService:
     def client(self) -> OpenAI:
         if self._client is None:
             import httpx
-            http_client = httpx.Client(verify=False, timeout=self.timeout)
+            http_client = httpx.Client(timeout=self.timeout)
             self._client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
@@ -196,14 +212,13 @@ Genera el análisis en formato JSON estricto con las claves:
                 response_format={"type": "json_object"},
             )
         except Exception as primary_err:
-            # Si el modelo primario falla o da timeout y no es el 11B ligero, reintentar con 11B
-            fallback_model = "meta/llama-3.2-11b-vision-instruct"
-            if self.model != fallback_model:
+            if self.fallback_model and self.model != self.fallback_model:
                 logger.warning(
-                    f"Fallo con {self.model} ({primary_err}). Reintentando con modelo ligero {fallback_model}..."
+                    "Falló el modelo principal (%s). Reintentando con el modelo alternativo configurado.",
+                    type(primary_err).__name__,
                 )
                 response = self.client.chat.completions.create(
-                    model=fallback_model,
+                    model=self.fallback_model,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt},
@@ -246,54 +261,4 @@ Genera el análisis en formato JSON estricto con las claves:
             feedback=parsed_eval.feedback_pedagogico,
             raw_evaluation=parsed_eval,
         )
-
-
-class LLMJudge(LLMJudgeService):
-    """
-    Wrapper compatible hacia atrás para llamadas previas tipo evaluate_transcript.
-    """
-
-    def evaluate_transcript(
-        self,
-        transcript: str,
-        crisis_context: Optional[str] = None,
-        key_messages: Optional[List[str]] = None,
-        question: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if not transcript or not transcript.strip():
-            return {
-                "puntaje_global_100": 0.0,
-                "key_message_adherence_score": 0,
-                "crisis_control_score": 0,
-                "bridging_detected": False,
-                "strengths": [],
-                "weaknesses": ["No se detectó audio ni transcripción inteligible."],
-                "executive_summary": "No fue posible evaluar la declaración debido a la ausencia de contenido verbal.",
-            }
-
-        try:
-            reporte = self.evaluate_response(
-                pregunta_periodista=question or "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?",
-                mensajes_clave=key_messages or ["Nuestra máxima prioridad es la seguridad y el restablecimiento del servicio."],
-                contexto_crisis=crisis_context or "Incidente corporativo y vocería de crisis.",
-                transcripcion_vocero=transcript,
-            )
-            reporte_dict = reporte.model_dump()
-            # Mapear claves heredadas para compatibilidad con dashboards frontend existentes
-            reporte_dict["key_message_adherence_score"] = int(
-                reporte.dimensiones.get("alineacion_mensaje_clave", {}).get("score_100", 75)
-            )
-            reporte_dict["crisis_control_score"] = int(
-                reporte.dimensiones.get("tecnicas_control", {}).get("score_100", 75)
-            )
-            reporte_dict["bridging_detected"] = len(
-                reporte.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
-            ) > 0
-            reporte_dict["strengths"] = [reporte.feedback.fortaleza_principal] if reporte.feedback.fortaleza_principal else []
-            reporte_dict["weaknesses"] = [reporte.feedback.brecha_critica] if reporte.feedback.brecha_critica else []
-            reporte_dict["executive_summary"] = reporte.feedback.recomendacion_accionable
-            return reporte_dict
-        except Exception as e:
-            logger.error(f"Evaluación LLM Juez falló: {e}")
-            raise RuntimeError(f"Error evaluando el contenido con el Juez LLM: {e}") from e
 

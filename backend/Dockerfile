@@ -20,7 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip==26.2 setuptools==84.1.0 \
+    && pip install --no-cache-dir -r requirements.txt
 
 FROM base AS application
 COPY main.py master_topics.py spokesperson_store.py progress_store.py schedule_store.py microlessons.py microlesson_assignment_migration.py metrics_catalog.py metrics_migration.py metrics_store.py ./

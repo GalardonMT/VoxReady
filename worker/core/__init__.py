@@ -7,8 +7,7 @@ from .media_splitter import (
 )
 from .audio_analyzer import AudioAnalyzer
 from .vision_client import VisionClient
-from .llm_judge import LLMJudge
-from .report_builder import ReportBuilder
+from .llm_judge import LLMJudgeService
 
 __all__ = [
     "get_ffmpeg_executable",
@@ -18,6 +17,5 @@ __all__ = [
     "create_temp_workspace",
     "AudioAnalyzer",
     "VisionClient",
-    "LLMJudge",
-    "ReportBuilder",
+    "LLMJudgeService",
 ]

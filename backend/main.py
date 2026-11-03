@@ -10,7 +10,6 @@ from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
-from azure.servicebus import ServiceBusClient, ServiceBusMessage
 import jwt
 from jwt import PyJWKClient
 import pyodbc
@@ -24,51 +23,74 @@ import metrics_store
 # Cargar variables de entorno locales si existen
 try:
     from dotenv import load_dotenv
-    load_dotenv(override=True)
+    load_dotenv(override=False)
     load_dotenv("../.env", override=False)
 except ImportError:
     pass
 
 logger = logging.getLogger("uvicorn.error")
 
-app = FastAPI(title="VoxReady Backend API", version="1.0.0")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production").strip().lower()
+ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").strip().lower() == "true"
+docs_enabled = ENVIRONMENT == "development" and ENABLE_API_DOCS
+app = FastAPI(
+    title="VoxReady Backend API",
+    version="1.0.0",
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
+)
 
-# 1. Configuración de CORS
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    if ENVIRONMENT == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+# 1. Configuración de CORS. Los orígenes autorizados siempre son explícitos.
 origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
 ]
-env_origins = os.getenv("CORS_ORIGINS", "")
-if env_origins:
-    origins.extend([o.strip() for o in env_origins.split(",") if o.strip()])
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(set(origins)),
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://.*\.azurestaticapps\.net$|^https://.*\.vercel\.app$",
+    allow_origins=sorted(set(origins)),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Correlation-ID"],
+    expose_headers=["X-Correlation-ID"],
 )
 
 # 2. Configuración desde variables de entorno
 STORAGE_CONN_STR = os.getenv("STORAGE_CONNECTION_STRING", "")
-CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
-SERVICE_BUS_CONN_STR = os.getenv("SERVICE_BUS_CONNECTION_STRING", "")
-QUEUE_NAME = os.getenv("SERVICE_BUS_QUEUE_NAME", "analysis-queue")
+CONTAINER_NAME = (os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME") or "").strip()
+RECORDING_BLOB_PREFIX = os.getenv("STORAGE_RECORDING_PREFIX", "").strip().strip("/")
+REPORT_CONTAINER_NAME = os.getenv("STORAGE_REPORT_CONTAINER_NAME", "").strip()
+REPORT_BLOB_PREFIX = os.getenv("STORAGE_REPORT_PREFIX", "").strip().strip("/")
 MICROLESSON_VIDEO_MAX_BYTES = int(os.getenv("MICROLESSON_VIDEO_MAX_BYTES", str(250 * 1024 * 1024)))
+MICROLESSON_BLOB_PREFIX = os.getenv("STORAGE_MICROLESSON_PREFIX", "").strip().strip("/")
+RECORDING_MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", "0"))
+UPLOAD_URL_TTL_MINUTES = int(os.getenv("UPLOAD_URL_TTL_MINUTES", "0"))
+READ_URL_TTL_MINUTES = int(os.getenv("READ_URL_TTL_MINUTES", "0"))
 SQL_CONN_STR = os.getenv("SQL_CONNECTION_STRING") or os.getenv("DATABASE_URL", "")
 JWKS_URL = os.getenv("JWKS_URL", "")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "")
 DEV_AUTH = os.getenv("DEV_AUTH", "false").lower() == "true"
-if DEV_AUTH and os.getenv("ENVIRONMENT", "production").lower() != "development":
+DEV_AUTH_SECRET = os.getenv("DEV_AUTH_SECRET", "")
+DEV_TOKEN_TTL_HOURS = int(os.getenv("DEV_TOKEN_TTL_HOURS", "8"))
+if DEV_AUTH and ENVIRONMENT != "development":
     raise RuntimeError("DEV_AUTH solo se permite con ENVIRONMENT=development.")
+if DEV_AUTH and len(DEV_AUTH_SECRET) < 32:
+    raise RuntimeError("DEV_AUTH_SECRET debe tener al menos 32 caracteres en desarrollo local.")
 
 # 3. Dependencia de validación de JWT (Microsoft Entra External ID)
 _jwks_client: PyJWKClient | None = None
@@ -80,46 +102,43 @@ def _get_jwks_client() -> PyJWKClient | None:
     return _jwks_client
 
 def verify_token(authorization: str = Header(None)):
-    token = None
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ")[1]
-
-    # 1. Si no hay token o es token explícito de dev local:
-    if (not token or token.startswith("dev-")) and DEV_AUTH:
-        dev_email = os.getenv("DEV_AUTH_TEST_EMAIL", "").strip()
-        if not dev_email:
-            raise HTTPException(status_code=503, detail="DEV_AUTH_TEST_EMAIL no está configurado")
-        return {
-            "sub": "dev-user-001",
-            "oid": "dev-user-001",
-            "name": "Dev User",
-            "email": dev_email,
-        }
-
-    if not token:
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
         raise HTTPException(status_code=401, detail="Token no provisto o inválido")
 
-    # 2. Los tokens reales de Microsoft Entra siempre requieren firma válida:
+    if DEV_AUTH:
+        try:
+            claims = jwt.decode(
+                token,
+                DEV_AUTH_SECRET,
+                algorithms=["HS256"],
+                audience="voxready-local",
+                issuer="voxready-local",
+            )
+            if claims.get("dev") is not True:
+                raise jwt.InvalidTokenError("Token local sin marca de desarrollo")
+            return claims
+        except jwt.InvalidTokenError:
+            # Puede ser un token real de Entra usado durante desarrollo.
+            pass
+
+    if not all((JWKS_URL, JWT_ISSUER, JWT_AUDIENCE)):
+        raise HTTPException(status_code=503, detail="La validación de Microsoft Entra no está configurada.")
+
+    # Los tokens reales de Microsoft Entra siempre requieren firma, issuer y audience válidos.
     try:
         client = _get_jwks_client()
         if not client:
-            raise HTTPException(status_code=401, detail="La validación de Microsoft Entra no está configurada.")
+            raise HTTPException(status_code=503, detail="La validación de Microsoft Entra no está configurada.")
         signing_key = client.get_signing_key_from_jwt(token)
-        allowed_audiences = [a for a in [
-            JWT_AUDIENCE,
-            "e219fd4b-3686-45dd-9656-b582d1fb0698",
-            "5dd1bf8d-c0de-4f67-8131-df42e93dcf29",
-            "api://5dd1bf8d-c0de-4f67-8131-df42e93dcf29"
-        ] if a]
+        allowed_audiences = [aud.strip() for aud in JWT_AUDIENCE.split(",") if aud.strip()]
         return jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
-            audience=allowed_audiences if allowed_audiences else None,
-            options={
-                "verify_aud": bool(allowed_audiences),
-                "verify_iss": False,
-            },
+            audience=allowed_audiences,
+            issuer=JWT_ISSUER,
+            options={"verify_aud": True, "verify_iss": True},
         )
     except HTTPException:
         raise
@@ -133,7 +152,7 @@ class CreateSessionRequest(BaseModel):
     scenarioId: str | None = None
     scenario_id: str | None = None
     language: str = "es"
-    tenant_id: str | None = "tenant-voxready-dev"
+    tenant_id: str | None = None
 
 class ConsentRequest(BaseModel):
     acceptRecording: bool | None = None
@@ -335,18 +354,12 @@ def get_scenario(scenario_id: str, user: dict = Depends(verify_token)):
 @app.post("/api/sessions")
 @app.post("/v1/api/sessions")
 def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_token), idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
-    scenario_id = payload.scenarioId or payload.scenario_id or "crisis-voceria-01"
-    if SQL_CONN_STR:
-        return spokesperson_store.create_session(SQL_CONN_STR, user, scenario_id, payload.language, idempotency_key)
-    session_id = str(uuid.uuid4())
-    return {
-        "sessionId": session_id,
-        "session_id": session_id,
-        "scenarioId": scenario_id,
-        "scenario_id": scenario_id,
-        "status": "created",
-        "questionCount": 8,
-    }
+    scenario_id = payload.scenarioId or payload.scenario_id
+    if not scenario_id:
+        raise HTTPException(status_code=422, detail="scenarioId es obligatorio.")
+    if not SQL_CONN_STR:
+        raise HTTPException(status_code=503, detail="Azure SQL no está configurado.")
+    return spokesperson_store.create_session(SQL_CONN_STR, user, scenario_id, payload.language, idempotency_key)
 
 @app.get("/sessions/my")
 @app.get("/v1/sessions/my")
@@ -354,123 +367,85 @@ def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_to
 @app.get("/v1/api/sessions/my")
 def list_my_sessions(status: str = "completed", user: dict = Depends(verify_token)):
     """Obtiene el historial de sesiones del usuario actual (por defecto solo finalizadas con reporte)"""
-    user_oid = user.get("oid") or user.get("sub") or user.get("user_id") or user.get("userId")
-    user_email = (
-        user.get("email")
-        or user.get("preferred_username")
-        or user.get("upn")
-        or user.get("unique_name", "")
-    )
-    client_claim = user.get("clientId") or user.get("client_id") or user.get("tid")
-    DEFAULT_USER_ID = "4CC52B91-3A9C-5659-8363-4F069CC39F9B"
+    if status not in {"", "created", "recording", "analyzing", "completed", "failed"}:
+        raise HTTPException(status_code=422, detail="Estado de sesión no válido.")
+    if not SQL_CONN_STR:
+        raise HTTPException(status_code=503, detail="Azure SQL no está configurado.")
 
     sessions_list = []
+    try:
+        conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+        with pyodbc.connect(conn_str, timeout=10) as conn:
+            cur = conn.cursor()
+            profile = master_store.resolve_user(cur, user, allow_unassigned_master=True)
 
-    if SQL_CONN_STR:
-        try:
-            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
-            with pyodbc.connect(conn_str, timeout=10) as conn:
-                cur = conn.cursor()
-
-                # Resolver id en app_user si es posible
-                user_db_id = None
-                if user_oid and _safe_uuid(user_oid):
-                    cur.execute(
-                        "SELECT id FROM app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
-                        _safe_uuid(user_oid)
-                    )
-                    u_row = cur.fetchone()
-                    if u_row:
-                        user_db_id = u_row[0]
-
-                if not user_db_id and user_email:
-                    cur.execute(
-                        "SELECT id FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
-                        user_email.strip()
-                    )
-                    u_row = cur.fetchone()
-                    if u_row:
-                        user_db_id = u_row[0]
-
-                # Construir consulta flexible sobre sesiones completadas o con reporte asociado
-                query = """
+            # Construir consulta flexible sobre sesiones completadas o con reporte asociado
+            query = """
                     SELECT 
                         s.id,
                         s.scenario_id,
-                        COALESCE(sc.title, 'Simulación de Vocería en Crisis') AS scenario_title,
+                        sc.title AS scenario_title,
                         s.created_at,
                         s.status,
-                        COALESCE(r.overall_score, 0) AS overall_score,
+                        r.overall_score AS overall_score,
                         CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END AS has_report
                     FROM session s
-                    LEFT JOIN scenario sc ON s.scenario_id = sc.id
+                    JOIN scenario sc ON s.scenario_id = sc.id
                     LEFT JOIN report r ON r.session_id = s.id AND r.is_current = 1
                     WHERE (s.is_deleted IS NULL OR s.is_deleted = 0)
                 """
-                params = []
+            params = []
 
-                if status == "completed":
-                    query += " AND (s.status = 'completed' OR r.id IS NOT NULL)"
-                elif status:
-                    query += " AND s.status = ?"
-                    params.append(status)
+            if status == "completed":
+                query += " AND r.id IS NOT NULL"
+            elif status:
+                query += " AND s.status = ?"
+                params.append(status)
 
-                # Si hay usuario identificado, filtrar estrictamente por su ID
-                if user_db_id:
-                    query += " AND s.user_id = ?"
-                    params.append(user_db_id)
-                elif client_claim and _safe_uuid(client_claim):
-                    query += " AND s.client_id = ?"
-                    params.append(_safe_uuid(client_claim))
+            if profile["role"] == "spokesperson":
+                query += " AND s.user_id = ?"
+                params.append(profile["id"])
+            elif profile["role"] == "client_admin":
+                query += " AND s.client_id = ?"
+                params.append(profile["client_id"])
+            elif profile["role"] != "master_config":
+                raise HTTPException(status_code=403, detail="Rol no autorizado para sesiones.")
 
-                query += " ORDER BY s.created_at DESC"
+            query += " ORDER BY s.created_at DESC"
 
-                cur.execute(query, params)
-                rows = cur.fetchall()
+            cur.execute(query, params)
+            rows = cur.fetchall()
 
-                for row in rows:
-                    created_val = row[3]
-                    iso_date = (
-                        created_val.isoformat()
-                        if hasattr(created_val, "isoformat")
-                        else str(created_val or datetime.now(timezone.utc).isoformat())
-                    )
-                    score_val = int(round(float(row[5] or 0)))
-                    sessions_list.append({
+            for row in rows:
+                created_val = row[3]
+                iso_date = (
+                    created_val.isoformat()
+                    if hasattr(created_val, "isoformat")
+                    else str(created_val or "")
+                )
+                if row[2] is None or row[4] is None or row[5] is None:
+                    logger.warning("Se omitió una sesión con historial incompleto: %s", row[0])
+                    continue
+                score_val = int(round(float(row[5])))
+                sessions_list.append({
                         "sessionId": str(row[0]),
                         "session_id": str(row[0]),
-                        "scenarioId": str(row[1]) if row[1] else "crisis-voceria-01",
-                        "scenario_id": str(row[1]) if row[1] else "crisis-voceria-01",
-                        "scenarioTitle": str(row[2] or "Simulación de Vocería en Crisis"),
-                        "scenario_title": str(row[2] or "Simulación de Vocería en Crisis"),
+                        "scenarioId": str(row[1]),
+                        "scenario_id": str(row[1]),
+                        "scenarioTitle": str(row[2]),
+                        "scenario_title": str(row[2]),
                         "createdAt": iso_date,
                         "created_at": iso_date,
-                        "status": str(row[4] or "completed"),
+                        "status": str(row[4]),
                         "overallScore": score_val,
                         "overall_score": score_val,
                         "hasReport": bool(row[6] or row[4] == "completed"),
-                    })
-        except Exception as e:
-            logger.warning(f"Aviso al listar sesiones de Azure SQL: {e}")
-
-    # Fallback defensivo si no hay registros o BD desconectada
-    if not sessions_list:
-        sessions_list = [
-            {
-                "sessionId": "session-crisis-001",
-                "session_id": "session-crisis-001",
-                "scenarioId": "crisis-voceria-01",
-                "scenario_id": "crisis-voceria-01",
-                "scenarioTitle": "Retiro Masivo de Alimentos Infantiles",
-                "scenario_title": "Retiro Masivo de Alimentos Infantiles",
-                "createdAt": datetime.now(timezone.utc).isoformat(),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "status": "completed",
-                "overallScore": 84,
-                "overall_score": 84,
-                "hasReport": True,
-            }
-        ]
+                })
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error("No se pudieron listar las sesiones: %s", type(error).__name__)
+        raise HTTPException(status_code=503, detail="No se pudo consultar el historial de sesiones.") from None
 
     return sessions_list
 
@@ -478,28 +453,9 @@ def list_my_sessions(status: str = "completed", user: dict = Depends(verify_toke
 @app.get("/v1/sessions/{session_id}")
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str, user: dict = Depends(verify_token)):
-    if SQL_CONN_STR:
-        return spokesperson_store.get_session(SQL_CONN_STR, user, session_id)
-    return {
-        "sessionId": session_id,
-        "scenarioId": "crisis-voceria-01",
-        "status": "created",
-        "questions": [
-            {"id": "q1", "sequenceNo": 1, "text": "¿Cuál es la gravedad real de la falla detectada en el lote de producción?"},
-            {"id": "q2", "sequenceNo": 2, "text": "¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?"},
-            {"id": "q3", "sequenceNo": 3, "text": "¿Existe algún riesgo directo para la salud o integridad de los consumidores?"},
-            {"id": "q4", "sequenceNo": 4, "text": "¿Qué compensación inmediata recibirán los clientes perjudicados?"},
-            {"id": "q5", "sequenceNo": 5, "text": "¿Existen sanciones internas contra los responsables de la supervisión de calidad?"},
-            {"id": "q6", "sequenceNo": 6, "text": "¿Cómo afectará este retiro las metas comerciales y financieras del trimestre?"},
-            {"id": "q7", "sequenceNo": 7, "text": "¿Qué medidas concretas han implementado para que esto no vuelva a ocurrir jamás?"},
-            {"id": "q8", "sequenceNo": 8, "text": "Para concluir, ¿cuál es el mensaje definitivo de la presidencia de la empresa a las familias?"}
-        ],
-        "retentionPolicy": {
-            "version": "1.0",
-            "keep": "full_recording",
-            "termDays": 30
-        }
-    }
+    if not SQL_CONN_STR:
+        raise HTTPException(status_code=503, detail="Azure SQL no está configurado.")
+    return spokesperson_store.get_session(SQL_CONN_STR, user, session_id)
 
 @app.post("/sessions/{session_id}/consent")
 @app.post("/v1/sessions/{session_id}/consent")
@@ -522,23 +478,36 @@ def create_dev_token(payload: DevTokenRequest):
     if not DEV_AUTH:
         raise HTTPException(status_code=404, detail="Acceso de desarrollo no disponible.")
     with master_store.database(SQL_CONN_STR) as cursor:
-        cursor.execute("""SELECT id FROM dbo.app_user
+        cursor.execute("""SELECT id,email,display_name FROM dbo.app_user
                           WHERE LOWER(LTRIM(RTRIM(email)))=LOWER(?)
                           AND (is_deleted IS NULL OR is_deleted=0)""", payload.email)
         matches = cursor.fetchall()
         if len(matches) != 1:
             raise HTTPException(status_code=404, detail="Usuario no registrado en VoxReady.")
         user_id = str(matches[0][0])
+        email = str(matches[0][1])
+        display_name = str(matches[0][2] or email)
+    now = datetime.now(timezone.utc)
+    access_token = jwt.encode(
+        {
+            "sub": user_id,
+            "oid": user_id,
+            "email": email,
+            "name": display_name,
+            "dev": True,
+            "iss": "voxready-local",
+            "aud": "voxready-local",
+            "iat": now,
+            "exp": now + timedelta(hours=DEV_TOKEN_TTL_HOURS),
+        },
+        DEV_AUTH_SECRET,
+        algorithm="HS256",
+    )
     return {
-        "accessToken": f"dev-user-{user_id}",
+        "accessToken": access_token,
         "tokenType": "Bearer",
-        "expiresIn": 28800
+        "expiresIn": DEV_TOKEN_TTL_HOURS * 3600,
     }
-
-@app.put("/sessions/{session_id}/mock-upload")
-@app.put("/v1/sessions/{session_id}/mock-upload")
-def mock_upload(session_id: str):
-    return {"status": "uploaded"}
 
 @app.post("/sessions/{session_id}/recording-url")
 @app.post("/v1/sessions/{session_id}/recording-url")
@@ -547,33 +516,33 @@ def mock_upload(session_id: str):
 def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal para subida directa desde el navegador (PUT)"""
     spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
-    if not STORAGE_CONN_STR:
-        mock_url = f"http://localhost:8000/v1/sessions/{session_id}/mock-upload"
-        return {
-            "upload_url": mock_url,
-            "uploadUrl": mock_url,
-            "blob_name": f"recordings/{session_id}.webm",
-            "blobPath": f"recordings/{session_id}.webm"
-        }
+    if (not STORAGE_CONN_STR or not CONTAINER_NAME or not RECORDING_BLOB_PREFIX
+            or RECORDING_MAX_UPLOAD_BYTES <= 0 or UPLOAD_URL_TTL_MINUTES <= 0):
+        raise HTTPException(status_code=503, detail="Azure Blob Storage no está configurado.")
 
-    blob_name = f"recordings/{session_id}.webm"
+    blob_name = f"{RECORDING_BLOB_PREFIX}/{session_id}.webm"
     try:
         blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
         account_name = blob_service_client.account_name
         account_key = blob_service_client.credential.account_key
 
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=UPLOAD_URL_TTL_MINUTES)
         sas_token = generate_blob_sas(
             account_name=account_name,
             container_name=CONTAINER_NAME,
             blob_name=blob_name,
             account_key=account_key,
             permission=BlobSasPermissions(create=True, write=True),
-            expiry=datetime.now(timezone.utc) + timedelta(minutes=30)
+            expiry=expiry
         )
-        upload_url = f"https://{account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}?{sas_token}"
-        return {"upload_url": upload_url, "uploadUrl": upload_url, "blob_name": blob_name, "blobPath": blob_name}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generando SAS token: {str(e)}")
+        blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
+        upload_url = f"{blob_client.url}?{sas_token}"
+        return {"upload_url": upload_url, "uploadUrl": upload_url, "blob_name": blob_name,
+                "blobPath": blob_name, "max_size_bytes": RECORDING_MAX_UPLOAD_BYTES,
+                "expires_at": expiry.isoformat()}
+    except Exception as error:
+        logger.error("No se pudo generar la URL de carga: %s", type(error).__name__)
+        raise HTTPException(status_code=500, detail="No se pudo generar la URL de carga.") from None
 
 @app.get("/sessions/{session_id}/recording-url")
 @app.get("/v1/sessions/{session_id}/recording-url")
@@ -582,14 +551,11 @@ def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
 def get_playback_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal de LECTURA para reproducir la grabación desde el navegador"""
     spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id, read_only=True)
-    blob_name = f"recordings/{session_id}.webm"
+    blob_name = f"{RECORDING_BLOB_PREFIX}/{session_id}.webm"
 
-    if not STORAGE_CONN_STR:
-        return {
-            "playback_url": "",
-            "session_id": session_id,
-            "message": "Storage no configurado en desarrollo local"
-        }
+    if (not STORAGE_CONN_STR or not CONTAINER_NAME or not RECORDING_BLOB_PREFIX
+            or READ_URL_TTL_MINUTES <= 0):
+        raise HTTPException(status_code=503, detail="Azure Blob Storage no está configurado.")
 
     try:
         blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
@@ -611,14 +577,15 @@ def get_playback_sas_url(session_id: str, user: dict = Depends(verify_token)):
             blob_name=blob_name,
             account_key=account_key,
             permission=BlobSasPermissions(read=True),
-            expiry=datetime.now(timezone.utc) + timedelta(minutes=60)
+            expiry=datetime.now(timezone.utc) + timedelta(minutes=READ_URL_TTL_MINUTES)
         )
-        playback_url = f"https://{account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}?{sas_token}"
+        playback_url = f"{blob_client.url}?{sas_token}"
         return {"playback_url": playback_url, "session_id": session_id}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generando URL de reproducción: {str(e)}")
+    except Exception as error:
+        logger.error("No se pudo generar la URL de reproducción: %s", type(error).__name__)
+        raise HTTPException(status_code=500, detail="No se pudo generar la URL de reproducción.") from None
 
 
 @app.post("/sessions/{session_id}/finish", status_code=202)
@@ -634,7 +601,9 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
     session_uuid = access['id']
     job_id = str(uuid.uuid4())
     rubric_version_id = None
-    blob_path = f"recordings/{session_id}.webm"
+    if not RECORDING_BLOB_PREFIX:
+        raise HTTPException(status_code=503, detail="La ruta de grabaciones no está configurada.")
+    blob_path = f"{RECORDING_BLOB_PREFIX}/{session_id}.webm"
     if any(path and path != blob_path for path in (payload.blobPath, payload.video_blob_name)):
         raise HTTPException(422, "La ruta de grabación no corresponde a la sesión.")
 
@@ -704,8 +673,16 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
                 logger.info(f"Sesión {session_uuid} actualizada a 'analyzing' (Job: {job_id}, Turnos: {len(payload.turns or [])}) en Azure SQL.")
         except HTTPException:
             raise
-        except Exception as e_sql:
-            logger.warning(f"Aviso actualizando estado en Azure SQL ({session_id}): {e_sql}")
+        except Exception as error:
+            logger.error(
+                "No se pudo registrar el trabajo de analisis para la sesion %s: %s",
+                session_id,
+                type(error).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo registrar el trabajo de analisis.",
+            ) from None
 
     # Normalizar turnos (turns o question_marks)
     turns = list(payload.turns or [])
@@ -734,34 +711,33 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
 
     worker_started = await trigger_worker_analysis(trigger_payload)
     if not worker_started:
-        logger.warning(f"No se pudo confirmar el inicio del worker HTTP para job {job_id}.")
-        # Fallback de seguridad: si Service Bus está configurado, encolar como contingencia
-        if SERVICE_BUS_CONN_STR:
+        logger.error("No se pudo confirmar el inicio del worker para job %s.", job_id)
+        if SQL_CONN_STR:
             try:
-                message_payload = {
-                    "event_type": "SESSION_RECORDING_COMPLETED",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "payload": {
-                        "session_id": session_id,
-                        "job_id": job_id,
-                        "rubric_version_id": str(rubric_version_id) if rubric_version_id else None,
-                        "user_id": access['profile']['id'],
-                        "scenario_id": access['scenario_id'],
-                        "tenant_id": access['profile']['client_id'],
-                        "media": {
-                            "video_blob_name": blob_path,
-                            "storage_container": CONTAINER_NAME
-                        },
-                        "turns": [t.model_dump() for t in turns]
-                    }
-                }
-                with ServiceBusClient.from_connection_string(SERVICE_BUS_CONN_STR) as sb_client:
-                    with sb_client.get_queue_sender(queue_name=QUEUE_NAME) as sender:
-                        msg = ServiceBusMessage(json.dumps(message_payload), content_type="application/json")
-                        sender.send_messages(msg)
-                logger.info(f"Mensaje de contingencia encolado en Service Bus para sesión {session_id}")
-            except Exception as sb_err:
-                logger.warning(f"Fallo en encolado de contingencia Service Bus: {sb_err}")
+                conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+                with pyodbc.connect(conn_str, timeout=10) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        UPDATE analysis_job
+                        SET status = 'failed',
+                            failure_reason = ?,
+                            completed_at = SYSUTCDATETIME(),
+                            updated_at = SYSUTCDATETIME()
+                        WHERE id = ? AND session_id = ?
+                    """, ("El servicio de analisis no acepto el trabajo.", job_id, session_uuid))
+                    cur.execute("""
+                        UPDATE session
+                        SET status = 'failed', updated_at = SYSUTCDATETIME()
+                        WHERE id = ? AND user_id = ? AND client_id = ? AND is_deleted = 0
+                    """, (session_uuid, access['profile']['id'], access['profile']['client_id']))
+                    conn.commit()
+            except Exception as error:
+                logger.error(
+                    "No se pudo marcar como fallido el job %s: %s",
+                    job_id,
+                    type(error).__name__,
+                )
+        raise HTTPException(status_code=503, detail="El servicio de análisis no está disponible.")
 
     return {
         "sessionId": session_id,
@@ -772,13 +748,14 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
     }
 
 
-def _generate_playback_sas_url(session_id: str, duration_minutes: int = 60) -> str:
+def _generate_playback_sas_url(session_id: str) -> str:
     """Genera URL temporal SAS de lectura para la grabación de la sesión."""
-    if not STORAGE_CONN_STR:
-        return f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
+    if (not STORAGE_CONN_STR or not CONTAINER_NAME or not RECORDING_BLOB_PREFIX
+            or READ_URL_TTL_MINUTES <= 0):
+        return ""
     try:
         blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
-        blob_name = f"recordings/{session_id}.webm"
+        blob_name = f"{RECORDING_BLOB_PREFIX}/{session_id}.webm"
         account_name = blob_service_client.account_name
         account_key = blob_service_client.credential.account_key
         sas_token = generate_blob_sas(
@@ -787,12 +764,13 @@ def _generate_playback_sas_url(session_id: str, duration_minutes: int = 60) -> s
             blob_name=blob_name,
             account_key=account_key,
             permission=BlobSasPermissions(read=True),
-            expiry=datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+            expiry=datetime.now(timezone.utc) + timedelta(minutes=READ_URL_TTL_MINUTES)
         )
-        return f"https://{account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}?{sas_token}"
-    except Exception as e:
-        logger.warning(f"Aviso al generar SAS URL de lectura para {session_id}: {e}")
-        return f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
+        blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
+        return f"{blob_client.url}?{sas_token}"
+    except Exception as error:
+        logger.warning("No se pudo generar la URL de lectura para %s: %s", session_id, type(error).__name__)
+        return ""
 
 
 @app.get("/sessions/{session_id}/report")
@@ -802,7 +780,7 @@ def _generate_playback_sas_url(session_id: str, duration_minutes: int = 60) -> s
 def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     """Obtiene el reporte consolidado normalizado desde Blob Storage y Azure SQL"""
     access = spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id, read_only=True)
-    scenario_title = "Simulación de Vocería en Crisis"
+    scenario_title = None
     report_data = None
 
     # 1. Validar estado de la sesión en Azure SQL si está configurado
@@ -868,11 +846,12 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
             logger.warning(f"Aviso al leer fusion de analysis_pipeline_result ({session_id}): {sqle}")
 
     # 3. Intentar leer desde Azure Blob Storage si no se halló en SQL
-    if STORAGE_CONN_STR and not report_data:
+    if STORAGE_CONN_STR and REPORT_CONTAINER_NAME and not report_data:
         try:
             blob_service_client = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
-            container_client = blob_service_client.get_container_client("reports")
-            report_blob_name = f"{session_id}_report.json"
+            container_client = blob_service_client.get_container_client(REPORT_CONTAINER_NAME)
+            report_file_name = f"{session_id}_report.json"
+            report_blob_name = f"{REPORT_BLOB_PREFIX}/{report_file_name}" if REPORT_BLOB_PREFIX else report_file_name
             blob_client = container_client.get_blob_client(report_blob_name)
 
             if blob_client.exists():
@@ -919,16 +898,6 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
                             "strengths": strengths,
                             "improvements": improvements,
                             "crossSignal": cross_signal or "",
-                            "visum": {
-                                "sintesisEjecutiva": {
-                                    "diagnosticoGeneral": "Evaluación estructurada completada.",
-                                    "fortalezaPrincipal": strengths[0] if strengths else "",
-                                    "focoDesarrollo": improvements[0] if improvements else "",
-                                    "continuidadRecomendada": "Entrenamiento continuo en vocería de crisis."
-                                },
-                                "formulaRecomendada": "Reconocer el impacto -> Explicar certezas -> Acciones en curso.",
-                                "hallazgosTransversales": "Desempeño registrado en sistema de evaluación."
-                            }
                         },
                         "areaScores": area_scores_list,
                         "generatedAt": gen_at.isoformat() if gen_at else datetime.now(timezone.utc).isoformat()
@@ -948,7 +917,11 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     playback_sas_url = _generate_playback_sas_url(session_id)
 
     # 6. Extraer y formatear datos garantizando compatibilidad con contrato OpenAPI
-    overall = final_report.get("overallScore") or final_report.get("puntuacion_global", {}).get("score_general", 75)
+    overall = final_report.get("overallScore")
+    if overall is None:
+        overall = final_report.get("puntuacion_global", {}).get("score_general")
+    if not isinstance(overall, (int, float)):
+        raise HTTPException(status_code=422, detail="El reporte no contiene una puntuación global válida.")
     narrative_obj = final_report.get("narrative") or {}
     visum = narrative_obj.get("visum") or final_report.get("informe_ejecutivo_visum") or {}
 
@@ -960,7 +933,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
             "focoDesarrollo": sintesis_ej.get("focoDesarrollo", sintesis_ej.get("foco_desarrollo", "")),
             "continuidadRecomendada": sintesis_ej.get("continuidadRecomendada", sintesis_ej.get("continuidad_recomendada", ""))
         },
-        "formulaRecomendada": visum.get("formulaRecomendada") or visum.get("desempeno_observado", {}).get("formula_practica_recomendada", "Secuencia en 3 pasos: Reconocer el impacto -> Explicar certezas -> Acciones en curso."),
+        "formulaRecomendada": visum.get("formulaRecomendada") or visum.get("desempeno_observado", {}).get("formula_practica_recomendada", ""),
         "hallazgosTransversales": visum.get("hallazgosTransversales") or visum.get("hallazgos_transversales") or ""
     }
 
@@ -968,15 +941,20 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     vision_m = metrics_obj.get("vision") or {}
     audio_m = metrics_obj.get("audio") or {}
 
-    dur_secs = float(audio_m.get("duracionSegundos", audio_m.get("duracion_segundos", 0.0)) or 0.0)
-    metrics_summary = {
-        "eyeContactPct": vision_m.get("eyeContactPct", vision_m.get("contacto_visual_porcentaje", 0.0)),
-        "shoulderStabilityScore": vision_m.get("shoulderStabilityScore", vision_m.get("average_posture_score", 0.0)),
-        "wpm": audio_m.get("wpmGlobal", audio_m.get("wpm", 0.0)),
-        "fillerWordsCount": len(audio_m.get("muletillasDetectadas", audio_m.get("muletillas_detectadas", []))),
-        "fillerWordsDensityPct": audio_m.get("densidadMuletillasPct", audio_m.get("densidad_muletillas_pct", 0.0)),
-        "durationSeconds": dur_secs
+    duration_raw = audio_m.get("duracionSegundos", audio_m.get("duracion_segundos"))
+    dur_secs = float(duration_raw) if isinstance(duration_raw, (int, float)) else None
+    metrics_summary = {}
+    summary_candidates = {
+        "eyeContactPct": vision_m.get("eyeContactPct", vision_m.get("contacto_visual_porcentaje")),
+        "shoulderStabilityScore": vision_m.get("shoulderStabilityScore", vision_m.get("average_posture_score")),
+        "wpm": audio_m.get("wpmGlobal", audio_m.get("wpm")),
+        "fillerWordsDensityPct": audio_m.get("densidadMuletillasPct", audio_m.get("densidad_muletillas_pct")),
+        "durationSeconds": dur_secs,
     }
+    metrics_summary.update({key: value for key, value in summary_candidates.items() if value is not None})
+    filler_words = audio_m.get("muletillasDetectadas", audio_m.get("muletillas_detectadas"))
+    if isinstance(filler_words, list):
+        metrics_summary["fillerWordsCount"] = len(filler_words)
 
     area_scores = final_report.get("areaScores")
     if not area_scores and "puntuacion_global" in final_report and "areas" in final_report["puntuacion_global"]:
@@ -989,7 +967,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         "status": "completed",
         "overallScore": int(round(overall)),
         "scenarioTitle": final_report.get("scenarioTitle") or scenario_title,
-        "generatedAt": final_report.get("processedAt") or final_report.get("processed_at") or final_report.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
+        "generatedAt": final_report.get("processedAt") or final_report.get("processed_at") or final_report.get("generatedAt"),
         "recordingUrl": playback_sas_url,
         "durationSeconds": dur_secs,
         "narrative": {
@@ -1394,7 +1372,7 @@ def _validated_video(file_name: str, content_type: str, size_bytes: int):
 
 
 def _blob_service():
-    if not STORAGE_CONN_STR:
+    if not STORAGE_CONN_STR or not CONTAINER_NAME:
         raise HTTPException(503, 'Azure Blob Storage no esta configurado.')
     try:
         return BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
@@ -1412,6 +1390,8 @@ def _delete_blob(blob_path: str | None):
 
 
 def _playback_url(blob_path: str):
+    if READ_URL_TTL_MINUTES <= 0:
+        raise HTTPException(503, 'La vigencia de las URLs de lectura no esta configurada.')
     service = _blob_service()
     try:
         blob = service.get_container_client(CONTAINER_NAME).get_blob_client(blob_path)
@@ -1423,9 +1403,9 @@ def _playback_url(blob_path: str):
             blob_name=blob_path,
             account_key=service.credential.account_key,
             permission=BlobSasPermissions(read=True),
-            expiry=datetime.now(timezone.utc) + timedelta(minutes=60),
+            expiry=datetime.now(timezone.utc) + timedelta(minutes=READ_URL_TTL_MINUTES),
         )
-        return f'https://{service.account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_path}?{sas}'
+        return f'{blob.url}?{sas}'
     except HTTPException:
         raise
     except Exception:
@@ -1440,10 +1420,12 @@ def master_microlesson_video_upload_url(
     user: dict = Depends(verify_token),
 ):
     owner = microlesson_store.video_owner(SQL_CONN_STR, user, str(microlesson_id))
+    if not MICROLESSON_BLOB_PREFIX or UPLOAD_URL_TTL_MINUTES <= 0:
+        raise HTTPException(503, 'La ruta de microlecciones no está configurada.')
     safe_name, content_type = _validated_video(payload.fileName, payload.contentType, payload.sizeBytes)
-    blob_path = f"microlessons/{owner['clientId']}/{owner['id']}/{uuid.uuid4()}-{safe_name}"
+    blob_path = f"{MICROLESSON_BLOB_PREFIX}/{owner['clientId']}/{owner['id']}/{uuid.uuid4()}-{safe_name}"
     service = _blob_service()
-    expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=UPLOAD_URL_TTL_MINUTES)
     try:
         sas = generate_blob_sas(
             account_name=service.account_name,
@@ -1456,7 +1438,7 @@ def master_microlesson_video_upload_url(
     except Exception:
         raise HTTPException(503, 'No se pudo preparar la subida del video.') from None
     return {
-        'uploadUrl': f'https://{service.account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_path}?{sas}',
+        'uploadUrl': f'{service.get_blob_client(container=CONTAINER_NAME, blob=blob_path).url}?{sas}',
         'blobPath': blob_path,
         'fileName': safe_name,
         'contentType': content_type,

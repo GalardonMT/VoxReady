@@ -31,20 +31,33 @@ def authorized_session(monkeypatch):
 
 def test_dev_auth_contract(monkeypatch):
     monkeypatch.setattr(main, 'DEV_AUTH', True)
-    monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', 'assigned@example.invalid')
-    assert main.verify_token('Bearer dev-token-voxready-dev')['email'] == 'assigned@example.invalid'
-    assert main.verify_token(None)['email'] == 'assigned@example.invalid'
+    monkeypatch.setattr(main, 'DEV_AUTH_SECRET', 'test-secret-with-at-least-32-characters')
+    token = jwt.encode(
+        {
+            'sub': 'dev-user', 'email': 'assigned@example.invalid', 'dev': True,
+            'iss': 'voxready-local', 'aud': 'voxready-local',
+        },
+        main.DEV_AUTH_SECRET,
+        algorithm='HS256',
+    )
+    assert main.verify_token('Bearer ' + token)['email'] == 'assigned@example.invalid'
+    with pytest.raises(HTTPException) as missing:
+        main.verify_token(None)
+    assert missing.value.status_code == 401
     monkeypatch.setattr(main, 'DEV_AUTH', False)
     with pytest.raises(HTTPException) as error:
         main.verify_token(None)
     assert error.value.status_code == 401
 
 
-def test_dev_auth_requires_preassigned_email(monkeypatch):
+def test_dev_auth_rejects_predictable_legacy_token(monkeypatch):
     monkeypatch.setattr(main, 'DEV_AUTH', True)
-    monkeypatch.delenv('DEV_AUTH_TEST_EMAIL', raising=False)
+    monkeypatch.setattr(main, 'DEV_AUTH_SECRET', 'test-secret-with-at-least-32-characters')
+    monkeypatch.setattr(main, 'JWKS_URL', '')
+    monkeypatch.setattr(main, 'JWT_ISSUER', '')
+    monkeypatch.setattr(main, 'JWT_AUDIENCE', '')
     with pytest.raises(HTTPException) as error:
-        main.verify_token(None)
+        main.verify_token('Bearer dev-token-voxready-dev')
     assert error.value.status_code == 503
 
 
@@ -107,8 +120,13 @@ def test_entra_signed_token_and_invalid_signature(monkeypatch):
     client = SimpleNamespace(get_signing_key_from_jwt=lambda _: SimpleNamespace(key=private.public_key()))
     monkeypatch.setattr(main, '_get_jwks_client', lambda: client)
     monkeypatch.setattr(main, 'DEV_AUTH', False)
+    monkeypatch.setattr(main, 'JWKS_URL', 'https://issuer.example.invalid/keys')
+    monkeypatch.setattr(main, 'JWT_ISSUER', 'https://issuer.example.invalid')
     monkeypatch.setattr(main, 'JWT_AUDIENCE', 'voxready-test-audience')
-    claims = {'sub': 'entra-user', 'email': 'test@example.invalid', 'aud': 'voxready-test-audience'}
+    claims = {
+        'sub': 'entra-user', 'email': 'test@example.invalid',
+        'aud': 'voxready-test-audience', 'iss': 'https://issuer.example.invalid',
+    }
     token = jwt.encode(claims, private, algorithm='RS256')
     assert main.verify_token('Bearer ' + token)['sub'] == 'entra-user'
     other_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -123,8 +141,12 @@ def test_dev_auth_does_not_accept_unsigned_jwt_fallback(monkeypatch):
     client = SimpleNamespace(get_signing_key_from_jwt=lambda _: SimpleNamespace(key=private.public_key()))
     monkeypatch.setattr(main, '_get_jwks_client', lambda: client)
     monkeypatch.setattr(main, 'DEV_AUTH', True)
+    monkeypatch.setattr(main, 'DEV_AUTH_SECRET', 'test-secret-with-at-least-32-characters')
+    monkeypatch.setattr(main, 'JWKS_URL', 'https://issuer.example.invalid/keys')
+    monkeypatch.setattr(main, 'JWT_ISSUER', 'https://issuer.example.invalid')
     monkeypatch.setattr(main, 'JWT_AUDIENCE', 'voxready-test-audience')
-    token = jwt.encode({'email': 'assigned@example.invalid', 'aud': 'voxready-test-audience'},
+    token = jwt.encode({'email': 'assigned@example.invalid', 'aud': 'voxready-test-audience',
+                        'iss': 'https://issuer.example.invalid'},
                        rsa.generate_private_key(public_exponent=65537, key_size=2048), algorithm='RS256')
     with pytest.raises(HTTPException) as error:
         main.verify_token('Bearer ' + token)
@@ -135,14 +157,19 @@ def test_recording_sas_contract(monkeypatch, authorized_session):
     sdk = MagicMock()
     sdk.from_connection_string.return_value.account_name = 'test-account'
     sdk.from_connection_string.return_value.credential.account_key = 'test-key'
+    sdk.from_connection_string.return_value.get_blob_client.return_value.url = 'https://storage.example.invalid/test-recordings/recordings/session.webm'
     monkeypatch.setattr(main, 'STORAGE_CONN_STR', 'test-connection')
+    monkeypatch.setattr(main, 'CONTAINER_NAME', 'test-recordings')
+    monkeypatch.setattr(main, 'RECORDING_BLOB_PREFIX', 'recordings')
+    monkeypatch.setattr(main, 'RECORDING_MAX_UPLOAD_BYTES', 1024)
+    monkeypatch.setattr(main, 'UPLOAD_URL_TTL_MINUTES', 15)
     monkeypatch.setattr(main, 'BlobServiceClient', sdk)
     monkeypatch.setattr(main, 'generate_blob_sas', lambda **_: 'test-sas')
     session_id = 'session-00112233-4455-6677-8899-aabbccddeeff-1791380000'
     result = main.get_upload_sas_url(session_id, {'sub': 'test-user'})
     assert result['blob_name'] == f'recordings/{session_id}.webm'
     assert result['uploadUrl'] == result['upload_url']
-    assert result['upload_url'].endswith(f'/{session_id}.webm?test-sas')
+    assert result['upload_url'].endswith('?test-sas')
 
 
 def test_microlesson_video_validation():
@@ -160,29 +187,22 @@ def test_microlesson_video_validation():
 
 @pytest.mark.asyncio
 async def test_worker_event_and_report_contract(monkeypatch, authorized_session):
-    service_bus = MagicMock()
-    sender = service_bus.from_connection_string.return_value.__enter__.return_value.get_queue_sender.return_value.__enter__.return_value
-    captured = []
-    trigger_worker = AsyncMock(return_value=False)
+    trigger_worker = AsyncMock(return_value=True)
     monkeypatch.setattr(main, 'SQL_CONN_STR', '')
     monkeypatch.setattr(main, 'trigger_worker_analysis', trigger_worker)
-    monkeypatch.setattr(main, 'SERVICE_BUS_CONN_STR', 'test-bus')
-    monkeypatch.setattr(main, 'ServiceBusClient', service_bus)
-    monkeypatch.setattr(main, 'ServiceBusMessage', lambda text, **_: captured.append(json.loads(text)) or text)
+    monkeypatch.setattr(main, 'CONTAINER_NAME', 'test-recordings')
+    monkeypatch.setattr(main, 'RECORDING_BLOB_PREFIX', 'recordings')
     session_id = 'session-00112233-4455-6677-8899-aabbccddeeff-1791380000'
     scenario_id = '00112233-4455-6677-8899-aabbccddeeff'
     payload = main.FinishSessionRequest(video_blob_name=f'recordings/{session_id}.webm', scenario_id=scenario_id)
     assert (await main.finish_session(session_id, payload, {'sub': 'test-user'}))['status'] == 'analyzing'
     trigger_worker.assert_awaited_once()
-    assert sender.send_messages.call_count == 1
-    assert captured[0]['event_type'] == 'SESSION_RECORDING_COMPLETED'
-    assert captured[0]['payload']['scenario_id'] == scenario_id
-    assert captured[0]['payload']['session_id'] == session_id
     storage = MagicMock()
     blob = storage.from_connection_string.return_value.get_container_client.return_value.get_blob_client.return_value
     blob.exists.return_value = True
     blob.download_blob.return_value.readall.return_value = json.dumps({'session_id': session_id, 'puntuacion_global': {'score_general': 85}}).encode()
     monkeypatch.setattr(main, 'STORAGE_CONN_STR', 'test-storage')
+    monkeypatch.setattr(main, 'REPORT_CONTAINER_NAME', 'test-reports')
     monkeypatch.setattr(main, 'BlobServiceClient', storage)
     report = main.get_session_report(session_id, {'sub': 'test-user'})
     assert report['status'] == 'completed' and report['puntuacion_global']['score_general'] == 85
@@ -292,6 +312,7 @@ async def test_unauthorized_session_never_reaches_blob_or_worker(monkeypatch):
 async def test_finish_rejects_blob_from_another_session(monkeypatch, authorized_session):
     worker = AsyncMock()
     monkeypatch.setattr(main, 'trigger_worker_analysis', worker)
+    monkeypatch.setattr(main, 'RECORDING_BLOB_PREFIX', 'recordings')
     with pytest.raises(HTTPException) as error:
         await main.finish_session('my-session', main.FinishSessionRequest(blobPath='recordings/other-session.webm'), {'sub': 'test-user'})
     assert error.value.status_code == 422

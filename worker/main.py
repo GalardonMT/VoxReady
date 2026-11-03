@@ -1,4 +1,5 @@
 import os
+import secrets
 import sys
 import logging
 
@@ -8,7 +9,7 @@ if _worker_dir not in sys.path:
 
 import uuid
 from typing import List, Optional
-from fastapi import FastAPI, BackgroundTasks, status
+from fastapi import FastAPI, BackgroundTasks, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field, AliasChoices, field_validator
 
 try:
@@ -21,6 +22,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
 )
 logger = logging.getLogger("ca-analysis-worker")
+INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
 
 app = FastAPI(
     title="ca-analysis-worker",
@@ -62,7 +64,16 @@ class JobRequest(BaseModel):
     jobId: Optional[str] = None
     rubricVersionId: Optional[str] = None
     blobPath: str
-    turns: Optional[List[TurnInterval]] = []
+    turns: List[TurnInterval] = Field(default_factory=list, max_length=100)
+
+
+def verify_internal_service(
+    service_token: str | None = Header(default=None, alias="X-VoxReady-Service-Token"),
+) -> None:
+    if len(INTERNAL_SERVICE_TOKEN) < 32:
+        raise HTTPException(status_code=503, detail="Autenticación interna no configurada.")
+    if not service_token or not secrets.compare_digest(service_token, INTERNAL_SERVICE_TOKEN):
+        raise HTTPException(status_code=401, detail="Credencial interna inválida.")
 
 
 @app.get("/health")
@@ -75,7 +86,11 @@ def health_check():
 
 
 @app.post("/analyze", status_code=status.HTTP_202_ACCEPTED)
-async def trigger_analysis(job: JobRequest, background_tasks: BackgroundTasks):
+async def trigger_analysis(
+    job: JobRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(verify_internal_service),
+):
     """
     Recibe la orden de trabajo, responde 202 de inmediato para liberar al backend
     y procesa la inferencia multimodal en segundo plano (BackgroundTasks).

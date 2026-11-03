@@ -130,46 +130,50 @@ def generate_visum_report(
         
         evaluacion_areas = {
             "expresion": {
-                "score": puntuacion.get("score_comunicacion_no_verbal", 75.0),
-                "contacto_visual_pct": vision.get("eye_contact_percentage", 80.0),
-                "postura_score": vision.get("average_posture_score", 90.0)
+                "score": puntuacion.get("score_comunicacion_no_verbal"),
+                "contacto_visual_pct": vision.get("eye_contact_percentage"),
+                "postura_score": vision.get("average_posture_score")
             },
             "tono_voz": {
-                "score": puntuacion.get("score_comunicacion_verbal", 80.0),
-                "wpm": audio.get("wpm", 130),
-                "muletillas_count": audio.get("fillers_count", 0),
-                "pausas_silencio": audio.get("silence_pauses", 1)
+                "score": puntuacion.get("score_comunicacion_verbal"),
+                "wpm": audio.get("wpm"),
+                "muletillas_count": audio.get("fillers_count"),
+                "pausas_silencio": audio.get("silence_pauses")
             },
             "contenido": {
-                "score": puntuacion.get("score_estrategia_crisis", 75.0),
-                "adherencia_mensajes": judge.get("key_message_adherence_score", 80),
-                "control_crisis": judge.get("crisis_control_score", 75)
+                "score": puntuacion.get("score_estrategia_crisis"),
+                "adherencia_mensajes": judge.get("key_message_adherence_score"),
+                "control_crisis": judge.get("crisis_control_score")
             },
             "empatia": {
-                "score": puntuacion.get("score_estrategia_crisis", 75.0),
-                "bridging_detectado": judge.get("bridging_detected", True)
+                "score": puntuacion.get("score_empatia"),
+                "bridging_detectado": judge.get("bridging_detected")
             }
         }
 
     score_global = (
         consolidated_json.get("score_global")
         or consolidated_json.get("puntuacion_global", {}).get("score_general")
-        or 75.0
     )
 
     transcript = (
         consolidated_json.get("transcript")
         or consolidated_json.get("transcripcion")
-        or "Declaración institucional del vocero en ejercicio de crisis."
     )
+
+    required_scenario = ("title", "context", "optics", "key_messages", "red_lines")
+    missing_scenario = [key for key in required_scenario if not scenario_info.get(key)]
+    if missing_scenario or score_global is None or not transcript:
+        missing = missing_scenario + (["score_global"] if score_global is None else []) + (["transcript"] if not transcript else [])
+        raise ValueError(f"Faltan datos reales para generar el informe VISUM: {', '.join(missing)}")
 
     prompt_payload = {
         "escenario": {
-            "titulo": scenario_info.get("title") or scenario_info.get("name") or "Simulación de Vocería en Crisis",
-            "contexto": scenario_info.get("context") or scenario_info.get("scenario_description") or "Contingencia operacional y reputacional de alto impacto mediático.",
-            "optica": scenario_info.get("optics") or "empática y técnica",
-            "mensajes_clave": scenario_info.get("key_messages") or ["La prioridad absoluta es la seguridad de las personas y el restablecimiento del servicio."],
-            "lineas_rojas": scenario_info.get("red_lines") or ["No especular sobre causas no confirmadas ni desviar la responsabilidad institucional."]
+            "titulo": scenario_info["title"],
+            "contexto": scenario_info["context"],
+            "optica": scenario_info["optics"],
+            "mensajes_clave": scenario_info["key_messages"],
+            "lineas_rojas": scenario_info["red_lines"]
         },
         "metricas_consolidadas": {
             "score_global": score_global,

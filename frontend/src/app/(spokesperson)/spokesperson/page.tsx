@@ -32,8 +32,8 @@ function SpokespersonContent() {
   const [selectedLesson, setSelectedLesson] = useState<string>('');
   const [lessonReturnScreen, setLessonReturnScreen] = useState<VoceroScreen>('u1');
   const [practiceScenarioId, setPracticeScenarioId] = useState<string | null>(null);
-  const [activeSessionId, setActiveSessionId] = useState<string>('session-crisis-001');
-  const [activeScenarioId, setActiveScenarioId] = useState<string>('crisis-voceria-01');
+  const [activeSessionId, setActiveSessionId] = useState<string>('');
+  const [activeScenarioId, setActiveScenarioId] = useState<string>('');
 
   // Estado para interceptar salidas accidentales durante la ejercitación
   const [pendingNav, setPendingNav] = useState<{
@@ -69,8 +69,8 @@ function SpokespersonContent() {
     if (screen === 'u3') {
       if (extra) setActiveScenarioId(extra);
       if (!selectedSession) {
-        const newSession = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`;
-        setActiveSessionId(newSession);
+        setVoceroScreen('u2');
+        return;
       }
     }
     setVoceroScreen(screen);

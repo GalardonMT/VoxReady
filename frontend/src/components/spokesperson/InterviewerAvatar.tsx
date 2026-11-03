@@ -26,14 +26,14 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
   const [isMuted, setIsMuted] = useState(false);
 
   const onSpeechEndRef = useRef(onSpeechEnd);
-  onSpeechEndRef.current = onSpeechEnd;
-
-  // Referencias para el loop de animación
   const isSpeakingRef = useRef(false);
-  isSpeakingRef.current = isSpeaking;
-
   const isPausedRef = useRef(isPaused);
-  isPausedRef.current = isPaused;
+
+  useEffect(() => {
+    onSpeechEndRef.current = onSpeechEnd;
+    isSpeakingRef.current = isSpeaking;
+    isPausedRef.current = isPaused;
+  }, [onSpeechEnd, isSpeaking, isPaused]);
 
   // Refs de three.js
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -137,7 +137,8 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
-      setIsSpeaking(false);
+      const timer = window.setTimeout(() => setIsSpeaking(false), 0);
+      return () => clearTimeout(timer);
     }
   }, [isPaused]);
 
@@ -277,7 +278,7 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
 
     // Variables de parpadeo procedural
     let nextBlinkTime = 2.0;
-    let blinkDuration = 0.14;
+    const blinkDuration = 0.14;
     let blinkStartTime = 0;
     let isBlinking = false;
     let currentMouthOpen = 0;
@@ -288,7 +289,6 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
     const animate = () => {
       animFrameIdRef.current = requestAnimationFrame(animate);
 
-      const delta = clock.getDelta();
       const elapsed = clock.getElapsedTime();
 
       // 1. ANIMACIÓN DE RESPIRACIÓN (Idle breathing)

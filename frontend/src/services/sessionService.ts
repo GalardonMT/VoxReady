@@ -1,4 +1,4 @@
-import { apiFetch, isAccessError } from './apiClient';
+import { ApiError, apiFetch, isAccessError } from './apiClient';
 import {
   CreateSessionResponse,
   RecordingUrlResponse,
@@ -23,50 +23,6 @@ export interface AzureReportResponse extends Partial<FullVisumReport> {
   };
 }
 
-const INITIAL_REPORT: CoachReport = {
-  sessionId: 'default',
-  scenarioName: 'Incidente Corporativo y Vocería de Crisis',
-  date: new Date().toLocaleDateString(),
-  globalScore: 84,
-  goodAspects: [
-    'Excelente velocidad de habla y dicción (134 ppm)',
-    'Postura erguida y contacto visual constante con la cámara (88%)',
-    'Mensaje puente utilizado correctamente en la pregunta 3'
-  ],
-  improveAspects: [
-    'Se detectaron 4 muletillas al inicio de las respuestas',
-    'La entonación cayó levemente hacia el final de la sesión',
-    'Mayor firmeza al abordar la compensación inmediata a usuarios'
-  ],
-  crossSignalQuote: '“En el segundo 42, tu tono de voz mostró seguridad mientras tu postura corporal reforzó el compromiso de la marca.”',
-  areas: [
-    {
-      name: 'Imagen / no verbal',
-      channel: 'MediaPipe Vision',
-      score: 86,
-      criteria: 'Contacto visual: 88%, Estabilidad: 92%'
-    },
-    {
-      name: 'Voz / prosodia',
-      channel: 'Acústica Parakeet',
-      score: 82,
-      criteria: 'Velocidad: 134 ppm, Muletillas: 4, Pausas: 3'
-    },
-    {
-      name: 'Contenido y discurso',
-      channel: 'Llama 3.2 90B Juez',
-      score: 85,
-      criteria: 'Apego a mensajes clave institucionales'
-    },
-    {
-      name: 'Estrategia de crisis',
-      channel: 'Fusión Multimodal',
-      score: 83,
-      criteria: 'Manejo de presión y técnica de bridging'
-    }
-  ]
-};
-
 const DEFAULT_ANALYSIS_STEPS: MultimodalAnalysisStep[] = [
   { id: 'content', label: 'Contenido y coherencia de discurso', status: 'done' },
   { id: 'voice', label: 'Tono de voz y modulación acústica', status: 'done' },
@@ -84,27 +40,20 @@ export const sessionService = {
   /**
    * Crea una nueva sesión en el backend
    */
-  async createSession(scenarioId: string = 'crisis-voceria-01'): Promise<CreateSessionResponse> {
-    const defaultSessId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}`;
-    try {
-      const res = await apiFetch<{ session_id?: string; status?: string }>('/api/sessions', {
-        method: 'POST',
-        body: JSON.stringify({ scenario_id: scenarioId, tenant_id: 'tenant-voxready-dev' })
-      });
-      return {
-        sessionId: res.session_id || defaultSessId,
-        status: res.status || 'created',
-        scenarioId,
-        createdAt: new Date().toISOString()
-      };
-    } catch {
-      return {
-        sessionId: defaultSessId,
-        status: 'created',
-        scenarioId,
-        createdAt: new Date().toISOString()
-      };
-    }
+  async createSession(scenarioId: string): Promise<CreateSessionResponse> {
+    if (!scenarioId) throw new Error('Debes seleccionar un escenario antes de crear la sesión.');
+    const res = await apiFetch<{ session_id?: string; sessionId?: string; status?: string }>('/api/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ scenario_id: scenarioId })
+    });
+    const sessionId = res.session_id || res.sessionId;
+    if (!sessionId) throw new Error('La API no entregó un identificador de sesión.');
+    return {
+      sessionId,
+      status: res.status || 'created',
+      scenarioId,
+      createdAt: new Date().toISOString()
+    };
   },
 
   /**
@@ -128,26 +77,21 @@ export const sessionService = {
   /**
    * Solicita una URL firmada SAS de Azure Blob Storage para subida directa (Zero-Proxy)
    */
-  async getUploadUrl(sessionId: string, _extension: string = 'webm'): Promise<RecordingUrlResponse> {
+  async getUploadUrl(sessionId: string): Promise<RecordingUrlResponse> {
     try {
-      const res = await apiFetch<{ upload_url: string; blob_name: string }>(
+      const res = await apiFetch<{ upload_url: string; blob_name: string; max_size_bytes: number; expires_at: string }>(
         `/api/sessions/${sessionId}/upload-url`,
         { method: 'POST' }
       );
+      if (!res.blob_name) throw new Error('La API no entregó la ruta del archivo de grabación.');
       return {
         uploadUrl: res.upload_url,
-        blobPath: res.blob_name || `recordings/${sessionId}.webm`,
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        maxSizeBytes: 524288000
+        blobPath: res.blob_name,
+        expiresAt: res.expires_at,
+        maxSizeBytes: res.max_size_bytes
       };
     } catch (err) {
-      if (isAccessError(err)) throw err;
-      return {
-        uploadUrl: `/api/sessions/${sessionId}/upload-url`,
-        blobPath: `recordings/${sessionId}.webm`,
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        maxSizeBytes: 524288000
-      };
+      throw err;
     }
   },
 
@@ -182,15 +126,16 @@ export const sessionService = {
   async finishSession(
     sessionId: string,
     blobName: string,
-    scenarioId: string = 'crisis-voceria-01',
-    tenantId: string = 'tenant-voxready-dev',
+    scenarioId: string,
+    tenantId: string | null,
     turnsOrMarks: (TurnInterval | QuestionMark)[] = []
   ): Promise<boolean> {
-    const finalBlobName = blobName || `recordings/${sessionId}.webm`;
+    if (!blobName) throw new Error('La ruta de grabación no está disponible.');
+    const finalBlobName = blobName;
     const formattedTurns: TurnInterval[] = [];
     const questionMarks: QuestionMark[] = [];
 
-    turnsOrMarks.forEach((item: any, idx: number) => {
+    turnsOrMarks.forEach((item, idx) => {
       if ('questionIndex' in item) {
         questionMarks.push(item as QuestionMark);
         const start = Math.round(Number(item.startMs) || 0);
@@ -245,7 +190,15 @@ export const sessionService = {
       ];
     } catch (error) {
       if (isAccessError(error)) throw error;
-      return DEFAULT_ANALYSIS_STEPS;
+      if (error instanceof ApiError && error.problem.status === 409) {
+        return [
+          { id: 'content', label: 'Contenido y coherencia de discurso', status: 'running' },
+          { id: 'voice', label: 'Tono de voz y modulación acústica', status: 'running' },
+          { id: 'image', label: 'Expresión visual y contacto visual', status: 'running' },
+          { id: 'fusion', label: 'Fusión multimodal e índice de empatía', status: 'pending' }
+        ];
+      }
+      throw error;
     }
   },
 
@@ -255,9 +208,9 @@ export const sessionService = {
   async getRawReport(sessionId: string): Promise<AzureReportResponse> {
     try {
       return await apiFetch<AzureReportResponse>(`/api/sessions/${sessionId}/report`);
-    } catch (error: any) {
+    } catch (error: unknown) {
       // HTTP 409 Conflict: El análisis continúa ejecutándose en el worker
-      if (error?.status === 409 || error?.problem?.status === 409) {
+      if (error instanceof ApiError && error.problem.status === 409) {
         return {
           session_id: sessionId,
           sessionId: sessionId,
@@ -278,7 +231,7 @@ export const sessionService = {
       if (raw && (raw.status === 'completed' || raw.overallScore !== undefined)) {
         const full = raw as FullVisumReport;
         if (!full.durationSeconds) {
-          const d = full.metrics?.audio?.duracionSegundos || (full as any)?.metricsSummary?.durationSeconds;
+          const d = full.metrics?.audio?.duracionSegundos || full.metricsSummary?.durationSeconds;
           if (d) full.durationSeconds = d;
         }
         return full;
@@ -303,7 +256,11 @@ export const sessionService = {
         const a = m.audio || {};
         const j = m.judge || {};
 
-        const globalScore = Math.round(raw.overallScore ?? p.score_general ?? 75);
+        const rawGlobalScore = raw.overallScore ?? p.score_general;
+        if (typeof rawGlobalScore !== 'number') {
+          throw new Error('El reporte no contiene una puntuación global válida.');
+        }
+        const globalScore = Math.round(rawGlobalScore);
         
         // Extraer scores de las 4 áreas si están presentes en areaScores
         const areaMap: Record<string, number> = {};
@@ -313,55 +270,56 @@ export const sessionService = {
           });
         }
 
-        const nonVerbalScore = Math.round(areaMap['expression'] ?? p.score_comunicacion_no_verbal ?? 70);
-        const verbalScore = Math.round(areaMap['voice'] ?? p.score_comunicacion_verbal ?? 80);
-        const coherenceScore = Math.round(areaMap['coherence'] ?? (j as any)?.key_message_adherence_score ?? 85);
-        const crisisScore = Math.round(areaMap['empathy'] ?? p.score_estrategia_crisis ?? 80);
+        const nonVerbalScore = Math.round(areaMap['expression'] ?? p.score_comunicacion_no_verbal ?? globalScore);
+        const verbalScore = Math.round(areaMap['voice'] ?? p.score_comunicacion_verbal ?? globalScore);
+        const coherenceScore = Math.round(areaMap['coherence'] ?? j.key_message_adherence_score ?? globalScore);
+        const crisisScore = Math.round(areaMap['empathy'] ?? p.score_estrategia_crisis ?? globalScore);
 
         // Fortalezas y mejoras desde narrative o judge
         const narrative = (raw.narrative || {}) as { strengths?: string[]; improvements?: string[]; crossSignal?: string };
         const strengths = narrative.strengths && narrative.strengths.length > 0
           ? narrative.strengths
-          : ((j as any)?.strengths || INITIAL_REPORT.goodAspects);
+          : (j.strengths || []);
         const improvements = narrative.improvements && narrative.improvements.length > 0
           ? narrative.improvements
-          : ((j as any)?.weaknesses || INITIAL_REPORT.improveAspects);
-        const crossSignalQuote = narrative.crossSignal || (j as any)?.executive_summary || INITIAL_REPORT.crossSignalQuote;
+          : (j.weaknesses || []);
+        const crossSignalQuote = narrative.crossSignal || j.executive_summary || '';
 
         // Métricas visuales legibles
-        const eyePct = (v as any)?.eyeContactPct ?? (v as any)?.eye_contact_percentage ?? 30;
-        const postureScore = (v as any)?.shoulderStabilityScore ?? (v as any)?.average_posture_score ?? 91;
-        const wpmVal = (a as any)?.wpmGlobal ?? (a as any)?.wpm ?? 128;
-        const fillersCount = (a as any)?.fillerWordsCount ?? (a as any)?.fillers_count ?? ((a as any)?.muletillasDetectadas?.length || 0);
-        const pausesCount = (a as any)?.pausasProlongadas ?? (a as any)?.silence_pauses ?? 0;
-        const durationSecs = Number((a as any)?.duracionSegundos ?? (a as any)?.duracion_segundos ?? (raw as any)?.durationSeconds ?? 0);
+        const eyePct = v.eyeContactPct ?? v.eye_contact_percentage;
+        const postureScore = v.shoulderStabilityScore ?? v.average_posture_score;
+        const wpmVal = a.wpmGlobal ?? a.wpm;
+        const fillersCount = a.fillers_count ?? a.muletillasDetectadas?.length;
+        const pausesCount = a.pausasProlongadas ?? a.silence_pauses;
+        const rawDuration = a.duracionSegundos ?? a.duracion_segundos ?? raw.durationSeconds;
+        const durationSecs = typeof rawDuration === 'number' ? rawDuration : undefined;
 
         return {
           sessionId: raw.sessionId || raw.session_id || sessionId,
-          scenarioName: raw.scenarioTitle || scenarioName || 'Incidente Corporativo y Vocería de Crisis',
+          scenarioName: raw.scenarioTitle || scenarioName || `Sesión ${sessionId}`,
           date: raw.generatedAt ? new Date(raw.generatedAt).toLocaleDateString() : (raw.processed_at ? new Date(raw.processed_at).toLocaleDateString() : new Date().toLocaleDateString()),
           globalScore,
           goodAspects: strengths,
           improveAspects: improvements,
           crossSignalQuote,
           recordingUrl: raw.recordingUrl,
-          durationSeconds: durationSecs > 0 ? durationSecs : undefined,
+          durationSeconds: durationSecs && durationSecs > 0 ? durationSecs : undefined,
           areas: [
             {
               name: 'Imagen / no verbal',
               channel: 'MediaPipe Vision',
               score: nonVerbalScore,
-              criteria: `Contacto visual: ${eyePct}% · Estabilidad: ${postureScore}%`
+              criteria: `Contacto visual: ${eyePct ?? 'N/D'}% · Estabilidad: ${postureScore ?? 'N/D'}%`
             },
             {
               name: 'Voz / prosodia',
               channel: 'Acústica Parakeet',
               score: verbalScore,
-              criteria: `Velocidad: ${wpmVal} WPM · Muletillas: ${fillersCount} · Pausas: ${pausesCount}`
+              criteria: `Velocidad: ${wpmVal ?? 'N/D'} WPM · Muletillas: ${fillersCount ?? 'N/D'} · Pausas: ${pausesCount ?? 'N/D'}`
             },
             {
               name: 'Contenido y discurso',
-              channel: 'Llama 3.2 90B Juez',
+              channel: 'Juez LLM configurado',
               score: coherenceScore,
               criteria: 'Apego a mensajes clave y coherencia estratégica'
             },
@@ -369,16 +327,16 @@ export const sessionService = {
               name: 'Estrategia de crisis y empatía',
               channel: 'Fusión Multimodal',
               score: crisisScore,
-              criteria: (j as any)?.bridging_detected ? 'Técnica de bridging detectada' : 'Control y manejo de crisis'
+              criteria: j.bridging_detected ? 'Técnica de bridging detectada' : 'Control y manejo de crisis'
             }
           ],
-          metrics: m as Record<string, unknown>
+          metrics: m
         };
       }
-    } catch (e) {
-      console.warn('Error fetching raw coach report, falling back to mock:', e);
+    } catch (error) {
+      throw error;
     }
-    return INITIAL_REPORT;
+    throw new Error('El reporte todavía no está disponible.');
   },
 
   /**
@@ -416,28 +374,8 @@ export const sessionService = {
         return res;
       }
       return [];
-    } catch (e) {
-      console.warn('Error al obtener historial de sesiones del usuario, usando respaldo:', e);
-      return [
-        {
-          sessionId: 'session-crisis-001',
-          scenarioId: 'crisis-voceria-01',
-          scenarioTitle: 'Retiro Masivo de Alimentos Infantiles',
-          createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-          status: 'completed',
-          overallScore: 84,
-          hasReport: true
-        },
-        {
-          sessionId: 'session-crisis-002',
-          scenarioId: 'crisis-operativa-02',
-          scenarioTitle: 'Interrupción Crítica de Plataforma Transaccional',
-          createdAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-          status: 'completed',
-          overallScore: 78,
-          hasReport: true
-        }
-      ];
+    } catch (error) {
+      throw error;
     }
   }
 };

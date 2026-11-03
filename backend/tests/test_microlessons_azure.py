@@ -82,7 +82,7 @@ def payload(client_id, scenario_id, title='Tecnica de prueba', status='active'):
             'exampleContent': 'Caso comentado de prueba.', 'status': status}
 
 
-def test_seed_identities_and_role_endpoints(monkeypatch):
+def test_seed_identities_and_role_endpoints():
     if not main.DEV_AUTH:
         pytest.skip('Este caso requiere DEV_AUTH=true; se verifica en el perfil Dev Auth.')
     expected = {
@@ -96,24 +96,20 @@ def test_seed_identities_and_role_endpoints(monkeypatch):
             response = client.post('/v1/dev/token', json={'email': email.upper()})
             assert response.status_code == 200, response.text
             tokens[email] = response.json()['accessToken']
-            monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', email)
             profile = client.get('/v1/me', headers={'Authorization': 'Bearer ' + tokens[email]})
             assert profile.status_code == 200, profile.text
             assert profile.json()['email'].casefold() == email.casefold()
             assert profile.json()['role'] == role
 
         master_headers = {'Authorization': 'Bearer ' + tokens['elena.diaz@voxready.ai']}
-        monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', 'elena.diaz@voxready.ai')
         assert client.get('/v1/api/master/microlessons/clients', headers=master_headers).status_code == 200
         assert client.get('/v1/api/master/microlessons', headers=master_headers).status_code == 200
 
         speaker_headers = {'Authorization': 'Bearer ' + tokens['ana.torres@acme-corp.com']}
-        monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', 'ana.torres@acme-corp.com')
         assert client.get('/v1/microlessons', headers=speaker_headers).status_code == 200
         assert client.get('/v1/api/master/microlessons', headers=speaker_headers).status_code == 403
 
         admin_headers = {'Authorization': 'Bearer ' + tokens['carlos.ruiz@acme-corp.com']}
-        monkeypatch.setenv('DEV_AUTH_TEST_EMAIL', 'carlos.ruiz@acme-corp.com')
         assert client.get('/v1/api/master/microlessons', headers=admin_headers).status_code == 403
         assert client.get('/v1/microlessons', headers=admin_headers).status_code == 403
         assert client.post('/v1/dev/token', json={'email': 'missing@example.invalid'}).status_code == 404

@@ -132,14 +132,14 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
     }
   }, []);
 
-  const skipSeconds = (seconds: number) => {
+  const skipSeconds = useCallback((seconds: number) => {
     const video = videoRef.current;
     if (!video) return;
     const max = effectiveDuration > 0 ? effectiveDuration : video.duration || 99999;
     const nextTime = Math.max(0, Math.min(max, video.currentTime + seconds));
     video.currentTime = nextTime;
     setCurrentTime(nextTime);
-  };
+  }, [effectiveDuration]);
 
   // Manejo de timeline y scrubber
   const seekToPosition = useCallback(
@@ -211,7 +211,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
     }
   };
 
-  const toggleMute = () => {
+  const toggleMute = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     if (isMuted) {
@@ -222,7 +222,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
       video.muted = true;
       setIsMuted(true);
     }
-  };
+  }, [isMuted, volume]);
 
   // Velocidad de reproducción
   const speedOptions = [0.75, 1, 1.25, 1.5, 2];
@@ -236,7 +236,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
   };
 
   // Pantalla completa
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
 
@@ -247,7 +247,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
       document.exitFullscreen?.().catch(() => {});
       setIsFullscreen(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -296,7 +296,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay]);
+  }, [skipSeconds, toggleFullscreen, toggleMute, togglePlay]);
 
   const progressPercent = effectiveDuration > 0 ? (currentTime / effectiveDuration) * 100 : 0;
   const bufferPercent = effectiveDuration > 0 ? (bufferedEnd / effectiveDuration) * 100 : 0;

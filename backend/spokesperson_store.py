@@ -23,11 +23,6 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.session'
 
 
 def scenario_uuid(value):
-    # Compatibilidad con los accesos rápidos anteriores; la autorización se
-    # evalúa sobre el escenario real y el cliente, incluso para estos alias.
-    aliases = {'crisis-voceria-01': 'topic-1', 'crisis-operativa-02': 'topic-2', 'crisis-reputacional-03': 'topic-3'}
-    if value in aliases:
-        return str(uuid.uuid5(uuid.UUID('f126b3bf-f626-47cd-9990-ae2b533c32eb'), aliases[value] + '/scenario'))
     return store.uid(value)
 
 

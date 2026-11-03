@@ -260,6 +260,18 @@ class DatabaseService:
             """, row[9])
             key_messages = [message[0] for message in cur.fetchall()]
             cur.execute("""
+                SELECT text FROM dbo.topic_red_line
+                WHERE topic_id = ? AND status = 'active' ORDER BY sort_order
+            """, row[9])
+            red_lines = [item[0] for item in cur.fetchall()]
+            cur.execute("""
+                SELECT q.text FROM dbo.scenario_question sq
+                JOIN dbo.question q ON q.id = sq.question_id
+                WHERE sq.scenario_id = ? AND sq.status = 'active'
+                ORDER BY sq.sequence_no
+            """, row[3])
+            questions = [item[0] for item in cur.fetchall()]
+            cur.execute("""
                 SELECT id, area_key, weight FROM dbo.rubric_area
                 WHERE rubric_version_id = ?
             """, row[4])
@@ -277,6 +289,8 @@ class DatabaseService:
                     "optics": row[7],
                     "audience": row[8],
                     "key_messages": key_messages,
+                    "red_lines": red_lines,
+                    "questions": questions,
                 },
                 "rubric_version_id": str(row[4]),
                 "rubric_areas": areas,

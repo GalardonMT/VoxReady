@@ -1,6 +1,5 @@
 import os
 import time
-import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 try:
@@ -9,17 +8,7 @@ except (ImportError, ValueError):
     from worker.utils.logger import get_logger
 
 try:
-    import httpx
-except ImportError:
-    httpx = None
-
-try:
     import requests
-    from requests.adapters import HTTPAdapter
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    from urllib3.util.retry import Retry
-    from concurrent.futures import ThreadPoolExecutor
 except ImportError:
     requests = None
 
@@ -42,11 +31,13 @@ class VisionClient:
         timeout_seconds: float = 60.0,
         max_retries: int = 3,
     ):
-        self.base_url = (
-            base_url
-            or os.getenv("VISION_SERVICE_URL")
-            or "https://ca-vision-service.wittywater-6601cc91.westus.azurecontainerapps.io"
-        ).rstrip("/")
+        self.base_url = (base_url or os.getenv("VISION_SERVICE_URL") or "").strip().rstrip("/")
+        self.service_token = os.getenv("VISION_SERVICE_TOKEN", "").strip()
+        if not self.base_url:
+            raise ValueError("VISION_SERVICE_URL no está configurada")
+        if len(self.service_token) < 32:
+            raise ValueError("VISION_SERVICE_TOKEN no está configurado o es demasiado corto")
+        self.headers = {"X-VoxReady-Service-Token": self.service_token}
         self.batch_endpoint = f"{self.base_url}/analyze/batch"
         self.endpoint = f"{self.base_url}/analyze-frame"
         self.concurrency_limit = concurrency_limit
@@ -83,8 +74,8 @@ class VisionClient:
                     resp = requests.post(
                         self.batch_endpoint,
                         files=files,
+                        headers=self.headers,
                         timeout=self.timeout_seconds,
-                        verify=False,
                     )
                     if resp.status_code == 200:
                         data = resp.json()
@@ -136,11 +127,12 @@ class VisionClient:
                     file_bytes = f.read()
 
                 files = {"file": (filename, file_bytes, "image/jpeg")}
-                response = session.post(
+                http_session = session or requests
+                response = http_session.post(
                     self.endpoint,
                     files=files,
+                    headers=self.headers,
                     timeout=self.timeout_seconds,
-                    verify=False,
                 )
 
                 if response.status_code == 200:

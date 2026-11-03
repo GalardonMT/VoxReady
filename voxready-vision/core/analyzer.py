@@ -5,19 +5,14 @@ import mediapipe as mp
 from pathlib import Path
 from typing import List, Dict, Any, Union, Optional
 
-FACE_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-POSE_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
-
-
-def _garantizar_modelo(ruta_modelo: Path, url: str) -> str:
-    """Descarga el modelo si no existe localmente."""
+def _require_model(ruta_modelo: Path, variable_name: str) -> str:
+    """Valida un modelo aprovisionado; nunca descarga código o pesos en runtime."""
     ruta_modelo = Path(ruta_modelo).resolve()
     if not ruta_modelo.exists():
-        ruta_modelo.parent.mkdir(parents=True, exist_ok=True)
-        import urllib.request
-        print(f"--> Descargando modelo MediaPipe desde: {url}...")
-        urllib.request.urlretrieve(url, str(ruta_modelo))
-        print(f"[OK] Modelo guardado en: {ruta_modelo}")
+        raise RuntimeError(
+            f"No se encontró el modelo MediaPipe. Configura {variable_name} "
+            "con una ruta local aprovisionada durante el build."
+        )
     return str(ruta_modelo)
 
 
@@ -52,29 +47,38 @@ class MultimodalVisionAnalyzer:
                 min_detection_confidence=0.5
             )
         else:
-            # Runtime alternativo moderno (MediaPipe Tasks)
-            from mediapipe.tasks import python
-            from mediapipe.tasks.python import vision
+            # Runtime moderno (MediaPipe Tasks)
+            base_options = mp.tasks.BaseOptions
+            vision = mp.tasks.vision
 
-            if models_dir is None:
-                models_dir = Path(__file__).resolve().parent.parent / "models"
-            self.models_dir = Path(models_dir)
+            self.models_dir = Path(models_dir).resolve() if models_dir else None
 
-            face_model_path = _garantizar_modelo(
-                self.models_dir / "face_landmarker.task",
-                FACE_LANDMARKER_URL
+            face_setting = os.getenv("VISION_FACE_MODEL_PATH")
+            pose_setting = os.getenv("VISION_POSE_MODEL_PATH")
+            if self.models_dir:
+                face_setting = face_setting or str(self.models_dir / "face_landmarker.task")
+                pose_setting = pose_setting or str(self.models_dir / "pose_landmarker.task")
+            if not face_setting or not pose_setting:
+                raise RuntimeError(
+                    "Configura VISION_FACE_MODEL_PATH y VISION_POSE_MODEL_PATH "
+                    "con modelos aprovisionados durante el build."
+                )
+
+            face_model_path = _require_model(
+                Path(face_setting),
+                "VISION_FACE_MODEL_PATH",
             )
-            pose_model_path = _garantizar_modelo(
-                self.models_dir / "pose_landmarker.task",
-                POSE_LANDMARKER_URL
+            pose_model_path = _require_model(
+                Path(pose_setting),
+                "VISION_POSE_MODEL_PATH",
             )
 
             face_opts = vision.FaceLandmarkerOptions(
-                base_options=python.BaseOptions(model_asset_path=face_model_path),
+                base_options=base_options(model_asset_path=face_model_path),
                 num_faces=1
             )
             pose_opts = vision.PoseLandmarkerOptions(
-                base_options=python.BaseOptions(model_asset_path=pose_model_path),
+                base_options=base_options(model_asset_path=pose_model_path),
                 num_poses=1
             )
             self.face_landmarker = vision.FaceLandmarker.create_from_options(face_opts)

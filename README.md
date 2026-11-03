@@ -1,156 +1,80 @@
-# 🎙️ VoxReady - Plataforma Multimodal de Entrenamiento y Vocería de Crisis
+# VoxReady
 
-**VoxReady** es una plataforma integral de simulación y entrenamiento de voceros de crisis corporativa, impulsada por inteligencia artificial multimodal. Permite a líderes y portavoces entrenar en escenarios de alta presión, evaluando su desempeño en tres dimensiones clave: **comunicación no verbal (visión)**, **comunicación verbal y prosodia (voz)** y **apego estratégico al mensaje de crisis (LLM Juez)**.
+VoxReady es una plataforma de entrenamiento de vocería que integra grabación web, análisis de voz, visión computacional y evaluación de contenido. Este repositorio contiene cuatro componentes:
 
----
+- `frontend/`: Next.js 16, React 19 y TypeScript.
+- `backend/`: API FastAPI, autenticación Microsoft Entra y acceso a Azure SQL/Blob Storage.
+- `worker/`: análisis multimodal invocado por HTTP interno autenticado.
+- `voxready-vision/`: análisis de fotogramas con MediaPipe.
 
-## 🏗️ Arquitectura del Repositorio
+La cola de etiquetado continúa en una rama separada y no forma parte de esta entrega estable.
 
-El proyecto está organizado en una arquitectura de microservicios desacoplada y modular:
+## Inicio rápido
 
-```text
-voxready/
-├── frontend/             # Aplicación Web para el Vocero (Next.js 16 + React 19 + TypeScript)
-├── backend/              # API REST Orquestadora (FastAPI en Azure Container Apps: ca-backend-api)
-├── worker/               # Procesador Asíncrono de IA (Azure Container Apps: ca-analysis-worker)
-├── voxready-vision/      # Microservicio de Visión Computacional (MediaPipe en ca-vision-service)
-├── dev-tools.ps1         # Script PowerShell de utilidades (Arranque local y logs en vivo de Azure)
-├── .env                  # Conexiones locales; archivo ignorado por Git
-├── .env.example          # Plantilla de referencia de variables globales
-├── .gitignore            # Exclusión de dependencias y artefactos locales
-└── README.md             # Documentación maestra del proyecto
-```
+Requisitos:
 
----
+- Docker Desktop con contenedores Linux y Docker Compose v2.
+- Acceso a una instancia Azure SQL compatible con el esquema del proyecto.
+- Recursos y credenciales propios para Microsoft Entra, Azure Blob Storage, NVIDIA y los servicios internos.
 
-## 🧩 Componentes del Ecosistema
-
-### 1. `frontend/` (Next.js 16, React 19, TypeScript)
-* **Onboarding & Selección:** Catálogo dinámico de escenarios de crisis corporativa.
-* **Consentimiento Técnico (`TechConsentView`):** Validación en tiempo real de permisos de cámara y micrófono.
-* **Sala de Simulación en Vivo (`LiveSessionView`):** 
-  - Grabación en flujo continuo y sincronizado (sin saltos temporales ni desincronización).
-  - Audio calibrado profesionalmente (sin saturación ni distorsión digital).
-  - Cronómetro de sesión y preguntas interactivas del entrevistador de IA.
-* **Subida Zero-Proxy:** Envío binario directo desde el navegador hacia Azure Blob Storage mediante SAS Token prefirmado.
-* **Reporte y Coaching (`CoachReportView`):** Visualización interactiva con radar de competencias, métricas de contacto visual, WPM, muletillas y resumen ejecutivo.
-
-### 2. `backend/` (FastAPI - `ca-backend-api`)
-* **Gestión de Sesiones:** Creación de sesiones y catálogo de crisis.
-* **Generación de SAS Tokens:** Endpoint `/api/sessions/{id}/upload-url` para subida directa a Blob Storage sin sobrecargar el backend.
-* **Despacho de análisis:** Llama por HTTP a `/analyze` del worker; si esa llamada no se confirma, publica `SESSION_RECORDING_COMPLETED` en Azure Service Bus como contingencia. El despliegue del consumidor de la cola requiere verificación aparte.
-* **Consulta de Reportes:** Endpoint `/api/sessions/{id}/report` para entregar el reporte consolidado al frontend.
-
-### 3. `worker/` (Python Serverless - `ca-analysis-worker`)
-* **Entradas de análisis en el código:** `worker/main.py` ofrece `/analyze` por HTTP; `worker/worker.py` y `worker/function_app.py` contienen consumidores de `analysis-queue`. Su despliegue efectivo no se verifica desde Compose.
-* **Procesamiento Multimedia (FFmpeg):** Descarga el video a `/tmp`, extrae el audio en PCM 16-bit 16kHz mono y genera fotogramas clave muestreados a 0.5 FPS.
-* **Análisis de Voz y Acústica:** Evaluación de velocidad (WPM), pausas, silencios y dicción con NVIDIA Riva / Parakeet.
-* **Análisis de Visión:** Integración vía HTTP con `ca-vision-service` para calcular estabilidad postural, contacto visual y expresiones.
-* **LLM Juez de Crisis:** Evaluación cualitativa de apego a mensajes clave institucionales y técnica de *bridging* utilizando **NVIDIA Llama 3.2 90B**.
-* **Persistencia:** Almacenamiento en Azure SQL Serverless y respaldo en Azure Blob Storage (`reports/`).
-
-### 4. `voxready-vision/` (FastAPI + MediaPipe - `ca-vision-service`)
-* Microservicio dedicado a la visión artificial.
-* Procesa los fotogramas extraídos utilizando modelos de MediaPipe (Face Mesh, Pose Landmark Detection) para calificar la presencia y control del vocero.
-
-## 🛠️ Herramientas de Desarrollo (`dev-tools.ps1`)
-
-Para facilitar el desarrollo local y el monitoreo de la infraestructura en Azure, se incluye un menú interactivo en PowerShell:
+1. Copia `.env.example` como `.env`.
+2. Reemplaza todos los marcadores por valores del ambiente de destino. Nunca confirmes `.env` en Git.
+3. Valida la configuración sin imprimir secretos:
 
 ```powershell
-.\dev-tools.ps1
+.\scripts\preflight.ps1
 ```
 
-Opciones disponibles:
-1. **Iniciar Docker + Azure SQL:** Construye y levanta backend y frontend, con migraciones sobre Azure SQL.
-2. **Ver Logs del Worker:** Conecta con `az containerapp logs` para ver en tiempo real el procesamiento multimedia y de IA.
-3. **Ver Logs del Backend API:** Muestra las peticiones HTTP entrantes, creación de sesiones y firmas SAS.
-4. **Ver Logs de Visión:** Monitorea el análisis de fotogramas en `ca-vision-service`.
-5. **Verificar Azure SQL:** Comprueba conexión y esquema desde la imagen del backend.
-6. **Ejecutar pruebas:** Corre los tests de API y frontend dentro de Docker.
+4. Construye e inicia el sistema:
 
-### Arranque con Docker Compose
-El flujo habitual usa Docker conectado a Azure SQL, Blob Storage y Service Bus.
-Consulta [DOCKER_AZURE.md](DOCKER_AZURE.md) para configurar, desplegar y verificar.
-```bash
-docker compose up --build -d --wait --wait-timeout 240
-```
-- **Frontend:** [http://localhost:3000/login/](http://localhost:3000/login/)
-- **Backend (API REST Docs):** [http://localhost:8000/docs](http://localhost:8000/docs)
-
-En PowerShell: `./docker.ps1 up`, `./docker.ps1 verify` y `./docker.ps1 test`.
-No requiere entornos virtuales ni una base de datos local.
-Para conservar Dev Auth en localhost, usa `./docker.ps1 up -LocalDevAuth`;
-el arranque predeterminado exige Microsoft Entra y desactiva Dev Auth.
-
----
-
-## 🚀 Puesta en Marcha Rápida
-
-### Prerrequisitos
-- **Docker Desktop** con motor Linux y Compose 2.20 o posterior.
-- **Compose 2.24.4 o posterior** si usas el modo Dev Auth local.
-- **`.env` local configurado** con las conexiones Azure y autenticación Microsoft Entra; no se incluye en Git.
-- **Azure CLI (`az`)** solo para consultar logs de Container Apps.
-
-### 1. Iniciar la aplicación con Azure SQL
-```bash
-docker compose up --build -d --wait --wait-timeout 240
-```
-Abre en tu navegador: [http://localhost:3000](http://localhost:3000).
-Si vas a usar el acceso de desarrollo local, inicia con
-`.\docker.ps1 up -LocalDevAuth` en vez del comando anterior.
-En ese modo, agrega `DEV_AUTH_TEST_EMAIL` al `.env` local con el correo de una
-cuenta activa ya preasignada en `app_user`; la API toma de Azure SQL su rol y
-empresa. Una cuenta desconocida no se registra automáticamente.
-
-### 2. Verificar conexión y ejecutar pruebas
 ```powershell
-.\docker.ps1 verify
-.\docker.ps1 test
-```
-Las pruebas de persistencia usan Azure SQL. El worker mantiene su despliegue
-actual en Azure; no se necesita una base local ni un entorno virtual.
-
----
-
-## 🔐 Configuración de Variables de Entorno
-
-### Variables públicas en `.env` de la raíz (Docker)
-```env
-NEXT_PUBLIC_API_URL=https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io
-NEXT_PUBLIC_BACKEND_API_URL=https://ca-backend-api.victoriousmushroom-8081606f.eastus2.azurecontainerapps.io
-NEXT_PUBLIC_DEV_AUTH=false
-VOXREADY_DOCKER_API_URL=http://localhost:8000/v1
-VOXREADY_DOCKER_REDIRECT_URI=http://localhost:3000
+.\docker.ps1 up
 ```
 
-### Conexiones del backend en el mismo `.env`
-```env
-STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=stavoxreadydev;..."
-SERVICE_BUS_CONNECTION_STRING="Endpoint=sb://sb-voxready-dev.servicebus.windows.net/;..."
-BLOB_CONTAINER_NAME="recordings"
-SERVICE_BUS_QUEUE_NAME="analysis-queue"
-DEV_AUTH="false"
-# Solo para .\docker.ps1 up -LocalDevAuth; usa una cuenta preasignada en app_user
-DEV_AUTH_TEST_EMAIL="usuario-preasignado@example.invalid"
-CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestaticapps.net"
+5. Abre `http://localhost:3000/login/`.
+
+La documentación OpenAPI está desactivada de forma predeterminada. Para habilitarla únicamente en desarrollo, configura `ENVIRONMENT=development` y `ENABLE_API_DOCS=true`.
+
+## Autenticación
+
+El modo normal usa Microsoft Entra. Para desarrollo local existe un modo cerrado que solo emite tokens firmados para usuarios ya preasignados en `app_user`:
+
+```powershell
+.\docker.ps1 up -LocalDevAuth
 ```
 
----
+Este modo requiere `DEV_AUTH_SECRET` de al menos 32 caracteres y `DEV_USERS_JSON`; no crea usuarios automáticamente y está bloqueado cuando `ENVIRONMENT` no es `development`.
 
-## 🧪 Ejecución de Pruebas
+## Pruebas
 
-Las pruebas habituales de backend y frontend se ejecutan dentro de Docker:
 ```powershell
 .\docker.ps1 test
 ```
 
-La API se verifica contra Azure SQL y los datos de prueba se revierten al finalizar.
-Los comandos individuales están en [DOCKER_AZURE.md](DOCKER_AZURE.md).
+La batería construye imágenes limpias y ejecuta pruebas de backend, frontend y worker. Las pruebas marcadas para Azure SQL solo se ejecutan cuando se entrega un ambiente real de prueba.
 
----
+Comandos individuales del frontend:
 
-## 📄 Licencia
+```powershell
+Set-Location frontend
+npm ci
+npm test
+npm run lint
+npm run build
+```
 
-Este proyecto es propiedad confidencial de desarrollo para la plataforma **VoxReady**.
+## Seguridad y configuración
+
+- La configuración operativa se obtiene desde variables de entorno; `.env.example` contiene únicamente marcadores y valores locales no secretos.
+- Backend, worker y visión se autentican entre sí mediante tokens separados.
+- TLS se valida en las llamadas salientes.
+- CORS usa una lista explícita de orígenes.
+- Los tokens del navegador se guardan en `sessionStorage`, no en `localStorage`.
+- El servicio usa MediaPipe Tasks `1.2.2`. Sus modelos oficiales se descargan durante el build y se aceptan solo si coinciden con los SHA-256 fijados; nunca se descargan en runtime.
+- Los informes no inventan puntuaciones cuando faltan datos: el procesamiento falla de forma explícita o muestra el dato como no disponible.
+
+Consulta [Configuración](docs/CONFIGURATION.md), [informe de auditoría](docs/TECHNICAL_AUDIT_2026-11-03.md) y [política de seguridad](SECURITY.md).
+
+## Licencia
+
+Software confidencial y propietario de VoxReady. No redistribuir sin autorización.

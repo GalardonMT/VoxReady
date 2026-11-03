@@ -34,10 +34,10 @@ class TurnInterval(BaseModel):
 class FinishSessionRequest(BaseModel):
     blobPath: Optional[str] = Field(default=None, description="Ruta relativa del archivo WebM en el storage")
     video_blob_name: Optional[str] = Field(default=None, description="Ruta para retrocompatibilidad")
-    turns: Optional[List[TurnInterval]] = Field(default=[], description="Segmentación temporal por pregunta")
+    turns: List[TurnInterval] = Field(default_factory=list, description="Segmentación temporal por pregunta")
     question_marks: Optional[List[dict]] = Field(default=None, description="Marcas de tiempo por pregunta")
-    scenario_id: Optional[str] = "crisis-voceria-01"
-    tenant_id: Optional[str] = "tenant-voxready-dev"
+    scenario_id: Optional[str] = None
+    tenant_id: Optional[str] = None
 
 
 class WorkerTriggerPayload(BaseModel):
@@ -45,4 +45,4 @@ class WorkerTriggerPayload(BaseModel):
     jobId: str
     rubricVersionId: Optional[str] = None
     blobPath: str
-    turns: List[TurnInterval] = []
+    turns: List[TurnInterval] = Field(default_factory=list)

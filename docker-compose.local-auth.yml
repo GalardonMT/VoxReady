@@ -5,13 +5,15 @@ services:
     environment:
       ENVIRONMENT: development
       DEV_AUTH: "true"
-      DEV_AUTH_TEST_EMAIL: ${DEV_AUTH_TEST_EMAIL:?Define DEV_AUTH_TEST_EMAIL en .env con un usuario preasignado}
+      DEV_AUTH_SECRET: ${DEV_AUTH_SECRET:?Define DEV_AUTH_SECRET en .env (mínimo 32 caracteres)}
+      DEV_TOKEN_TTL_HOURS: ${DEV_TOKEN_TTL_HOURS:-8}
     ports: !override
       - "127.0.0.1:${VOXREADY_API_PORT:-8000}:8000"
 
   client:
     build:
       args:
+        NEXT_PUBLIC_AUTH_MODE: local
         NEXT_PUBLIC_DEV_AUTH: "true"
     ports: !override
       - "127.0.0.1:${VOXREADY_WEB_PORT:-3000}:3000"
