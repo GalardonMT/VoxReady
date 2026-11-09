@@ -8,11 +8,17 @@ from typing import Optional, Dict, Any, Tuple, List
 try:
     from utils.logger import get_logger
     from services.keyvault_service import get_secret
+    from config.scoring_rules import DynamicRubricConfig, DEFAULT_METRIC_THRESHOLDS
 except (ImportError, ValueError):
-    from worker.utils.logger import get_logger
-    from worker.services.keyvault_service import get_secret
+    try:
+        from worker.utils.logger import get_logger
+        from worker.services.keyvault_service import get_secret
+        from worker.config.scoring_rules import DynamicRubricConfig, DEFAULT_METRIC_THRESHOLDS
+    except (ImportError, ValueError):
+        from core.scoring_rules import DynamicRubricConfig, DEFAULT_METRIC_THRESHOLDS
 
 logger = get_logger("services.db_service")
+
 
 
 USER_AREA_PROGRESS_REFRESH_DML = """
@@ -218,6 +224,10 @@ class DatabaseService:
             f"No se pudo establecer conexión con Azure SQL tras {self.max_retries} intentos: {last_error}"
         )
         raise last_error
+
+    def get_connection(self):
+        """Alias público de _get_connection compatible con gestor de contexto with."""
+        return self._get_connection()
 
     def get_session_context(self, session_id: str, job_id: str) -> Dict[str, Any]:
         """Carga solo la sesion y el job persistidos, con su escenario y rubrica."""
@@ -517,3 +527,116 @@ class DatabaseService:
             """, (status, valid_session_uuid))
             conn.commit()
             return True
+
+    def get_active_rubric_config(self) -> DynamicRubricConfig:
+        """
+        Lee la última versión publicada en dbo.rubric_version y sus 16 límites desde dbo.rubric_metric_value.
+        Si falla o es una versión histórica sin filas (ej. v0.4), opera con el fallback estático.
+        """
+        cfg = DynamicRubricConfig()
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # 1. Obtener la última versión publicada (priorizando la que tenga métricas cargadas)
+                try:
+                    cursor.execute("""
+                        SELECT TOP 1 rv.id, rv.version_label
+                        FROM dbo.rubric_version rv
+                        WHERE rv.status = 'published'
+                        ORDER BY 
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM dbo.rubric_metric_value rmv WHERE rmv.rubric_version_id = rv.id
+                            ) THEN 0 ELSE 1 END,
+                            rv.created_at DESC
+                    """)
+                    row = cursor.fetchone()
+                except Exception:
+                    cursor.execute("""
+                        SELECT TOP 1 rv.id, rv.version_code
+                        FROM dbo.rubric_version rv
+                        WHERE rv.status = 'published'
+                        ORDER BY 
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM dbo.rubric_metric_value rmv WHERE rmv.rubric_version_id = rv.id
+                            ) THEN 0 ELSE 1 END,
+                            rv.created_at DESC
+                    """)
+                    row = cursor.fetchone()
+
+                if not row:
+                    return cfg
+
+                cfg.rubric_version_id = str(row[0])
+                cfg.version_code = str(row[1]) if row[1] else "published"
+
+                # 2. Cargar pesos de dbo.rubric_area para esta versión
+                try:
+                    cursor.execute("""
+                        SELECT area_key, weight
+                        FROM dbo.rubric_area
+                        WHERE rubric_version_id = ?
+                    """, (cfg.rubric_version_id,))
+                    area_rows = cursor.fetchall()
+                except Exception:
+                    cursor.execute("""
+                        SELECT code, weight
+                        FROM dbo.rubric_area
+                        WHERE rubric_version_id = ?
+                    """, (cfg.rubric_version_id,))
+                    area_rows = cursor.fetchall()
+
+                for area_code, weight_val in area_rows:
+                    key = str(area_code).lower().strip()
+                    if key in cfg.area_weights and weight_val is not None:
+                        w = float(weight_val)
+                        cfg.area_weights[key] = w / 100.0 if w > 1.0 else w
+
+                # 3. Cargar los 16 límites desde dbo.rubric_metric_value
+                cursor.execute("""
+                    SELECT metric_key, thresholds_json
+                    FROM dbo.rubric_metric_value
+                    WHERE rubric_version_id = ?
+                """, (cfg.rubric_version_id,))
+                for metric_key, thresholds_raw in cursor.fetchall():
+                    if metric_key and thresholds_raw:
+                        parsed = json.loads(thresholds_raw) if isinstance(thresholds_raw, str) else thresholds_raw
+                        if isinstance(parsed, dict):
+                            base = cfg.thresholds.get(metric_key, {}).copy()
+                            base.update({k: float(v) for k, v in parsed.items() if v is not None})
+                            cfg.thresholds[metric_key] = base
+        except Exception as exc:
+            logger.warning(f"Usando DynamicRubricConfig por defecto tras excepción SQL: {exc}")
+        return cfg
+
+    def create_labeling_case_if_needed(
+        self,
+        session_id: str,
+        rubric_version_id: str,
+        reason: str
+    ) -> Optional[str]:
+        """
+        Inserta un caso pendiente en dbo.labeling_case cuando la sesión requiere auditoría humana.
+        Valores válidos de reason: 'low_confidence', 'borderline', 'random'.
+        """
+        if not reason:
+            return None
+        case_id = str(uuid.uuid4())
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                valid_session_uuid = self._resolve_session_id(cursor, session_id)
+                cursor.execute("""
+                    IF NOT EXISTS (SELECT 1 FROM dbo.labeling_case WHERE session_id = ?)
+                    BEGIN
+                        INSERT INTO dbo.labeling_case (
+                            id, session_id, rubric_version_id, reason, status, created_at
+                        )
+                        VALUES (?, ?, ?, ?, 'pending', SYSUTCDATETIME())
+                    END
+                """, (valid_session_uuid, case_id, valid_session_uuid, rubric_version_id, reason))
+                conn.commit()
+                return case_id
+        except Exception as exc:
+            logger.error(f"No se pudo insertar en dbo.labeling_case para sesión {session_id}: {exc}")
+            return None
+

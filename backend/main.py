@@ -1002,6 +1002,12 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         "visumExecutive": visum_executive,
         "metricsSummary": metrics_summary,
         "metrics": metrics_obj,
+        "governance": final_report.get("governance") or {
+            "pipelineConfidenceScore": 70.0,
+            "interChannelDisparityDelta": 0.0,
+            "requiresHumanReview": False,
+            "rubricVersionCode": "published"
+        },
         "puntuacion_global": final_report.get("puntuacion_global", {}),
         "transcript": final_report.get("transcript") or ""
     }
@@ -1161,6 +1167,21 @@ def master_discard_metric_draft(draft_id: uuid.UUID, payload: MetricPublishReque
     with master_store.database(SQL_CONN_STR) as cursor:
         master_store.resolve_user(cursor, user, master=True)
         metrics_store.discard_draft(cursor, draft_id, payload.revision)
+
+
+@app.get('/api/master/dashboard')
+@app.get('/v1/master/dashboard')
+@app.get('/v1/api/master/dashboard')
+def master_dashboard(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        agreement_summary = metrics_store.get_ai_human_agreement_summary(cursor)
+        labeling_cases = metrics_store.get_pending_labeling_cases_summary(cursor)
+        return {
+            "agreementSummary": agreement_summary,
+            "labelingCases": labeling_cases,
+        }
+
 
 
 @app.get('/api/master/clients')

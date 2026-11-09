@@ -209,3 +209,79 @@ def publish_draft(cursor, draft_id, revision):
     cursor.execute("DELETE FROM dbo.rubric_metric_draft_value WHERE draft_id=?", str(draft_id))
     cursor.execute("DELETE FROM dbo.rubric_metric_draft WHERE id=?", str(draft_id))
     return _version(cursor, version_id)
+
+
+def get_ai_human_agreement_summary(conn) -> dict:
+    """
+    Calcula el índice de acuerdo IA-Humano desde dbo.labeling_correction
+    y lo evalúa contra gov.agreement_target de la última rúbrica publicada.
+    """
+    cursor = conn.cursor() if hasattr(conn, "cursor") else conn
+    samples_count = 0
+    agreement_ratio = None
+    try:
+        cursor.execute("""
+            SELECT COUNT(1), AVG(1.0 - (ABS(CAST(ai_value AS FLOAT) - CAST(corrected_value AS FLOAT)) / 100.0))
+            FROM dbo.labeling_correction
+        """)
+        row = cursor.fetchone()
+        samples_count = int(row[0] or 0) if row else 0
+        agreement_ratio = round(float(row[1]), 4) if (row and row[1] is not None) else None
+    except Exception:
+        pass
+
+    target_thresholds = {"warningLow": 0.70, "optimalLow": 0.85}
+    try:
+        latest = latest_published(cursor)
+        if latest and "metrics" in latest:
+            for m in latest["metrics"]:
+                if m.get("key") == "gov.agreement_target":
+                    target_thresholds.update(m.get("thresholds", {}))
+    except Exception:
+        pass
+
+    status = "insufficient_data"
+    if agreement_ratio is not None and samples_count > 0:
+        if agreement_ratio >= target_thresholds["optimalLow"]:
+            status = "optimal"
+        elif agreement_ratio >= target_thresholds["warningLow"]:
+            status = "warning"
+        else:
+            status = "critical"
+
+    return {
+        "aiHumanAgreement": agreement_ratio,
+        "samplesCount": samples_count,
+        "status": status,
+        "thresholds": target_thresholds,
+    }
+
+
+def get_pending_labeling_cases_summary(conn) -> dict:
+    """
+    Obtiene el conteo de casos pendientes en dbo.labeling_case desglosados por reason.
+    """
+    cursor = conn.cursor() if hasattr(conn, "cursor") else conn
+    summary = {
+        "total": 0,
+        "low_confidence": 0,
+        "borderline": 0,
+        "random": 0,
+    }
+    try:
+        cursor.execute("""
+            SELECT reason, COUNT(1)
+            FROM dbo.labeling_case
+            WHERE status = 'pending'
+            GROUP BY reason
+        """)
+        for reason_val, cnt in cursor.fetchall():
+            r = str(reason_val or "").lower().strip()
+            c = int(cnt or 0)
+            summary["total"] += c
+            if r in summary:
+                summary[r] = c
+    except Exception:
+        pass
+    return summary
+

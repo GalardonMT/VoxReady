@@ -16,8 +16,14 @@ WORKER_DIR = Path(__file__).resolve().parent.parent
 if str(WORKER_DIR) not in sys.path:
     sys.path.insert(0, str(WORKER_DIR))
 
-from core.audio_analyzer import compute_diction_score, AudioAnalyzer
-from core.report_builder import ReportBuilder, compute_empathy_score, sanitize_report_json
+from core.audio_analyzer import compute_diction_score, AudioAnalyzer, calculate_voice_subscores
+from core.report_builder import (
+    ReportBuilder,
+    compute_empathy_score,
+    sanitize_report_json,
+    compute_governance_metrics,
+    evaluate_metric_bands,
+)
 from config.scoring_rules import (
     WEIGHT_EXPRESSION,
     WEIGHT_VOICE,
@@ -28,7 +34,10 @@ from config.scoring_rules import (
     VOICE_WEIGHT_DICTION,
     RED_LINE_SCORE_CAP,
     DICTION_FALLBACK_SCORE,
+    DynamicRubricConfig,
+    DEFAULT_METRIC_THRESHOLDS,
 )
+
 
 
 class TestScoringRules(unittest.TestCase):
@@ -200,7 +209,119 @@ class TestScoringRules(unittest.TestCase):
         self.assertEqual(parsed.feedback_pedagogico.fortaleza_principal, "")
         self.assertEqual(parsed.reconocimiento_afectados.nivel, 2)
 
+    def test_default_dynamic_config_matches_v2_16(self):
+        cfg = DynamicRubricConfig()
+        # WPM ideal con 120-150 es 135.0
+        self.assertEqual(cfg.wpm_ideal, 135.0)
+        self.assertEqual(cfg.red_line_cap, RED_LINE_SCORE_CAP)
+        self.assertEqual(cfg.area_weights["expression"], WEIGHT_EXPRESSION)
+        self.assertEqual(cfg.area_weights["voice"], WEIGHT_VOICE)
+        self.assertEqual(cfg.area_weights["coherence"], WEIGHT_COHERENCE)
+        self.assertEqual(cfg.area_weights["empathy"], WEIGHT_EMPATHY)
+
+        subscores = calculate_voice_subscores(
+            wpm_global=135.0,
+            densidad_muletillas_pct=0.0,
+            pausas_vacilacion=0,
+            pausas_prolongadas=0,
+            parakeet_words=[{"word": "hola", "confidence": 0.9}],
+            rubric_cfg=cfg
+        )
+        self.assertEqual(subscores["score_wpm"], 100.0)
+        self.assertEqual(subscores["score_fluidez"], 100.0)
+        self.assertEqual(subscores["score_diccion"], 90.0)
+
+    def test_custom_published_thresholds_affect_scores(self):
+        custom_cfg = DynamicRubricConfig()
+        custom_cfg.thresholds["voice.wpm"] = {
+            "warningLow": 90.0,
+            "optimalLow": 110.0,
+            "optimalHigh": 130.0,
+            "warningHigh": 150.0
+        }
+        custom_cfg.thresholds["content.red_line_cap"] = {"cap": 35.0}
+
+        # Nuevo ideal: (110 + 130) / 2 = 120.0
+        self.assertEqual(custom_cfg.wpm_ideal, 120.0)
+        self.assertEqual(custom_cfg.red_line_cap, 35.0)
+
+        # Con wpm_global=120.0 -> score_wpm es 100.0
+        subscores_ideal = calculate_voice_subscores(
+            wpm_global=120.0,
+            densidad_muletillas_pct=0.0,
+            pausas_vacilacion=0,
+            pausas_prolongadas=0,
+            parakeet_words=[],
+            rubric_cfg=custom_cfg
+        )
+        self.assertEqual(subscores_ideal["score_wpm"], 100.0)
+
+        # Con wpm_global=135.0 -> castigo: 100 - |120 - 135| * 1.2 = 82.0
+        subscores_prev = calculate_voice_subscores(
+            wpm_global=135.0,
+            densidad_muletillas_pct=0.0,
+            pausas_vacilacion=0,
+            pausas_prolongadas=0,
+            parakeet_words=[],
+            rubric_cfg=custom_cfg
+        )
+        self.assertEqual(subscores_prev["score_wpm"], 82.0)
+
+    def test_governance_confidence_and_triggers(self):
+        # frames_validos=60/100 (60%) y score_diccion=70.0 -> pipeline_confidence = (60 + 70)/2 = 65.0
+        vision = {"total_frames_analyzed": 100, "frames_validos": 60}
+        audio = {"score_diccion": 70.0}
+        areas = {"expression": 70.0, "voice": 70.0, "coherence": 70.0, "empathy": 70.0}
+
+        gov = compute_governance_metrics(
+            session_id="00000000-0000-0000-0000-000000000001",
+            overall_score=70.0,
+            area_scores=areas,
+            vision_metrics=vision,
+            audio_metrics=audio
+        )
+
+        self.assertEqual(gov["pipeline_confidence_score"], 65.0)
+        self.assertTrue(gov["requires_human_review"])
+        self.assertEqual(gov["labeling_reason"], "low_confidence")
+        self.assertIn("low_confidence", gov["detailed_triggers"])
+        self.assertEqual(gov["confidence_band"], "critical")
+
+    def test_governance_disparity_routes_to_borderline(self):
+        # Disparidad >= 50 pts
+        areas = {"expression": 82.0, "voice": 70.0, "coherence": 20.0, "empathy": 50.0}
+        vision = {"total_frames_analyzed": 100, "frames_validos": 100}
+        audio = {"score_diccion": 90.0}
+
+        gov = compute_governance_metrics(
+            session_id="00000000-0000-0000-0000-000000000002",
+            overall_score=60.0,
+            area_scores=areas,
+            vision_metrics=vision,
+            audio_metrics=audio
+        )
+
+        self.assertEqual(gov["inter_channel_disparity_delta"], 62.0)
+        self.assertTrue(gov["requires_human_review"])
+        self.assertEqual(gov["labeling_reason"], "borderline")
+        self.assertIn("inter_channel_disparity", gov["detailed_triggers"])
+        self.assertEqual(gov["disparity_band"], "critical")
+
+        # Test puntaje borderline en [48, 52]
+        areas_borderline = {"expression": 50.0, "voice": 50.0, "coherence": 50.0, "empathy": 50.0}
+        gov_borderline = compute_governance_metrics(
+            session_id="00000000-0000-0000-0000-000000000003",
+            overall_score=50.0,
+            area_scores=areas_borderline,
+            vision_metrics=vision,
+            audio_metrics=audio
+        )
+        self.assertTrue(gov_borderline["requires_human_review"])
+        self.assertEqual(gov_borderline["labeling_reason"], "borderline")
+        self.assertIn("borderline_score", gov_borderline["detailed_triggers"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

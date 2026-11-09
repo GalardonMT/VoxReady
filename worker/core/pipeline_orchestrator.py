@@ -19,7 +19,12 @@ try:
     from core.llm_judge import LLMJudgeService
     from core.narrative_generator import generate_visum_report
     from core.vision_client import VisionClient
-    from core.report_builder import calculate_expression_area_score, sanitize_report_json, compute_empathy_score
+    from core.report_builder import (
+        calculate_expression_area_score,
+        sanitize_report_json,
+        compute_empathy_score,
+        compute_governance_metrics,
+    )
     from core.scoring_rules import (
         WEIGHT_EXPRESSION,
         WEIGHT_VOICE,
@@ -30,6 +35,7 @@ try:
         VOICE_WEIGHT_DICTION,
         RED_LINE_SCORE_CAP,
         DICTION_FALLBACK_SCORE,
+        DynamicRubricConfig,
     )
     from services.db_service import DatabaseService
 except (ImportError, ValueError):
@@ -37,7 +43,12 @@ except (ImportError, ValueError):
     from worker.core.llm_judge import LLMJudgeService
     from worker.core.narrative_generator import generate_visum_report
     from worker.core.vision_client import VisionClient
-    from worker.core.report_builder import calculate_expression_area_score, sanitize_report_json, compute_empathy_score
+    from worker.core.report_builder import (
+        calculate_expression_area_score,
+        sanitize_report_json,
+        compute_empathy_score,
+        compute_governance_metrics,
+    )
     from worker.config.scoring_rules import (
         WEIGHT_EXPRESSION,
         WEIGHT_VOICE,
@@ -48,6 +59,7 @@ except (ImportError, ValueError):
         VOICE_WEIGHT_DICTION,
         RED_LINE_SCORE_CAP,
         DICTION_FALLBACK_SCORE,
+        DynamicRubricConfig,
     )
     from worker.services.db_service import DatabaseService
 
@@ -342,6 +354,10 @@ def process_session_pipeline(
             raise ValueError("La grabacion solicitada no corresponde a la sesion.")
         session_verified = True
 
+        # Obtener configuración de rúbrica activa (16 métricas publicadas)
+        rubric_cfg = db_svc.get_active_rubric_config() if db_svc else DynamicRubricConfig()
+        logger.info(f"Rúbrica activa cargada: versión {rubric_cfg.version_code} ({rubric_cfg.rubric_version_id})")
+
         # 1. Descargar video
         download_blob(blob_path, local_video_path)
         if not os.path.exists(local_video_path) or os.path.getsize(local_video_path) == 0:
@@ -371,7 +387,7 @@ def process_session_pipeline(
             function_id=os.getenv("NVIDIA_FUNCTION_ID", "71203149-d3b7-4460-8231-1be2543a1fca"),
             language_code=os.getenv("NVIDIA_LANGUAGE_CODE", "es-US")
         )
-        audio_res = audio_analyzer.process_audio(audio_path)
+        audio_res = audio_analyzer.process_audio(audio_path, rubric_cfg=rubric_cfg)
 
         acustica = audio_res.get("acoustic_analysis", {})
         total_duration = acustica.get("total_duration_sec", 0.0)
@@ -499,11 +515,11 @@ def process_session_pipeline(
         llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
         
         score_estrategico = float(reporte_juez.puntaje_global_100)
-        # Salvaguarda determinista: Línea roja trunca Coherencia al techo máximo permitido
+        # Salvaguarda determinista: Línea roja trunca Coherencia al techo dinámico
         if reporte_juez.infraccion_linea_roja:
-            score_estrategico = min(score_estrategico, RED_LINE_SCORE_CAP)
+            score_estrategico = min(score_estrategico, rubric_cfg.red_line_cap)
 
-        # 6. Fusión Multivariable y Puntuaciones por Área (Rúbrica Ponderada v0.4)
+        # 6. Fusión Multivariable y Puntuaciones por Área (Rúbrica Ponderada)
         vision_summary = vision_metrics.get("summary") or vision_metrics
         if any(k in vision_summary for k in ["hands_visible_pct", "body_sway_std", "shoulder_stability_score"]):
             expression_eval = calculate_expression_area_score(vision_summary)
@@ -518,12 +534,17 @@ def process_session_pipeline(
         victim_level = rec_afectados.get("nivel", 3) if isinstance(rec_afectados, dict) else 3
         score_empatia = compute_empathy_score(score_visual, victim_level)
 
-        # Ponderación general: Expresión 25%, Voz 25%, Coherencia/Contenido 35%, Empatía 15%
+        # Ponderación general usando pesos dinámicos de rúbrica
+        w_expr = rubric_cfg.area_weights.get("expression", WEIGHT_EXPRESSION)
+        w_voice = rubric_cfg.area_weights.get("voice", WEIGHT_VOICE)
+        w_coherence = rubric_cfg.area_weights.get("coherence", WEIGHT_COHERENCE)
+        w_empathy = rubric_cfg.area_weights.get("empathy", WEIGHT_EMPATHY)
+
         score_global = round(
-            (score_visual * WEIGHT_EXPRESSION) +
-            (score_verbal * WEIGHT_VOICE) +
-            (score_estrategico * WEIGHT_COHERENCE) +
-            (score_empatia * WEIGHT_EMPATHY),
+            (score_visual * w_expr) +
+            (score_verbal * w_voice) +
+            (score_estrategico * w_coherence) +
+            (score_empatia * w_empathy),
             1
         )
 
@@ -533,6 +554,16 @@ def process_session_pipeline(
             "coherence": int(round(score_estrategico)),
             "empathy": int(round(score_empatia)),
         }
+
+        # Cálculo de Gobernanza Nivel 2 y Auditoría Humana
+        governance_metrics = compute_governance_metrics(
+            session_id=session_id,
+            overall_score=score_global,
+            area_scores=area_scores_map,
+            vision_metrics=vision_summary,
+            audio_metrics=audio_metrics,
+            rubric_cfg=rubric_cfg
+        )
 
         # 7. Generación Narrativa Ejecutiva VISUM (Llamada 2 a LLM)
         logger.info("Generando Síntesis Ejecutiva VISUM con NVIDIA NIM...")
@@ -587,7 +618,7 @@ def process_session_pipeline(
 
         # 8. Persistencia Atómica en Azure SQL
         report_id = None
-        resolved_rubric_id = db_metadata["rubric_version_id"]
+        resolved_rubric_id = rubric_cfg.rubric_version_id or db_metadata.get("rubric_version_id")
 
         processed_at_iso = datetime.now(timezone.utc).isoformat()
         video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
@@ -606,7 +637,8 @@ def process_session_pipeline(
             audio_metrics=audio_metrics,
             judge_metrics=llm_metrics,
             transcript=transcript,
-            segmented_turns=segmented_turns
+            segmented_turns=segmented_turns,
+            governance=governance_metrics
         )
 
         if db_svc and resolved_rubric_id:
@@ -624,11 +656,25 @@ def process_session_pipeline(
                 cleaned_report["reportId"] = report_id
                 cleaned_report["report_id"] = report_id
 
-                # Trazabilidad integral en analysis_pipeline_result (incluyendo fusion consolidado)
+                # Si la gobernanza exige revisión humana, enrutar a dbo.labeling_case
+                if governance_metrics.get("requires_human_review"):
+                    try:
+                        case_id = db_svc.create_labeling_case_if_needed(
+                            session_id=internal_session_id,
+                            rubric_version_id=resolved_rubric_id,
+                            reason=governance_metrics.get("labeling_reason")
+                        )
+                        if case_id:
+                            logger.info(f"Sesión {session_id} enrutada a dbo.labeling_case (ID: {case_id}, motivo: {governance_metrics.get('labeling_reason')})")
+                    except Exception as e_lab:
+                        logger.warning(f"Aviso creando labeling_case para sesión {session_id}: {e_lab}")
+
+                # Trazabilidad integral en analysis_pipeline_result (incluyendo fusion consolidado y governance)
                 pipeline_map = {
                     "vision": vision_metrics,
                     "voice": audio_metrics,
                     "content_judge": llm_metrics,
+                    "governance": governance_metrics,
                     "fusion": cleaned_report
                 }
                 persist_pipeline_results(db_svc, job_id, pipeline_map)

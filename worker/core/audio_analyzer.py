@@ -8,14 +8,15 @@ import numpy as np
 try:
     from utils.logger import get_logger
     from services.keyvault_service import get_secret
-    from config.scoring_rules import DICTION_FALLBACK_SCORE
+    from config.scoring_rules import DICTION_FALLBACK_SCORE, DynamicRubricConfig
 except (ImportError, ValueError):
     try:
         from worker.utils.logger import get_logger
         from worker.services.keyvault_service import get_secret
-        from worker.config.scoring_rules import DICTION_FALLBACK_SCORE
+        from worker.config.scoring_rules import DICTION_FALLBACK_SCORE, DynamicRubricConfig
     except (ImportError, ValueError):
-        from core.scoring_rules import DICTION_FALLBACK_SCORE
+        from core.scoring_rules import DICTION_FALLBACK_SCORE, DynamicRubricConfig
+
 
 logger = get_logger("core.audio_analyzer")
 
@@ -49,6 +50,43 @@ def compute_diction_score(parakeet_words: List[Dict[str, Any]]) -> float:
 
     mean_confidence = sum(valid_confidences) / len(valid_confidences)
     return round(mean_confidence * 100.0, 1)
+
+
+def calculate_voice_subscores(
+    wpm_global: float,
+    densidad_muletillas_pct: float,
+    pausas_vacilacion: int,
+    pausas_prolongadas: int,
+    parakeet_words: List[Dict[str, Any]],
+    rubric_cfg: Optional[DynamicRubricConfig] = None
+) -> dict:
+    """
+    Calcula deterministamente los tres sub-scores de voz según la Rúbrica dinámica:
+    - score_wpm: distancia al centro ideal (optimalLow + optimalHigh) / 2
+    - score_fluidez: penalizaciones por muletillas y pausas sobrepasando franquicias
+    - score_diccion: confianza acústica palabra por palabra de Parakeet
+    """
+    cfg = rubric_cfg or DynamicRubricConfig()
+
+    # 1. Score de Ritmo WPM aislado (Con optimalLow=120 y optimalHigh=150 -> wpm_ideal = 135.0)
+    score_wpm = max(0.0, min(100.0, 100.0 - abs(cfg.wpm_ideal - wpm_global) * 1.2))
+
+    # 2. Score de Fluidez Neta (exclusivamente pausas y muletillas, sin WPM)
+    pen_muletillas = densidad_muletillas_pct * cfg.filler_penalty_per_pct
+    pen_vacilacion = max(0, pausas_vacilacion - cfg.hesitation_pause_allowance) * 4.0
+    pen_prolongadas = max(0, pausas_prolongadas - cfg.prolonged_pause_allowance) * 10.0
+
+    score_fluidez = max(0.0, min(100.0, 100.0 - (pen_muletillas + pen_vacilacion + pen_prolongadas)))
+
+    # 3. Score Dicción Parakeet
+    score_diccion = compute_diction_score(parakeet_words)
+
+    return {
+        "score_wpm": round(score_wpm, 1),
+        "score_fluidez": round(score_fluidez, 1),
+        "score_diccion": round(score_diccion, 1),
+    }
+
 
 
 
@@ -239,6 +277,7 @@ class AudioAnalyzer:
         self,
         parakeet_output: Dict[str, Any],
         acustica: Dict[str, Any],
+        rubric_cfg: Optional[DynamicRubricConfig] = None,
     ) -> Dict[str, Any]:
         """
         Calcula las métricas de fluidez, dicción, pausas (naturales, vacilaciones,
@@ -300,10 +339,6 @@ class AudioAnalyzer:
         wpm_global = total_words / duracion_minutos_global
         wpm_articulacion = total_words / duracion_minutos_audible
 
-        # Score WPM desacoplado según metodología VISUM:
-        # 120-150 WPM óptimo (>=82 pts), centro en 135 (100 pts)
-        score_wpm = round(max(0.0, min(100.0, 100.0 - abs(135.0 - wpm_global) * 1.2)), 1)
-
         # 3. Muletillas corporativas
         muletillas_encontradas: List[str] = []
         conteo_muletillas: Dict[str, int] = {}
@@ -315,28 +350,20 @@ class AudioAnalyzer:
 
         densidad_muletillas = (len(muletillas_encontradas) / total_words) * 100.0
 
-        # 4. Rúbrica de fluidez neta (sin penalizar WPM dos veces dentro de Score Voz)
-        # Penalizaciones: vacilaciones (3.5 pts), pausas prolongadas (6.0 pts) y muletillas (5.0 pts/%)
-        penalizacion_vacilacion = len(pausas_vacilacion) * 3.5
-        penalizacion_prolongadas = len(pausas_prolongadas) * 6.0
-        penalizacion_muletillas = densidad_muletillas * 5.0
 
-        score_fluidez = round(
-            max(
-                0.0,
-                min(
-                    100.0,
-                    100.0
-                    - penalizacion_vacilacion
-                    - penalizacion_prolongadas
-                    - penalizacion_muletillas,
-                ),
-            ),
-            1,
+        # 4. Cálculo dinámico desacoplado de subscores de voz
+        voice_subscores = calculate_voice_subscores(
+            wpm_global=wpm_global,
+            densidad_muletillas_pct=densidad_muletillas,
+            pausas_vacilacion=len(pausas_vacilacion),
+            pausas_prolongadas=len(pausas_prolongadas),
+            parakeet_words=words,
+            rubric_cfg=rubric_cfg,
         )
+        score_wpm = voice_subscores["score_wpm"]
+        score_fluidez = voice_subscores["score_fluidez"]
+        score_diccion = voice_subscores["score_diccion"]
 
-        # 5. Score de dicción acústica real desde Parakeet/Riva
-        score_diccion = compute_diction_score(words)
 
         return {
             "palabras_totales": total_words,
@@ -357,7 +384,7 @@ class AudioAnalyzer:
             "score_diccion": score_diccion,
         }
 
-    def process_audio(self, audio_path: str) -> Dict[str, Any]:
+    def process_audio(self, audio_path: str, rubric_cfg: Optional[DynamicRubricConfig] = None) -> Dict[str, Any]:
         """
         Método de orquestación principal para el audio:
         1. Métricas acústicas locales (VAD RMS, pausas > 1.5s).
@@ -384,7 +411,7 @@ class AudioAnalyzer:
             logger.info("No se obtuvo transcripción ASR en vivo (se mantendrán métricas acústicas).")
 
         # 3. Consolidación de métricas de voz
-        metricas_voz = self.calcular_metricas_fluidez(asr_res, acustica)
+        metricas_voz = self.calcular_metricas_fluidez(asr_res, acustica, rubric_cfg=rubric_cfg)
 
         return {
             "transcription": asr_res.get("transcript", ""),

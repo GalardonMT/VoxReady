@@ -61,6 +61,28 @@ SCHEMA_STEPS = (
            REFERENCES dbo.rubric_metric_definition(metric_key),
          CONSTRAINT CK_rubric_metric_draft_value_json CHECK(ISJSON(thresholds_json)=1)
        );""",
+    """IF OBJECT_ID(N'dbo.labeling_case',N'U') IS NULL
+       CREATE TABLE dbo.labeling_case (
+         id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+         session_id UNIQUEIDENTIFIER NOT NULL,
+         rubric_version_id UNIQUEIDENTIFIER NOT NULL,
+         reason NVARCHAR(50) NOT NULL,
+         status NVARCHAR(30) NOT NULL CONSTRAINT DF_labeling_case_status DEFAULT 'pending',
+         created_at DATETIME2 NOT NULL CONSTRAINT DF_labeling_case_created DEFAULT SYSUTCDATETIME(),
+         resolved_at DATETIME2 NULL,
+         resolved_by NVARCHAR(120) NULL,
+         notes NVARCHAR(1000) NULL
+       );""",
+    """IF OBJECT_ID(N'dbo.labeling_correction',N'U') IS NULL
+       CREATE TABLE dbo.labeling_correction (
+         id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+         labeling_case_id UNIQUEIDENTIFIER NULL,
+         session_id UNIQUEIDENTIFIER NOT NULL,
+         metric_key NVARCHAR(80) NULL,
+         ai_value DECIMAL(12,4) NOT NULL,
+         corrected_value DECIMAL(12,4) NOT NULL,
+         created_at DATETIME2 NOT NULL CONSTRAINT DF_labeling_correction_created DEFAULT SYSUTCDATETIME()
+       );""",
 )
 
 

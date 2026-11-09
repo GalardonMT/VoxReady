@@ -274,3 +274,70 @@ def test_publish_copies_complete_snapshot_then_removes_draft(monkeypatch):
     assert cursor.calls.index(next(sql for sql in cursor.calls if 'INSERT INTO dbo.rubric_metric_value' in sql)) < \
         cursor.calls.index(next(sql for sql in cursor.calls if 'DELETE FROM dbo.rubric_metric_draft ' in sql))
     assert any('DELETE FROM dbo.rubric_metric_draft_value' in sql for sql in cursor.calls)
+
+
+def test_agreement_evaluation_against_dynamic_target(monkeypatch):
+    class Cursor:
+        def __init__(self, count, avg_ratio):
+            self.count = count
+            self.avg_ratio = avg_ratio
+            self.sql = ''
+        def execute(self, sql, *args):
+            self.sql = sql
+            return self
+        def fetchone(self):
+            if 'labeling_correction' in self.sql:
+                return (self.count, self.avg_ratio)
+            return None
+
+    # Caso 1: Insuficiente información (sin muestras)
+    c_empty = Cursor(0, None)
+    summary_empty = metrics_store.get_ai_human_agreement_summary(c_empty)
+    assert summary_empty["status"] == "insufficient_data"
+    assert summary_empty["samplesCount"] == 0
+    assert summary_empty["aiHumanAgreement"] is None
+
+    # Mock de versión publicada con targets warningLow=0.70, optimalLow=0.85
+    fake_published = {
+        "metrics": [
+            {"key": "gov.agreement_target", "thresholds": {"warningLow": 0.70, "optimalLow": 0.85}}
+        ]
+    }
+    monkeypatch.setattr(metrics_store, "latest_published", lambda _cur: fake_published)
+
+    # Caso 2: Optimal (>= 0.85)
+    c_opt = Cursor(10, 0.90)
+    summary_opt = metrics_store.get_ai_human_agreement_summary(c_opt)
+    assert summary_opt["status"] == "optimal"
+    assert summary_opt["aiHumanAgreement"] == 0.90
+    assert summary_opt["samplesCount"] == 10
+
+    # Caso 3: Warning (0.70 <= x < 0.85)
+    c_warn = Cursor(10, 0.75)
+    summary_warn = metrics_store.get_ai_human_agreement_summary(c_warn)
+    assert summary_warn["status"] == "warning"
+    assert summary_warn["aiHumanAgreement"] == 0.75
+
+    # Caso 4: Critical (< 0.70)
+    c_crit = Cursor(10, 0.65)
+    summary_crit = metrics_store.get_ai_human_agreement_summary(c_crit)
+    assert summary_crit["status"] == "critical"
+    assert summary_crit["aiHumanAgreement"] == 0.65
+
+
+def test_pending_labeling_cases_summary():
+    class Cursor:
+        def __init__(self):
+            pass
+        def execute(self, sql, *args):
+            return self
+        def fetchall(self):
+            return [("low_confidence", 3), ("borderline", 5), ("random", 2)]
+
+    c = Cursor()
+    res = metrics_store.get_pending_labeling_cases_summary(c)
+    assert res["total"] == 10
+    assert res["low_confidence"] == 3
+    assert res["borderline"] == 5
+    assert res["random"] == 2
+
