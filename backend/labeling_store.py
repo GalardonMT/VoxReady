@@ -352,13 +352,10 @@ SELECT {top}
 """
 
 
-def list_cases(cursor, *, status, limit=10, actor_id=None, now=None):
-    """List at most ten pending or reviewed cases with stable ordering."""
+def count_cases(cursor, *, status):
+    """Shared queue/dashboard population; independent of the displayed page size."""
     if status not in {"pending", "reviewed"}:
         raise LabelingStoreError("INVALID_STATUS", "status no es válido.", status=422)
-    limit = _limit(limit)
-    actor = _uuid(actor_id, "actorId") if actor_id else None
-    clock = _database_now(cursor, now)
     cursor.execute(
         """/* labeling:list:count */
         SELECT COUNT_BIG(*)
@@ -368,7 +365,17 @@ def list_cases(cursor, *, status, limit=10, actor_id=None, now=None):
         status,
     )
     total_row = cursor.fetchone()
-    total = int(total_row[0] or 0) if total_row else 0
+    return int(total_row[0] or 0) if total_row else 0
+
+
+def list_cases(cursor, *, status, limit=10, actor_id=None, now=None):
+    """List at most ten pending or reviewed cases with stable ordering."""
+    if status not in {"pending", "reviewed"}:
+        raise LabelingStoreError("INVALID_STATUS", "status no es válido.", status=422)
+    limit = _limit(limit)
+    actor = _uuid(actor_id, "actorId") if actor_id else None
+    clock = _database_now(cursor, now)
+    total = count_cases(cursor, status=status)
     order = (
         "lc.session_finished_at DESC,lc.id DESC"
         if status == "pending"

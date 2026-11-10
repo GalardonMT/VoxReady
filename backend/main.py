@@ -6,7 +6,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, field_validator
-from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
@@ -21,6 +21,8 @@ import spokesperson_store
 import microlessons as microlesson_store
 import metrics_store
 import client_store
+import master_dashboard_store
+from schemas.master_dashboard import MasterDashboardResponse
 from labeling_api import create_labeling_router, LabelingProblem
 
 # Cargar variables de entorno locales si existen
@@ -1159,6 +1161,15 @@ class MetricDraftUpdate(BaseModel):
 
 class MetricPublishRequest(BaseModel):
     revision: int = Field(ge=1)
+
+
+@app.get('/api/master/dashboard', response_model=MasterDashboardResponse)
+@app.get('/v1/api/master/dashboard', response_model=MasterDashboardResponse)
+def master_dashboard(response: Response, user: dict = Depends(verify_token)):
+    response.headers['Cache-Control'] = 'no-store'
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return master_dashboard_store.dashboard(cursor)
 
 
 @app.get('/api/master/metrics')
