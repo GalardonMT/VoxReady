@@ -1,8 +1,0 @@
-{
-  "type": "https://voxready.example/problems/stale-lease",
-  "title": "La reserva quedó obsoleta",
-  "status": 409,
-  "detail": "El token o la generación ya no corresponden a la reserva vigente.",
-  "code": "STALE_LEASE",
-  "correlationId": "fixture-correlation-409-stale"
-}
