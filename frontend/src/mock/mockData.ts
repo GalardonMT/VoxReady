@@ -4,7 +4,6 @@ import {
   TopicConfig,
   RetentionSettings,
   MasterRubric,
-  LabelingCase,
   CoachReport,
   UserSession
 } from '../types/api';
@@ -146,7 +145,6 @@ export const INITIAL_MICROLESSONS: Record<string, DemoMicrolesson> = {
     relatedScenarioId: 'scen-03'
   }
 };
-
 export const INITIAL_REPORT: CoachReport = {
   sessionId: 'sess-8842',
   scenarioName: 'Retiro de producto',
@@ -259,37 +257,3 @@ export const INITIAL_MASTER_RUBRIC: MasterRubric = {
   levelDescriptors: 'Nivel Alto: Reconocimiento sincero del afectado con contacto visual constante y voz cálida.\nNivel Medio: Mención de empatía pero con microexpresión neutra o mirada esquiva.\nNivel Bajo: Indiferencia o disonancia marcada entre mensaje y expresión facial.',
   supportedLanguages: ['ES', 'EN', 'PT']
 };
-
-export const INITIAL_LABELING_QUEUE: LabelingCase[] = [
-  {
-    id: 'case-8842',
-    caseNumber: '#8842',
-    reason: 'low_confidence',
-    reasonLabel: 'Confianza baja · Empatía',
-    scenarioName: 'Retiro de producto',
-    videoDuration: '03:12',
-    aiScores: { expression: 70, tone: 81, coherence: 79, empathy: 58 },
-    expertScores: { expression: 70, tone: 81, coherence: 79, empathy: 62 },
-    expertComment: 'Empatía penalizada por la IA al desviar la mirada, pero hubo modulación cálida sincera en turnos 3 y 4.'
-  },
-  {
-    id: 'case-8843',
-    caseNumber: '#8843',
-    reason: 'borderline',
-    reasonLabel: 'Puntaje límite (69 pts)',
-    scenarioName: 'Incidente de seguridad',
-    videoDuration: '02:45',
-    aiScores: { expression: 68, tone: 72, coherence: 69, empathy: 66 },
-    expertScores: { expression: 68, tone: 72, coherence: 69, empathy: 66 }
-  },
-  {
-    id: 'case-8844',
-    caseNumber: '#8844',
-    reason: 'random',
-    reasonLabel: 'Muestreo aleatorio de control',
-    scenarioName: 'Crisis reputacional',
-    videoDuration: '04:10',
-    aiScores: { expression: 85, tone: 80, coherence: 82, empathy: 84 },
-    expertScores: { expression: 85, tone: 80, coherence: 82, empathy: 84 }
-  }
-];

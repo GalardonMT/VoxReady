@@ -6,6 +6,9 @@ import { changedThresholds, formatPublishedDate, thresholdFields, updateThreshol
 import type { MetricDefinition, MetricsVersion } from '../../services/metricsModel';
 import { metricsService } from '../../services/metricsService';
 import styles from './MetricsEditorView.module.css';
+import { QualityReviewPanel } from './QualityReviewPanel';
+import { LABELING_CASE_TARGET_KEY } from '../../services/qualityReviewModel';
+import type { MasterScreen } from './MasterDashboard';
 
 const categories = [
   { key: 'voice', title: 'Voz', icon: '◉', detail: 'Ritmo, pausas y dicción · Español' },
@@ -138,7 +141,7 @@ function MetricCard({ metric, editable, onChange }: {
   );
 }
 
-export function MetricsEditorView() {
+export function MetricsEditorView({ onNavigate }: { onNavigate?: (screen: MasterScreen) => void }) {
   const [published, setPublished] = useState<MetricsVersion | null>(null);
   const [draft, setDraft] = useState<MetricsVersion | null>(null);
   const [metrics, setMetrics] = useState<MetricDefinition[]>([]);
@@ -300,6 +303,15 @@ export function MetricsEditorView() {
           );
         })}
       </div>
+
+      <QualityReviewPanel
+        mode="metrics"
+        metricLabels={Object.fromEntries(metrics.map(metric => [metric.key, metric.label]))}
+        onOpenCase={caseId => {
+          sessionStorage.setItem(LABELING_CASE_TARGET_KEY, caseId);
+          onNavigate?.('m3');
+        }}
+      />
 
       {confirmDiscard && draft && <section className={styles.discardConfirm} aria-labelledby="discard-title">
         <h3 id="discard-title">¿Descartar el borrador {draft.versionLabel}?</h3>

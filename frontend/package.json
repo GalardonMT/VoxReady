@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "npx serve@latest out -l 3000",
     "lint": "eslint",
-    "test:routes": "node --experimental-strip-types tests/routeAccess.test.mjs"
+    "test:routes": "node --experimental-strip-types tests/routeAccess.test.mjs",
+    "test:labeling": "node --experimental-strip-types --test tests/labelingModel.test.mjs tests/labelingReviewModel.test.mjs tests/labelingRecordingModel.test.mjs tests/qualityReviewModel.test.mjs"
   },
   "dependencies": {
     "@azure/msal-browser": "^5.22.0",
@@ -15,7 +16,7 @@
     "@next/env": "^16.3.4",
     "@types/three": "^0.186.0",
     "lucide-react": "^1.47.0",
-    "next": "16.3.4",
+    "next": "16.4.6",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "three": "^0.186.1"

@@ -1,0 +1,8 @@
+{
+  "url": "https://storage.example.invalid/evidence/fixture-video.webm?fixture-sas-redacted",
+  "expiresAt": "2026-10-27T19:15:00Z",
+  "contentType": "video/webm",
+  "durationSeconds": 250,
+  "etag": "fixture-etag-immutable-v1",
+  "blobVersionId": "2026-10-27T18:36:00.0000000Z"
+}

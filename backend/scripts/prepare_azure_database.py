@@ -21,6 +21,7 @@ from progress_migration import (
 from microlessons import MICROLESSON_SCHEMA_DDL, MICROLESSON_DATA_DDL, MICROLESSON_CONSTRAINT_DDL
 from microlesson_assignment_migration import ASSIGNMENT_SCHEMA_STEPS, verify_assignment_schema
 from metrics_migration import migrate as migrate_metrics, verify as verify_metrics
+from labeling_migration import migrate as migrate_labeling, verify as verify_labeling
 from seed_master_topics import connect, SeedError, SCENARIO_QUESTION_DDL, verify_link_schema
 
 REQUIRED = {
@@ -291,7 +292,9 @@ def main(argv=None):
             for ddl in ASSIGNMENT_SCHEMA_STEPS:
                 cursor.execute(ddl)
             migrate_metrics(cursor)
+            migrate_labeling(cursor)
         verify(cursor)
+        verify_labeling(cursor, SeedError)
         if args.verify_only:
             connection.rollback()
         else:

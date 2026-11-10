@@ -1,0 +1,150 @@
+{
+  "caseId": "10000000-0000-4000-8000-000000000001",
+  "caseNumber": "VR-2026-0008844",
+  "status": "pending",
+  "contentRevision": 1,
+  "sourceStatus": "complete",
+  "sourceIssues": [],
+  "snapshotSchemaVersion": 1,
+  "queueReason": "critical",
+  "reasonDetail": {
+    "kind": "critical",
+    "overallScore": 47,
+    "overallThreshold": 50,
+    "criticalAreaKeys": ["empathy"]
+  },
+  "client": { "code": "CLI-DEMO-01", "displayName": "Cliente Demo Norte" },
+  "speakerCode": "VOC-7K2Q",
+  "scenario": { "title": "Crisis reputacional" },
+  "session": {
+    "startedAt": "2026-10-27T18:31:00Z",
+    "finishedAt": "2026-10-27T18:35:10Z",
+    "durationSeconds": 250
+  },
+  "report": {
+    "reportId": "20000000-0000-4000-8000-000000000001",
+    "generatedAt": "2026-10-27T18:36:04Z",
+    "overallScore": 47
+  },
+  "criticalAreas": [{ "areaKey": "empathy", "label": "Nivel de empatía", "value": 42 }],
+  "lease": { "state": "available", "ownerCode": null, "expiresAt": null },
+  "rubric": {
+    "rubricVersionId": "30000000-0000-4000-8000-000000000001",
+    "areas": [
+      { "areaId": "40000000-0000-4000-8000-000000000001", "areaKey": "expression", "label": "Expresión", "aiValue": 55, "editable": true },
+      { "areaId": "40000000-0000-4000-8000-000000000002", "areaKey": "voice", "label": "Tono de voz", "aiValue": 52, "editable": true },
+      { "areaId": "40000000-0000-4000-8000-000000000003", "areaKey": "coherence", "label": "Coherencia", "aiValue": 49, "editable": true },
+      { "areaId": "40000000-0000-4000-8000-000000000004", "areaKey": "empathy", "label": "Nivel de empatía", "aiValue": 42, "editable": true }
+    ]
+  },
+  "metricGroups": [
+    {
+      "categoryKey": "voice",
+      "label": "Voz",
+      "metrics": [
+        {
+          "metricKey": "voice.wpm",
+          "label": "Ritmo de habla",
+          "metricKind": "observation",
+          "aiValue": 136,
+          "availability": "available",
+          "editable": true,
+          "unit": "WPM",
+          "precision": 1,
+          "observation": { "valueType": "number", "canonicalUnit": "WPM", "conversion": "identity", "technicalMin": 0, "technicalMax": null },
+          "unavailableReason": null,
+          "publishedThresholds": { "warningLow": 100, "optimalLow": 120, "optimalHigh": 150, "warningHigh": 170 }
+        },
+        {
+          "metricKey": "voice.filler_density",
+          "label": "Densidad de muletillas",
+          "metricKind": "observation",
+          "aiValue": 2.4,
+          "availability": "available",
+          "editable": true,
+          "unit": "%",
+          "precision": 2,
+          "observation": { "valueType": "number", "canonicalUnit": "%", "conversion": "identity", "technicalMin": 0, "technicalMax": 100 },
+          "unavailableReason": null,
+          "publishedThresholds": { "optimalMax": 1.5, "warningMax": 3 }
+        },
+        {
+          "metricKey": "voice.phonation_ratio",
+          "label": "Ratio de fonación",
+          "metricKind": "observation",
+          "aiValue": 68,
+          "availability": "available",
+          "editable": true,
+          "unit": "%",
+          "precision": 1,
+          "observation": { "valueType": "number", "canonicalUnit": "%", "conversion": "ratio_0_1_to_percent", "technicalMin": 0, "technicalMax": 100 },
+          "unavailableReason": null,
+          "publishedThresholds": { "criticalBelow": 45, "optimalLow": 60, "optimalHigh": 85 }
+        }
+      ]
+    },
+    {
+      "categoryKey": "vision",
+      "label": "Video",
+      "metrics": [
+        {
+          "metricKey": "vision.eye_contact",
+          "label": "Contacto visual",
+          "metricKind": "observation",
+          "aiValue": 48,
+          "availability": "available",
+          "editable": true,
+          "unit": "%",
+          "precision": 2,
+          "observation": { "valueType": "number", "canonicalUnit": "%", "conversion": "identity", "technicalMin": 0, "technicalMax": 100 },
+          "unavailableReason": null,
+          "publishedThresholds": { "warningLow": 50, "optimalLow": 75 }
+        }
+      ]
+    },
+    {
+      "categoryKey": "content",
+      "label": "Contenido",
+      "metrics": [
+        {
+          "metricKey": "content.red_line_cap",
+          "label": "Techo por línea roja",
+          "metricKind": "configuration",
+          "aiValue": null,
+          "availability": "not_emitted",
+          "editable": false,
+          "unit": "pts",
+          "precision": 0,
+          "observation": null,
+          "unavailableReason": "CONFIGURATION_NOT_OBSERVATION",
+          "publishedThresholds": { "cap": 20 }
+        }
+      ]
+    },
+    {
+      "categoryKey": "empathy",
+      "label": "Empatía",
+      "metrics": [
+        {
+          "metricKey": "empathy.victim_recog",
+          "label": "Reconocimiento del afectado",
+          "metricKind": "observation",
+          "aiValue": null,
+          "availability": "not_emitted",
+          "editable": false,
+          "unit": "nivel",
+          "precision": 0,
+          "observation": { "valueType": "integer", "canonicalUnit": "nivel", "conversion": "identity", "technicalMin": 1, "technicalMax": 5 },
+          "unavailableReason": "NO_SEMANTIC_PRODUCER",
+          "publishedThresholds": { "warningLevel": 3, "optimalLevel": 4 }
+        }
+      ]
+    }
+  ],
+  "governanceContext": [
+    { "metricKey": "gov.confidence_min", "label": "Confianza para auditoría", "configuredValue": 85, "unit": "%" }
+  ],
+  "recording": { "availability": "available", "durationSeconds": 250.0 },
+  "latestReview": null,
+  "currentReview": null
+}

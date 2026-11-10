@@ -5,3 +5,4 @@ export * from './topicService';
 export * from './rubricService';
 export * from './masterTopicService';
 export * from './clientService';
+export * from './labelingService';
