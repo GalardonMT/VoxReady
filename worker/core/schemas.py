@@ -248,3 +248,83 @@ class ReporteJuezConsolidado(BaseModel):
     evidencia_linea_roja: Optional[str] = None
     reconocimiento_afectados: Optional[dict] = None
 
+
+class GovernanceMetricsSchema(BaseModel):
+    pipeline_confidence_score: Optional[float] = 70.0
+    vision_validity_pct: Optional[float] = 70.0
+    asr_confidence_pct: Optional[float] = 70.0
+    inter_channel_disparity_delta: Optional[float] = 0.0
+    confidence_band: Optional[str] = "optimal"
+    disparity_band: Optional[str] = "optimal"
+    requires_human_review: bool = False
+    labeling_reason: Optional[str] = None
+    detailed_triggers: List[str] = Field(default_factory=list)
+    rubric_version_id: Optional[str] = None
+    rubric_version_code: Optional[str] = None
+    # camelCase para frontend
+    pipelineConfidenceScore: Optional[float] = None
+    visionValidityPct: Optional[float] = None
+    asrConfidencePct: Optional[float] = None
+    interChannelDisparityDelta: Optional[float] = None
+    confidenceBand: Optional[str] = None
+    disparityBand: Optional[str] = None
+    requiresHumanReview: Optional[bool] = None
+    labelingReason: Optional[str] = None
+    detailedTriggers: Optional[List[str]] = None
+    rubricVersionId: Optional[str] = None
+    rubricVersionCode: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fields(cls, data: Any):
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        if "pipeline_confidence_score" in data and "pipelineConfidenceScore" not in data:
+            data["pipelineConfidenceScore"] = data["pipeline_confidence_score"]
+        if "pipelineConfidenceScore" in data and "pipeline_confidence_score" not in data:
+            data["pipeline_confidence_score"] = data["pipelineConfidenceScore"]
+        if "vision_validity_pct" in data and "visionValidityPct" not in data:
+            data["visionValidityPct"] = data["vision_validity_pct"]
+        if "visionValidityPct" in data and "vision_validity_pct" not in data:
+            data["vision_validity_pct"] = data["visionValidityPct"]
+        if "asr_confidence_pct" in data and "asrConfidencePct" not in data:
+            data["asrConfidencePct"] = data["asr_confidence_pct"]
+        if "asrConfidencePct" in data and "asr_confidence_pct" not in data:
+            data["asr_confidence_pct"] = data["asrConfidencePct"]
+        if "inter_channel_disparity_delta" in data and "interChannelDisparityDelta" not in data:
+            data["interChannelDisparityDelta"] = data["inter_channel_disparity_delta"]
+        if "interChannelDisparityDelta" in data and "inter_channel_disparity_delta" not in data:
+            data["inter_channel_disparity_delta"] = data["interChannelDisparityDelta"]
+        if "confidence_band" in data and "confidenceBand" not in data:
+            data["confidenceBand"] = data["confidence_band"]
+        if "confidenceBand" in data and "confidence_band" not in data:
+            data["confidence_band"] = data["confidenceBand"]
+        if "disparity_band" in data and "disparityBand" not in data:
+            data["disparityBand"] = data["disparity_band"]
+        if "disparityBand" in data and "disparity_band" not in data:
+            data["disparity_band"] = data["disparityBand"]
+        if "requires_human_review" in data and "requiresHumanReview" not in data:
+            data["requiresHumanReview"] = data["requires_human_review"]
+        if "requiresHumanReview" in data and "requires_human_review" not in data:
+            data["requires_human_review"] = data["requiresHumanReview"]
+        if "labeling_reason" in data and "labelingReason" not in data:
+            data["labelingReason"] = data["labeling_reason"]
+        if "labelingReason" in data and "labeling_reason" not in data:
+            data["labeling_reason"] = data["labelingReason"]
+        if "detailed_triggers" in data and "detailedTriggers" not in data:
+            data["detailedTriggers"] = data["detailed_triggers"]
+        if "detailedTriggers" in data and "detailed_triggers" not in data:
+            data["detailed_triggers"] = data["detailedTriggers"]
+        if "rubric_version_id" in data and "rubricVersionId" not in data:
+            data["rubricVersionId"] = data["rubric_version_id"]
+        if "rubricVersionId" in data and "rubric_version_id" not in data:
+            data["rubric_version_id"] = data["rubricVersionId"]
+        if "rubric_version_code" in data and "rubricVersionCode" not in data:
+            data["rubricVersionCode"] = data["rubric_version_code"]
+        if "rubricVersionCode" in data and "rubric_version_code" not in data:
+            data["rubric_version_code"] = data["rubricVersionCode"]
+        return data
+
+

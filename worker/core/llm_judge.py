@@ -137,8 +137,8 @@ class LLMJudgeService:
 
         self.model = (
             model
-            or kv_get("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
-            or os.getenv("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
+            or kv_get("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
+            or os.getenv("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
         )
         
         # Timeout amplio (120s por defecto) para permitir que NVIDIA NIM termine la inferencia
@@ -228,12 +228,17 @@ Genera el análisis en formato JSON estricto con las claves:
                 response_format={"type": "json_object"},
             )
         except Exception as primary_err:
-            # Si el modelo primario falla o da timeout y no es el 11B ligero, reintentar con 11B
-            fallback_model = "meta/llama-3.2-11b-vision-instruct"
-            if self.model != fallback_model:
-                logger.warning(
-                    f"Fallo con {self.model} ({primary_err}). Reintentando con modelo ligero {fallback_model}..."
-                )
+            err_detail = ""
+            if hasattr(primary_err, "response") and getattr(primary_err.response, "text", None):
+                err_detail = f" - Detalle API: {primary_err.response.text}"
+            elif hasattr(primary_err, "body"):
+                err_detail = f" - Detalle API: {primary_err.body}"
+
+            fallback_model = os.getenv("LLM_FALLBACK_MODEL", "deepseek-ai/deepseek-v4.1-flash")
+            logger.warning(
+                f"Fallo en intento principal con {self.model} ({primary_err}{err_detail}). Reintentando con modelo de respaldo {fallback_model}..."
+            )
+            try:
                 response = self.client.chat.completions.create(
                     model=fallback_model,
                     messages=[
@@ -245,8 +250,12 @@ Genera el análisis en formato JSON estricto con las claves:
                     timeout=self.timeout,
                     response_format={"type": "json_object"},
                 )
-            else:
-                raise primary_err
+            except Exception as fallback_err:
+                fb_detail = ""
+                if hasattr(fallback_err, "response") and getattr(fallback_err.response, "text", None):
+                    fb_detail = f" - Detalle API: {fallback_err.response.text}"
+                logger.error(f"Fallo también en modelo de respaldo {fallback_model}: {fallback_err}{fb_detail}")
+                raise primary_err from fallback_err
 
         content = response.choices[0].message.content
         raw_json = _clean_and_parse_json(content)

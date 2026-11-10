@@ -32,7 +32,7 @@ QUEUE_NAME = os.getenv("SERVICE_BUS_QUEUE_NAME", "analysis-queue")
 STORAGE_CONN = os.getenv("STORAGE_CONNECTION_STRING")
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL_NAME", "meta/llama-3.2-90b-vision-instruct")
+LLM_MODEL = os.getenv("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
 VISION_URL = os.getenv("VISION_SERVICE_URL")
 
 
