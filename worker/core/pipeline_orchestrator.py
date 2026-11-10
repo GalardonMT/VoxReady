@@ -69,7 +69,7 @@ STORAGE_CONN = os.getenv("STORAGE_CONNECTION_STRING")
 CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
+LLM_MODEL = os.getenv("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
 VISION_URL = os.getenv("VISION_SERVICE_URL")
 SQL_CONN_STR = os.getenv("SQL_CONNECTION_STRING") or os.getenv("DATABASE_URL")
 
@@ -690,9 +690,14 @@ def process_session_pipeline(
         logger.info(f"=== Pipeline Multimodal completado con éxito para sesión {session_id} ===")
 
     except Exception as ex:
-        logger.error(f"Fallo crítico en pipeline de sesión {session_id}: {ex}", exc_info=True)
+        err_msg = str(ex)
+        if hasattr(ex, "response") and getattr(ex.response, "text", None):
+            err_msg += f" - API Details: {ex.response.text}"
+        elif hasattr(ex, "body"):
+            err_msg += f" - API Details: {ex.body}"
+        logger.error(f"Fallo crítico en pipeline de sesión {session_id}: {err_msg}", exc_info=True)
         if db_svc and session_verified:
-            update_analysis_job_status(db_svc, job_id, "failed", failure_reason=str(ex))
+            update_analysis_job_status(db_svc, job_id, "failed", failure_reason=err_msg)
             try:
                 db_svc.update_session_status(session_id, "failed")
             except Exception as dbe:
