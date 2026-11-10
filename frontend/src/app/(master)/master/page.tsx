@@ -29,6 +29,7 @@ function MasterContent() {
   const [metricsVisited, setMetricsVisited] = useState(false);
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
   const { t } = useI18n();
+  const labelingUiEnabled = process.env.NEXT_PUBLIC_LABELING_UI_ENABLED !== 'false';
 
   if (!user) return null; // guaranteed by ProtectedRoute
 
@@ -42,7 +43,7 @@ function MasterContent() {
     { id: 'm1', label: 'Panel Maestro', icon: '📊' },
     { id: 'm2', label: 'Editor de Rúbrica', icon: '📐' },
     { id: 'm7', label: 'Editor de métricas', icon: '◈' },
-    { id: 'm3', label: 'Cola de Etiquetado', icon: '🎯' },
+    ...(labelingUiEnabled ? [{ id: 'm3' as MasterScreen, label: 'Cola de Etiquetado', icon: '🎯' }] : []),
     { id: 'm4', label: t.masterTopics.catalog, icon: '📚' },
     { id: 'm5', label: t.masterTopics.editor, icon: '✏️' },
     { id: 'm6', label: 'Microlecciones', icon: '📖' },
@@ -119,8 +120,8 @@ function MasterContent() {
       <main className="canvas">
         {masterScreen === 'm1' && <MasterDashboard onNavigate={handleMasterNavigate} />}
         {masterScreen === 'm2' && <RubricEditorView onNavigate={handleMasterNavigate} />}
-        {metricsVisited && <div hidden={masterScreen !== 'm7'}><MetricsEditorView /></div>}
-        {masterScreen === 'm3' && <LabelingQueueView onNavigate={handleMasterNavigate} />}
+        {metricsVisited && <div hidden={masterScreen !== 'm7'}><MetricsEditorView onNavigate={handleMasterNavigate} /></div>}
+        {labelingUiEnabled && masterScreen === 'm3' && <LabelingQueueView onNavigate={handleMasterNavigate} />}
         {masterScreen === 'm4' && <TopicCatalogView onEdit={id => { setSelectedTopicId(id); handleMasterNavigate('m5'); }} />}
         {masterScreen === 'm5' && <MasterTopicEditorView key={`${user.userId}:${selectedTopicId || 'new'}`} topicId={selectedTopicId}
           onCreated={setSelectedTopicId} onBack={() => handleMasterNavigate('m4')} />}

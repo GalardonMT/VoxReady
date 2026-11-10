@@ -21,6 +21,7 @@ import spokesperson_store
 import microlessons as microlesson_store
 import metrics_store
 import client_store
+from labeling_api import create_labeling_router, LabelingProblem
 
 # Cargar variables de entorno locales si existen
 try:
@@ -68,6 +69,7 @@ JWKS_URL = os.getenv("JWKS_URL", "")
 JWT_ISSUER = os.getenv("JWT_ISSUER", "")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "")
 DEV_AUTH = os.getenv("DEV_AUTH", "false").lower() == "true"
+LABELING_QUEUE_API_ENABLED = os.getenv("LABELING_QUEUE_API_ENABLED", "true").lower() == "true"
 if DEV_AUTH and os.getenv("ENVIRONMENT", "production").lower() != "development":
     raise RuntimeError("DEV_AUTH solo se permite con ENVIRONMENT=development.")
 
@@ -558,7 +560,9 @@ def mock_upload(session_id: str):
 @app.post("/v1/api/sessions/{session_id}/upload-url")
 def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
     """Genera URL prefirmada temporal para subida directa desde el navegador (PUT)"""
-    spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
+    access = spokesperson_store.require_session_access(SQL_CONN_STR, user, session_id)
+    if access.get('status') != 'created':
+        raise HTTPException(status_code=409, detail="La sesión ya no admite una nueva grabación.")
     if not STORAGE_CONN_STR:
         mock_url = f"http://localhost:8000/v1/sessions/{session_id}/mock-upload"
         return {
@@ -579,7 +583,7 @@ def get_upload_sas_url(session_id: str, user: dict = Depends(verify_token)):
             container_name=CONTAINER_NAME,
             blob_name=blob_name,
             account_key=account_key,
-            permission=BlobSasPermissions(create=True, write=True),
+            permission=BlobSasPermissions(create=True),
             expiry=datetime.now(timezone.utc) + timedelta(minutes=30)
         )
         upload_url = f"https://{account_name}.blob.core.windows.net/{CONTAINER_NAME}/{blob_name}?{sas_token}"
@@ -656,13 +660,31 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
             conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
-                cur.execute("""SELECT id, status, rubric_version_id FROM session
+                cur.execute("""SELECT id, status, rubric_version_id FROM session WITH (UPDLOCK,HOLDLOCK)
                                WHERE id=? AND user_id=? AND client_id=? AND is_deleted=0""",
                             session_uuid, access['profile']['id'], access['profile']['client_id'])
                 session_row = cur.fetchone()
                 if session_row is None:
                     raise HTTPException(404, "Sesión no encontrada.")
                 rubric_version_id = session_row[2]
+                current_status = str(session_row[1]).lower()
+                cur.execute("""SELECT TOP 1 id FROM analysis_job
+                                WHERE session_id=? AND status IN ('running','processing')
+                                ORDER BY created_at DESC,id DESC""", session_uuid)
+                existing_job = cur.fetchone()
+                if current_status in ('analyzing', 'processing'):
+                    if not existing_job:
+                        raise HTTPException(status_code=409, detail="La sesión está en análisis sin un trabajo activo recuperable.")
+                    conn.rollback()
+                    return {
+                        "sessionId": session_id,
+                        "session_id": session_id,
+                        "status": "analyzing",
+                        "analysisId": str(existing_job[0]),
+                        "estimatedSeconds": 45,
+                    }
+                if current_status != 'created':
+                    raise HTTPException(status_code=409, detail="La sesión no se puede finalizar en su estado actual.")
 
                 # Crear registro en analysis_job
                 cur.execute("""
@@ -717,7 +739,11 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
         except HTTPException:
             raise
         except Exception as e_sql:
-            logger.warning(f"Aviso actualizando estado en Azure SQL ({session_id}): {e_sql}")
+            logger.error("No se pudo preparar el análisis de forma transaccional: %s", type(e_sql).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo preparar el análisis de forma transaccional.",
+            ) from None
 
     # Normalizar turnos (turns o question_marks)
     turns = list(payload.turns or [])
@@ -1619,4 +1645,66 @@ def spokesperson_microlesson_detail(microlesson_id: uuid.UUID, user: dict = Depe
 def spokesperson_microlesson_video_url(microlesson_id: uuid.UUID, user: dict = Depends(verify_token)):
     path = microlesson_store.playback_path(SQL_CONN_STR, user, str(microlesson_id))
     return {'playbackUrl': _playback_url(path), 'expiresIn': 3600}
+
+
+def _issue_labeling_recording_url(evidence: dict, expires_at: datetime) -> str:
+    """Verify the sealed object and issue a short-lived read-only SAS."""
+    if not STORAGE_CONN_STR:
+        raise LabelingProblem(503, "STORAGE_UNAVAILABLE", "Azure Blob Storage no está configurado.")
+    service = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
+    version_id = evidence.get("versionId")
+    blob = service.get_blob_client(
+        container=CONTAINER_NAME,
+        blob=evidence["path"],
+        version_id=version_id,
+    )
+    properties = blob.get_blob_properties()
+    actual_etag = str(properties.etag or "").strip('"')
+    expected_etag = str(evidence["etag"]).strip('"')
+    actual_content_type = str(
+        getattr(getattr(properties, "content_settings", None), "content_type", "") or ""
+    ).strip().lower()
+    expected_content_type = str(evidence["contentType"]).strip().lower()
+    if (
+        not actual_etag
+        or actual_etag != expected_etag
+        or not actual_content_type
+        or actual_content_type != expected_content_type
+    ):
+        raise LabelingProblem(
+            410,
+            "RECORDING_RETAINED_OR_DELETED",
+            "La evidencia de grabación ya no coincide con la versión sellada.",
+            {"retentionState": "changed"},
+        )
+    credential = getattr(service.credential, "account_key", None)
+    if not credential:
+        raise LabelingProblem(503, "STORAGE_UNAVAILABLE", "No hay una credencial apta para emitir SAS.")
+    sas = generate_blob_sas(
+        account_name=service.account_name,
+        container_name=CONTAINER_NAME,
+        blob_name=evidence["path"],
+        version_id=version_id,
+        account_key=credential,
+        permission=BlobSasPermissions(read=True),
+        expiry=expires_at,
+        protocol="https",
+    )
+    separator = "&" if "?" in blob.url else "?"
+    return f"{blob.url}{separator}{sas}"
+
+
+def _resolve_labeling_master(cursor, claims):
+    return master_store.resolve_user(cursor, claims, master=True)
+
+
+app.include_router(
+    create_labeling_router(
+        verify_token_dependency=verify_token,
+        database_factory=lambda: master_store.database(SQL_CONN_STR),
+        resolve_master=_resolve_labeling_master,
+        issue_recording_url=_issue_labeling_recording_url,
+        api_enabled=lambda: LABELING_QUEUE_API_ENABLED,
+    )
+)
 

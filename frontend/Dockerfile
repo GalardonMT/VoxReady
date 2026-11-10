@@ -19,6 +19,7 @@ ARG NEXT_PUBLIC_REDIRECT_URI
 ARG NEXT_PUBLIC_AZURE_REDIRECT_URI
 ARG NEXT_PUBLIC_AZURE_API_SCOPE
 ARG NEXT_PUBLIC_DEV_AUTH=false
+ARG NEXT_PUBLIC_LABELING_UI_ENABLED=true
 
 ENV NEXT_PUBLIC_AUTH_MODE=$NEXT_PUBLIC_AUTH_MODE \
     NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
@@ -28,7 +29,8 @@ ENV NEXT_PUBLIC_AUTH_MODE=$NEXT_PUBLIC_AUTH_MODE \
     NEXT_PUBLIC_REDIRECT_URI=${NEXT_PUBLIC_REDIRECT_URI:-$NEXT_PUBLIC_AZURE_REDIRECT_URI} \
     NEXT_PUBLIC_AZURE_REDIRECT_URI=${NEXT_PUBLIC_REDIRECT_URI:-$NEXT_PUBLIC_AZURE_REDIRECT_URI} \
     NEXT_PUBLIC_AZURE_API_SCOPE=$NEXT_PUBLIC_AZURE_API_SCOPE \
-    NEXT_PUBLIC_DEV_AUTH=$NEXT_PUBLIC_DEV_AUTH
+    NEXT_PUBLIC_DEV_AUTH=$NEXT_PUBLIC_DEV_AUTH \
+    NEXT_PUBLIC_LABELING_UI_ENABLED=$NEXT_PUBLIC_LABELING_UI_ENABLED
 
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
@@ -36,7 +38,8 @@ RUN npm run build
 FROM dependencies AS test
 COPY src ./src
 COPY tests ./tests
-CMD ["sh", "-c", "node --experimental-strip-types tests/routeAccess.test.mjs && node --experimental-strip-types tests/mediaCheck.test.mjs && node --experimental-strip-types tests/progressModel.test.mjs && node --experimental-strip-types tests/microlessonRules.test.mjs && node --experimental-strip-types tests/microlessonPresentation.test.mjs && node --experimental-strip-types tests/clientRules.test.mjs && node --experimental-strip-types tests/metricsModel.test.mjs"]
+COPY tsconfig.json next-env.d.ts ./
+CMD ["sh", "-c", "node --experimental-strip-types --test tests/*.test.mjs && npx tsc --noEmit"]
 
 FROM nginx:1.28-alpine AS runtime
 COPY nginx.conf /etc/nginx/conf.d/default.conf

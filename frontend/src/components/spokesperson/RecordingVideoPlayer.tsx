@@ -4,8 +4,12 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 interface RecordingVideoPlayerProps {
   src: string;
+  contentType?: string;
   expectedDuration?: number;
+  initialPosition?: number;
   autoPlay?: boolean;
+  onPositionChange?: (seconds: number) => void;
+  onPlaybackError?: () => void;
 }
 
 export const formatTime = (seconds: number): string => {
@@ -23,8 +27,12 @@ export const formatTime = (seconds: number): string => {
 
 export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
   src,
+  contentType = 'video/webm',
   expectedDuration = 0,
-  autoPlay = false
+  initialPosition = 0,
+  autoPlay = false,
+  onPositionChange,
+  onPlaybackError,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -91,6 +99,11 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
   // Manejo de eventos del elemento <video>
   const handleLoadedMetadata = () => {
     resolveChromiumDuration();
+    if (videoRef.current && Number.isFinite(initialPosition) && initialPosition > 0) {
+      const maximum = effectiveDuration > 0 ? effectiveDuration : initialPosition;
+      videoRef.current.currentTime = Math.min(initialPosition, maximum);
+      setCurrentTime(Math.min(initialPosition, maximum));
+    }
     if (autoPlay && videoRef.current) {
       videoRef.current.play().catch(() => {
         // Autoplay con audio puede requerir interacción de usuario
@@ -103,6 +116,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
     if (!video) return;
     if (!isDragging) {
       setCurrentTime(video.currentTime);
+      onPositionChange?.(video.currentTime);
     }
 
     // Calcular buffer progresivo
@@ -132,14 +146,15 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
     }
   }, []);
 
-  const skipSeconds = (seconds: number) => {
+  const skipSeconds = useCallback((seconds: number) => {
     const video = videoRef.current;
     if (!video) return;
     const max = effectiveDuration > 0 ? effectiveDuration : video.duration || 99999;
     const nextTime = Math.max(0, Math.min(max, video.currentTime + seconds));
     video.currentTime = nextTime;
     setCurrentTime(nextTime);
-  };
+    onPositionChange?.(nextTime);
+  }, [effectiveDuration, onPositionChange]);
 
   // Manejo de timeline y scrubber
   const seekToPosition = useCallback(
@@ -211,7 +226,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
     }
   };
 
-  const toggleMute = () => {
+  const toggleMute = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     if (isMuted) {
@@ -222,7 +237,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
       video.muted = true;
       setIsMuted(true);
     }
-  };
+  }, [isMuted, volume]);
 
   // Velocidad de reproducción
   const speedOptions = [0.75, 1, 1.25, 1.5, 2];
@@ -296,7 +311,17 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay]);
+  }, [skipSeconds, toggleMute, togglePlay]);
+
+  useEffect(() => () => {
+    if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
+  }, []);
 
   const progressPercent = effectiveDuration > 0 ? (currentTime / effectiveDuration) * 100 : 0;
   const bufferPercent = effectiveDuration > 0 ? (bufferedEnd / effectiveDuration) * 100 : 0;
@@ -344,6 +369,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
         }}
         onWaiting={() => setIsBuffering(true)}
         onPlaying={() => setIsBuffering(false)}
+        onError={onPlaybackError}
         style={{
           width: '100%',
           display: 'block',
@@ -352,8 +378,7 @@ export const RecordingVideoPlayer: React.FC<RecordingVideoPlayerProps> = ({
           cursor: 'pointer'
         }}
       >
-        <source src={src} type="video/webm" />
-        <source src={src} type="video/mp4" />
+        <source src={src} type={contentType} />
         Tu navegador no soporta la reproducción de video HTML5.
       </video>
 

@@ -61,6 +61,7 @@ def process_crisis_session(msg: func.ServiceBusMessage) -> None:
       8. Limpieza estricta de archivos temporales en /tmp.
       9. Manejo de reintentos y Dead-Letter Queue ante fallos críticos.
     """
+    raise RuntimeError("function_app heredado está deshabilitado; use ca-analysis-worker HTTP o worker.py canónico.")
     start_time = time.time()
     session_id = "unknown"
     step = "init"

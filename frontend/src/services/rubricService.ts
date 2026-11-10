@@ -2,8 +2,8 @@
  * Service for Rubric and Labeling queue management (Master Configurator)
  */
 import { apiFetch, isAccessError } from './apiClient';
-import { MasterRubric, LabelingCase } from '../types/api';
-import { INITIAL_MASTER_RUBRIC, INITIAL_LABELING_QUEUE } from '../mock/mockData';
+import { MasterRubric } from '../types/api';
+import { INITIAL_MASTER_RUBRIC } from '../mock/mockData';
 
 export const rubricService = {
   /**
@@ -26,36 +26,6 @@ export const rubricService = {
         method: 'POST',
         body: JSON.stringify(rubric)
       });
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  /**
-   * Obtiene los casos pendientes en la cola de etiquetado
-   */
-  async getLabelingCases(): Promise<LabelingCase[]> {
-    try {
-      return await apiFetch<LabelingCase[]>('/master/labeling-cases');
-    } catch (error) { if (isAccessError(error)) throw error;
-      return INITIAL_LABELING_QUEUE;
-    }
-  },
-
-  /**
-   * Envía la evaluación de un experto sobre un caso de la cola
-   */
-  async submitExpertEvaluation(
-    caseId: string,
-    scores: { expression: number; tone: number; coherence: number; empathy: number },
-    comment: string
-  ): Promise<boolean> {
-    try {
-      await apiFetch(`/master/labeling-cases/${caseId}/evaluate`, {
-        method: 'POST',
-        body: JSON.stringify({ expertScores: scores, expertComment: comment })
-      });
-      return true;
     } catch (error) {
       throw error;
     }

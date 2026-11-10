@@ -1,0 +1,17 @@
+{
+  "period": { "from": "2026-10-01T00:00:00Z", "to": "2026-10-28T00:00:00Z" },
+  "currentReviewsOnly": true,
+  "reviewedCases": 8,
+  "rubricAreas": [
+    { "areaKey": "expression", "sampleCount": 8, "meanAiValue": 68.5, "meanCorrectedValue": 69.75, "meanDelta": 1.25, "changedCount": 2 },
+    { "areaKey": "empathy", "sampleCount": 8, "meanAiValue": 56.0, "meanCorrectedValue": 60.5, "meanDelta": 4.5, "changedCount": 5 }
+  ],
+  "metrics": [
+    { "metricKey": "voice.wpm", "mappingVersion": 1, "unit": "WPM", "sampleCount": 7, "meanAiValue": 138.0, "meanCorrectedValue": 136.0, "meanDelta": -2.0, "changedCount": 1 },
+    { "metricKey": "vision.eye_contact", "mappingVersion": 1, "unit": "%", "sampleCount": 6, "meanAiValue": 52.0, "meanCorrectedValue": 57.75, "meanDelta": 5.75, "changedCount": 4 }
+  ],
+  "categories": [
+    { "categoryKey": "voice", "reviewedMetricCount": 7, "changedCount": 1 },
+    { "categoryKey": "vision", "reviewedMetricCount": 6, "changedCount": 4 }
+  ]
+}

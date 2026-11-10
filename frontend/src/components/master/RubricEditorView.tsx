@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { MasterScreen } from './MasterDashboard';
+import { QualityReviewPanel } from './QualityReviewPanel';
+import { LABELING_CASE_TARGET_KEY } from '../../services/qualityReviewModel';
 
 interface RubricEditorViewProps {
   onNavigate?: (screen: MasterScreen) => void;
@@ -16,7 +18,7 @@ interface RubricAreaItem {
   weight: number;
 }
 
-export const RubricEditorView: React.FC<RubricEditorViewProps> = () => {
+export const RubricEditorView: React.FC<RubricEditorViewProps> = ({ onNavigate }) => {
   const { t } = useI18n();
   const d = t.L.m2;
 
@@ -306,6 +308,11 @@ export const RubricEditorView: React.FC<RubricEditorViewProps> = () => {
           </div>
         </div>
       </div>
+
+      <QualityReviewPanel mode="rubric" onOpenCase={caseId => {
+        sessionStorage.setItem(LABELING_CASE_TARGET_KEY, caseId);
+        onNavigate?.('m3');
+      }} />
 
       {/* Action Buttons */}
       <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>

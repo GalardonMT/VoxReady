@@ -1,0 +1,8 @@
+{
+  "type": "https://voxready.example/problems/lease-conflict",
+  "title": "El caso está reservado por otro experto",
+  "status": 409,
+  "detail": "El caso puede consultarse en modo lectura hasta que expire la reserva vigente.",
+  "code": "LEASE_CONFLICT",
+  "correlationId": "fixture-correlation-409"
+}
