@@ -1,0 +1,32 @@
+{
+  "caseId": "10000000-0000-4000-8000-000000000002",
+  "caseNumber": "VR-2026-0008843",
+  "status": "pending",
+  "contentRevision": 3,
+  "sourceStatus": "complete",
+  "sourceIssues": [],
+  "snapshotSchemaVersion": 1,
+  "queueReason": "routine",
+  "reasonDetail": { "kind": "routine", "selectionRule": "all_completed_current_reports" },
+  "client": { "code": "CLI-DEMO-02", "displayName": "Cliente Demo Centro" },
+  "speakerCode": "VOC-4M8R",
+  "scenario": { "title": "Incidente de seguridad" },
+  "session": { "startedAt": "2026-10-27T17:50:00Z", "finishedAt": "2026-10-27T17:52:45Z", "durationSeconds": 165 },
+  "report": { "reportId": "20000000-0000-4000-8000-000000000002", "generatedAt": "2026-10-27T17:53:31Z", "overallScore": 69 },
+  "criticalAreas": [],
+  "lease": { "state": "locked_by_other", "ownerCode": "EXP-9P2D", "expiresAt": "2026-10-27T18:12:45Z" },
+  "rubric": {
+    "rubricVersionId": "30000000-0000-4000-8000-000000000001",
+    "areas": [
+      { "areaId": "40000000-0000-4000-8000-000000000001", "areaKey": "expression", "label": "Expresión", "aiValue": 68, "editable": false },
+      { "areaId": "40000000-0000-4000-8000-000000000002", "areaKey": "voice", "label": "Tono de voz", "aiValue": 72, "editable": false },
+      { "areaId": "40000000-0000-4000-8000-000000000003", "areaKey": "coherence", "label": "Coherencia", "aiValue": 69, "editable": false },
+      { "areaId": "40000000-0000-4000-8000-000000000004", "areaKey": "empathy", "label": "Nivel de empatía", "aiValue": 66, "editable": false }
+    ]
+  },
+  "metricGroups": [],
+  "governanceContext": [],
+  "recording": { "availability": "available", "durationSeconds": 165.0 },
+  "latestReview": null,
+  "currentReview": null
+}

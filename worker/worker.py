@@ -15,6 +15,7 @@ from core.narrative_generator import generate_visum_report
 from core.vision_client import VisionClient
 from core.report_builder import calculate_expression_area_score
 from services.db_service import DatabaseService
+from core.pipeline_orchestrator import process_session_pipeline
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -191,7 +192,7 @@ def upload_report_to_blob(session_id: str, report_data: dict):
         logging.warning(f"No se pudo persistir el reporte en Blob Storage: {e}")
 
 
-def process_message(body: dict):
+def _legacy_process_message(body: dict):
     payload = body.get("payload", body)
     session_id = payload.get("session_id") or body.get("session_id")
     job_id = payload.get("job_id") or body.get("job_id")
@@ -435,6 +436,25 @@ def process_message(body: dict):
     finally:
         shutil.rmtree(session_tmp_dir, ignore_errors=True)
         logging.info(f"Directorio temporal limpiado: {session_tmp_dir}")
+
+
+def process_message(body: dict):
+    """Adapta Service Bus al pipeline canónico compartido con el endpoint HTTP."""
+    payload = body.get("payload", body)
+    session_id = payload.get("session_id") or body.get("session_id")
+    job_id = payload.get("job_id") or body.get("job_id")
+    media = payload.get("media") or {}
+    blob_path = media.get("video_blob_name") or payload.get("blob_name")
+    if not session_id or not job_id or not blob_path:
+        raise ValueError("El evento debe identificar sesión, job y grabación.")
+    logging.info("El pipeline Service Bus heredado está deshabilitado; usando el pipeline canónico.")
+    return process_session_pipeline(
+        session_id=str(session_id),
+        job_id=str(job_id),
+        rubric_version_id=payload.get("rubric_version_id"),
+        blob_path=str(blob_path),
+        turns=list(payload.get("turns") or []),
+    )
 
 
 def run_loop():

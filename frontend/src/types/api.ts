@@ -379,26 +379,221 @@ export interface MasterRubric {
   supportedLanguages: string[];
 }
 
+export type LabelingCaseStatus = 'pending' | 'reviewed';
+export type LabelingQueueReason = 'critical' | 'borderline' | 'disparity' | 'routine';
+export type LabelingLeaseState = 'available' | 'owned' | 'locked_by_other' | 'expired' | 'not_claimable';
+
+export interface LabelingClientSummary {
+  code: string;
+  displayName: string;
+}
+
+export interface LabelingReviewSummary {
+  reviewId: string;
+  reviewNo: number;
+  reviewerCode: string;
+  submittedAt: string;
+}
+
 export interface LabelingCase {
-  id: string;
+  caseId: string;
   caseNumber: string;
-  reason: 'low_confidence' | 'borderline' | 'random';
-  reasonLabel: string;
-  scenarioName: string;
-  aiScores: {
-    expression: number;
-    tone: number;
-    coherence: number;
-    empathy: number;
+  status: LabelingCaseStatus;
+  queueReason: LabelingQueueReason;
+  reasonDetail: Record<string, unknown>;
+  client: LabelingClientSummary;
+  speakerCode: string;
+  scenario: {
+    title: string;
   };
-  expertScores?: {
-    expression: number;
-    tone: number;
-    coherence: number;
-    empathy: number;
+  session: {
+    startedAt: string | null;
+    finishedAt: string | null;
+    durationSeconds: number | null;
   };
-  expertComment?: string;
-  videoDuration: string;
+  report: {
+    reportId: string;
+    generatedAt: string;
+    overallScore: number | null;
+  };
+  criticalAreas: Array<{
+    areaKey: string;
+    label: string;
+    value: number;
+  }>;
+  lease: {
+    state: LabelingLeaseState;
+    ownerCode: string | null;
+    expiresAt: string | null;
+  };
+  latestReview: LabelingReviewSummary | null;
+}
+
+export interface LabelingCaseListResponse {
+  items: LabelingCase[];
+  total: number;
+  limit: number;
+}
+
+export interface LabelingRubricArea {
+  areaId: string;
+  areaKey: 'expression' | 'voice' | 'coherence' | 'empathy';
+  label: string;
+  aiValue: number | null;
+  editable: boolean;
+}
+
+export interface LabelingMetricObservation {
+  valueType: 'decimal' | 'integer';
+  canonicalUnit: string;
+  conversion: string;
+  technicalMin: number | null;
+  technicalMax: number | null;
+}
+
+export interface LabelingMetric {
+  metricKey: string;
+  categoryKey: string;
+  metricKind: 'observation' | 'configuration' | 'aggregate_target';
+  label: string;
+  availability: 'available' | 'unknown' | 'not_emitted';
+  aiValue: number | null;
+  unit: string;
+  precision: number;
+  mappingVersion: number;
+  observation: LabelingMetricObservation | null;
+  editable: boolean;
+  unavailableReason: string | null;
+  publishedThresholds: Record<string, number>;
+}
+
+export interface LabelingCaseDetail extends LabelingCase {
+  contentRevision: number;
+  sourceStatus: 'complete' | 'partial' | 'ambiguous';
+  sourceIssues: string[];
+  snapshotSchemaVersion: number;
+  rubric: {
+    rubricVersionId: string;
+    areas: LabelingRubricArea[];
+  };
+  metricGroups: Array<{
+    categoryKey: string;
+    label: string;
+    metrics: LabelingMetric[];
+  }>;
+  recording: {
+    availability: 'available' | 'unavailable';
+    durationSeconds: number | null;
+  };
+  currentReview: LabelingReviewSummary | null;
+}
+
+export interface LabelingLease {
+  caseId: string;
+  leaseToken: string;
+  leaseGeneration: number;
+  contentRevision: number;
+  expiresAt: string;
+  serverTime: string;
+  readOnly: boolean;
+}
+
+export interface LabelingRecordingTicket {
+  url: string;
+  expiresAt: string;
+  contentType: string;
+  durationSeconds: number | null;
+  etag: string;
+  blobVersionId: string | null;
+}
+
+export interface LabelingRubricCorrectionRequest {
+  areaId: string;
+  correctedValue: number;
+  comment: string | null;
+}
+
+export interface LabelingMetricCorrectionRequest {
+  metricKey: string;
+  correctedValue: number;
+  comment: string | null;
+}
+
+export interface LabelingReviewRequest {
+  leaseToken: string;
+  leaseGeneration: number;
+  expectedContentRevision: number;
+  idempotencyKey: string;
+  supersedesReviewId: string | null;
+  overallComment: string;
+  rubricCorrections: LabelingRubricCorrectionRequest[];
+  metricCorrections: LabelingMetricCorrectionRequest[];
+}
+
+export interface LabelingReview {
+  reviewId: string;
+  caseId: string;
+  reviewNo: number;
+  reviewerCode: string;
+  isCurrent: boolean;
+  supersedesReviewId: string | null;
+  submittedAt: string;
+  contentRevision: number;
+  overallComment: string;
+  rubricCorrections: Array<{
+    areaKey: string;
+    aiValue: number;
+    correctedValue: number;
+    comment: string | null;
+  }>;
+  metricCorrections: Array<{
+    metricKey: string;
+    aiValue: number;
+    correctedValue: number;
+    unit: string;
+    comment: string | null;
+  }>;
+}
+
+export interface LabelingReviewListResponse {
+  items: LabelingReview[];
+  total: number;
+}
+
+export interface LabelingQualityAggregate {
+  sampleCount: number;
+  meanAiValue: number | null;
+  meanCorrectedValue: number | null;
+  meanDelta: number | null;
+  meanAbsoluteError: number | null;
+  changedCount: number;
+  increasedCount: number;
+  decreasedCount: number;
+  unchangedCount: number;
+}
+
+export interface LabelingRubricQualityAggregate extends LabelingQualityAggregate {
+  rubricVersionId: string;
+  areaKey: string;
+}
+
+export interface LabelingMetricQualityAggregate extends LabelingQualityAggregate {
+  metricKey: string;
+  mappingVersion: number;
+  unit: string;
+}
+
+export interface LabelingQualitySummary {
+  period: { from: string | null; to: string | null };
+  currentReviewsOnly: boolean;
+  reviewedCases: number;
+  rubricAreas: LabelingRubricQualityAggregate[];
+  metrics: LabelingMetricQualityAggregate[];
+  categories: Array<{
+    categoryKey: string;
+    reviewedMetricCount: number;
+    changedCount: number;
+  }>;
 }
 
 export interface TurnInterval {
