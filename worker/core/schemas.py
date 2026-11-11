@@ -107,13 +107,13 @@ class EvaluacionDimensiones(BaseModel):
         }
 
         for canonical, aliases in key_aliases.items():
-            if canonical not in data or not isinstance(data[canonical], dict):
+            if canonical not in data or not isinstance(data[canonical], (dict, BaseModel)):
                 for alias in aliases:
-                    if alias in data and isinstance(data[alias], dict):
+                    if alias in data and isinstance(data[alias], (dict, BaseModel)):
                         data[canonical] = data[alias]
                         break
             # Si aún no existe, proveer un dict mínimo con nivel 1
-            if canonical not in data or not isinstance(data[canonical], dict):
+            if canonical not in data or not isinstance(data[canonical], (dict, BaseModel)):
                 data[canonical] = {"nivel": 1, "criterio": "No evaluado directamente por el modelo"}
 
         return data

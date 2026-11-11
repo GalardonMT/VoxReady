@@ -160,10 +160,12 @@ try:
     from schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
     from schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from services.worker_client import trigger_worker_analysis
+    from services.ai_inference import FollowUpInput, FollowUpResponse, get_ai_inference_service
 except (ImportError, ValueError):
     from backend.schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
     from backend.schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from backend.services.worker_client import trigger_worker_analysis
+    from backend.services.ai_inference import FollowUpInput, FollowUpResponse, get_ai_inference_service
 
 # 5. Servicios de persistencia de usuarios (Azure SQL)
 def _normalize_sql_conn_str(conn_str: str) -> str:
@@ -808,6 +810,54 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
         "analysisId": job_id,
         "estimatedSeconds": 45
     }
+
+
+@app.post("/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+@app.post("/v1/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+@app.post("/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+@app.post("/v1/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+async def generate_session_follow_up(
+    session_id: str,
+    payload: FollowUpInput,
+    user: dict = Depends(verify_token)
+):
+    """
+    Genera una contrapregunta periodística dinámica de baja latencia con Gemini 3.5 Flash Lite
+    cuando el usuario avanza de pregunta durante la entrevista (Tarea 2 de Indicaciones.md).
+    """
+    ai_svc = get_ai_inference_service()
+
+    # Si no se proporcionan líneas rojas explícitas, recuperarlas desde Azure SQL si la sesión existe
+    if not payload.topicRedLines and SQL_CONN_STR:
+        try:
+            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+            with pyodbc.connect(conn_str, timeout=5) as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT r.rule_text 
+                    FROM dbo.topic_red_line r
+                    JOIN dbo.scenario s ON s.topic_id = r.topic_id
+                    JOIN dbo.session sess ON sess.scenario_id = s.id
+                    WHERE sess.id = ?
+                """, _safe_uuid(session_id))
+                rows = cur.fetchall()
+                if rows:
+                    payload.topicRedLines = [r[0] for r in rows if r[0]]
+        except Exception as e_rl:
+            logger.warning(f"Aviso recuperando líneas rojas para follow-up: {e_rl}")
+
+    return ai_svc.generate_dynamic_follow_up(payload)
+
+
+@app.post("/api/ai/follow-up", response_model=FollowUpResponse)
+@app.post("/v1/api/ai/follow-up", response_model=FollowUpResponse)
+async def generate_direct_follow_up(
+    payload: FollowUpInput,
+    user: dict = Depends(verify_token)
+):
+    """Generación directa de contrapregunta periodística sin vincular a sesión específica."""
+    ai_svc = get_ai_inference_service()
+    return ai_svc.generate_dynamic_follow_up(payload)
 
 
 def _generate_playback_sas_url(session_id: str, duration_minutes: int = 60) -> str:

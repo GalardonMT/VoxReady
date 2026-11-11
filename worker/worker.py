@@ -32,7 +32,24 @@ QUEUE_NAME = os.getenv("SERVICE_BUS_QUEUE_NAME", "analysis-queue")
 STORAGE_CONN = os.getenv("STORAGE_CONNECTION_STRING")
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
+gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+
+if gemini_key:
+    LLM_API_KEY = gemini_key
+    raw_base = (os.getenv("GEMINI_OPENAI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/").strip()
+    LLM_MODEL = (os.getenv("GEMINI_JUDGE_MODEL") or "gemini-3.5-flash-lite").strip()
+    LLM_FAST_MODEL = (os.getenv("GEMINI_FAST_MODEL") or "gemini-3.5-flash-lite").strip()
+else:
+    LLM_API_KEY = NVIDIA_API_KEY
+    raw_base = (os.getenv("NVIDIA_BASE_URL") or "https://integrate.api.nvidia.com/v1").strip()
+    LLM_MODEL = (os.getenv("LLM_MODEL_NAME") or "deepseek-ai/deepseek-v4.1-flash").strip()
+    LLM_FAST_MODEL = "deepseek-ai/deepseek-v4.1-flash"
+
+if "generativelanguage.googleapis.com" in raw_base and not raw_base.endswith("/"):
+    raw_base += "/"
+elif raw_base.endswith("/chat/completions"):
+    raw_base = raw_base[:-len("/chat/completions")].rstrip("/")
+LLM_BASE_URL = raw_base
 VISION_URL = os.getenv("VISION_SERVICE_URL")
 
 

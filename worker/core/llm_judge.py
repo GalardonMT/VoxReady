@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import logging
 from typing import Optional, List, Dict, Any
 try:
@@ -115,6 +116,7 @@ class LLMJudgeService:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        fast_model: Optional[str] = None,
         timeout: Optional[float] = None,
     ):
         try:
@@ -123,31 +125,63 @@ class LLMJudgeService:
         except ImportError:
             kv_get = lambda k, d=None: os.getenv(k, d)
 
-        self.api_key = api_key or kv_get("NVIDIA_API_KEY") or os.getenv("NVIDIA_API_KEY")
-        
-        # Sanitizar base_url: OpenAI SDK concatena /chat/completions por defecto.
+        # 1. Resolver API Key (Prioridad: Gemini -> Key Vault -> NVIDIA fallback)
+        self.api_key = (
+            api_key
+            or kv_get("GEMINI_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+            or kv_get("gemini-api-key")
+            or kv_get("NVIDIA_API_KEY")
+            or os.getenv("NVIDIA_API_KEY")
+        )
+
+        is_gemini = bool(self.api_key and not self.api_key.startswith("nvapi-"))
+
+        # 2. Resolver Base URL asegurando la regla crítica de terminar con '/'
+        if is_gemini:
+            default_base = "https://generativelanguage.googleapis.com/v1beta/openai/"
+            default_primary = "gemini-3.5-flash-lite"
+            default_fast = "gemini-3.5-flash-lite"
+        else:
+            default_base = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+            default_primary = os.getenv("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
+            default_fast = "deepseek-ai/deepseek-v4.1-flash"
+
         raw_base_url = (
             base_url
-            or kv_get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-            or os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-        ).strip().rstrip("/")
+            or kv_get("GEMINI_OPENAI_BASE_URL")
+            or os.getenv("GEMINI_OPENAI_BASE_URL")
+            or default_base
+        ).strip()
+        if "generativelanguage.googleapis.com" in raw_base_url and not raw_base_url.endswith("/"):
+            raw_base_url += "/"
+        elif not raw_base_url.endswith("/chat/completions") and not raw_base_url.endswith("/"):
+            raw_base_url = raw_base_url.rstrip("/")
         if raw_base_url.endswith("/chat/completions"):
             raw_base_url = raw_base_url[:-len("/chat/completions")].rstrip("/")
         self.base_url = raw_base_url
 
+        # 3. Modelos primario y de respaldo rápido
         self.model = (
             model
-            or kv_get("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
-            or os.getenv("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
+            or kv_get("GEMINI_JUDGE_MODEL")
+            or os.getenv("GEMINI_JUDGE_MODEL")
+            or default_primary
         )
-        
-        # Timeout amplio (120s por defecto) para permitir que NVIDIA NIM termine la inferencia
+        self.fast_model = (
+            fast_model
+            or kv_get("GEMINI_FAST_MODEL")
+            or os.getenv("GEMINI_FAST_MODEL")
+            or default_fast
+        )
+
+        # 4. Timeout (30s por defecto para balancear inferencia y latencia)
         self.timeout = timeout if timeout is not None else float(
-            kv_get("LLM_TIMEOUT", "120.0") or os.getenv("LLM_TIMEOUT", "120.0")
+            kv_get("LLM_TIMEOUT", "30.0") or os.getenv("LLM_TIMEOUT", "30.0")
         )
 
         if not self.api_key:
-            logger.warning("NVIDIA_API_KEY no configurada en variables de entorno o Key Vault")
+            logger.warning("Ni GEMINI_API_KEY ni NVIDIA_API_KEY están configuradas en variables de entorno o Key Vault.")
 
         self._client = None
 
@@ -160,6 +194,7 @@ class LLMJudgeService:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 timeout=self.timeout,
+                max_retries=0,
                 http_client=http_client,
             )
         return self._client
@@ -215,51 +250,98 @@ Genera el análisis en formato JSON estricto con las claves:
 - reconocimiento_afectados: {{"nivel": <int 1-5>, "criterio": "<justificación breve>", "evidencia_textual": "<cita o texto vacío>"}}
 """
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.1,
-                max_tokens=2048,
-                timeout=self.timeout,
-                response_format={"type": "json_object"},
-            )
-        except Exception as primary_err:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        parsed_eval: Optional[EvaluacionLLMResponse] = None
+        models_to_try = [
+            (self.model, "medium"),
+            (self.fast_model, "low"),
+        ]
+
+        logger.info(
+            f"[LLMJudge] Evaluando respuesta vocero con {self.model} (respaldo: {self.fast_model}, endpoint: {self.base_url}, timeout: {self.timeout}s)..."
+        )
+
+        last_error: Optional[Exception] = None
+
+        for target_model, effort in models_to_try:
+            for attempt in range(1, 3):
+                logger.info(f"[LLMJudge] Intentando {target_model} (intento {attempt}/2)...")
+                try:
+                    # 1. Intentar Structured Outputs vía beta.chat.completions.parse
+                    completion = self.client.beta.chat.completions.parse(
+                        model=target_model,
+                        messages=messages,
+                        temperature=0.2,
+                        response_format=EvaluacionLLMResponse,
+                        extra_body={"reasoning_effort": effort},
+                        timeout=self.timeout,
+                    )
+                    parsed_eval = completion.choices[0].message.parsed
+                    if parsed_eval:
+                        break
+                except Exception as parse_err:
+                    last_error = parse_err
+                    # Comprobar si el error es transitorio de servicio (429 RateLimit o 503 High Demand)
+                    status_code = getattr(parse_err, "status_code", None)
+                    if hasattr(parse_err, "response") and getattr(parse_err.response, "status_code", None):
+                        status_code = parse_err.response.status_code
+
+                    is_transient = (
+                        status_code in [429, 502, 503, 504]
+                        or "high demand" in str(parse_err).lower()
+                        or "503" in str(parse_err)
+                        or "504" in str(parse_err)
+                        or "timeout" in str(parse_err).lower()
+                    )
+
+                    if is_transient:
+                        if attempt == 1:
+                            logger.warning(
+                                f"[LLMJudge] Error transitorio con {target_model} (código {status_code}): {parse_err}. Reintentando en 2s para liberar cuota de ráfaga..."
+                            )
+                            time.sleep(2.0)
+                            continue
+                        else:
+                            logger.warning(
+                                f"[LLMJudge] Persiste error transitorio con {target_model} tras reintento. Cambiando de modelo..."
+                            )
+                            break
+
+                    # Si el error no es transitorio o falló parse, intentar fallback con json_object estándar
+                    try:
+                        raw_resp = self.client.chat.completions.create(
+                            model=target_model,
+                            messages=messages,
+                            temperature=0.2,
+                            max_tokens=2048,
+                            timeout=self.timeout,
+                            response_format={"type": "json_object"},
+                            extra_body={"reasoning_effort": effort},
+                        )
+                        raw_content = raw_resp.choices[0].message.content or ""
+                        if raw_content.strip():
+                            raw_json = _clean_and_parse_json(raw_content)
+                            parsed_eval = EvaluacionLLMResponse.model_validate(raw_json)
+                            break
+                    except Exception as json_err:
+                        last_error = json_err
+                        logger.warning(f"[LLMJudge] Falló intento con {target_model}: {json_err}")
+                        break
+
+            if parsed_eval is not None:
+                break
+            logger.warning(f"[LLMJudge] Cambiando a modelo alternativo tras fallo con {target_model}...")
+
+        if parsed_eval is None:
             err_detail = ""
-            if hasattr(primary_err, "response") and getattr(primary_err.response, "text", None):
-                err_detail = f" - Detalle API: {primary_err.response.text}"
-            elif hasattr(primary_err, "body"):
-                err_detail = f" - Detalle API: {primary_err.body}"
-
-            fallback_model = os.getenv("LLM_FALLBACK_MODEL", "deepseek-ai/deepseek-v4.1-flash")
-            logger.warning(
-                f"Fallo en intento principal con {self.model} ({primary_err}{err_detail}). Reintentando con modelo de respaldo {fallback_model}..."
-            )
-            try:
-                response = self.client.chat.completions.create(
-                    model=fallback_model,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.1,
-                    max_tokens=2048,
-                    timeout=self.timeout,
-                    response_format={"type": "json_object"},
-                )
-            except Exception as fallback_err:
-                fb_detail = ""
-                if hasattr(fallback_err, "response") and getattr(fallback_err.response, "text", None):
-                    fb_detail = f" - Detalle API: {fallback_err.response.text}"
-                logger.error(f"Fallo también en modelo de respaldo {fallback_model}: {fallback_err}{fb_detail}")
-                raise primary_err from fallback_err
-
-        content = response.choices[0].message.content
-        raw_json = _clean_and_parse_json(content)
-        parsed_eval = EvaluacionLLMResponse.model_validate(raw_json)
+            if hasattr(last_error, "response") and getattr(last_error.response, "text", None):
+                err_detail = f" - Detalle API: {last_error.response.text}"
+            logger.error(f"[LLMJudge] Fallo crítico evaluando respuesta tras reintentos: {last_error}{err_detail}")
+            raise RuntimeError(f"Error evaluando el contenido con LLM Juez: {last_error}{err_detail}") from last_error
 
         # Si hubo infracción de línea roja, asegurar Nivel 1 en consistencia_institucional
         if parsed_eval.infraccion_linea_roja:

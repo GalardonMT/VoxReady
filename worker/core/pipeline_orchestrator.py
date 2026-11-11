@@ -38,6 +38,7 @@ try:
         DynamicRubricConfig,
     )
     from services.db_service import DatabaseService
+    from services.keyvault_service import get_secret
 except (ImportError, ValueError):
     from worker.core.audio_analyzer import AudioAnalyzer
     from worker.core.llm_judge import LLMJudgeService
@@ -62,14 +63,35 @@ except (ImportError, ValueError):
         DynamicRubricConfig,
     )
     from worker.services.db_service import DatabaseService
+    try:
+        from worker.services.keyvault_service import get_secret
+    except ImportError:
+        get_secret = lambda k, d=None: os.getenv(k, d)
 
 logger = logging.getLogger("analysis-worker.orchestrator")
 
 STORAGE_CONN = os.getenv("STORAGE_CONNECTION_STRING")
 CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
-NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
+NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or get_secret("NVIDIA_API_KEY") or get_secret("nvidia-api-key") or "").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL_NAME", "deepseek-ai/deepseek-v4.1-flash")
+gemini_key = (os.getenv("GEMINI_API_KEY") or get_secret("GEMINI_API_KEY") or get_secret("gemini-api-key") or "").strip()
+
+if gemini_key:
+    LLM_API_KEY = gemini_key
+    raw_base = (os.getenv("GEMINI_OPENAI_BASE_URL") or get_secret("GEMINI_OPENAI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/").strip()
+    LLM_MODEL = (os.getenv("GEMINI_JUDGE_MODEL") or get_secret("GEMINI_JUDGE_MODEL") or "gemini-3.5-flash-lite").strip()
+    LLM_FAST_MODEL = (os.getenv("GEMINI_FAST_MODEL") or get_secret("GEMINI_FAST_MODEL") or "gemini-3.5-flash-lite").strip()
+else:
+    LLM_API_KEY = NVIDIA_API_KEY
+    raw_base = (os.getenv("NVIDIA_BASE_URL") or "https://integrate.api.nvidia.com/v1").strip()
+    LLM_MODEL = (os.getenv("LLM_MODEL_NAME") or "deepseek-ai/deepseek-v4.1-flash").strip()
+    LLM_FAST_MODEL = "deepseek-ai/deepseek-v4.1-flash"
+
+if "generativelanguage.googleapis.com" in raw_base and not raw_base.endswith("/"):
+    raw_base += "/"
+elif raw_base.endswith("/chat/completions"):
+    raw_base = raw_base[:-len("/chat/completions")].rstrip("/")
+LLM_BASE_URL = raw_base
 VISION_URL = os.getenv("VISION_SERVICE_URL")
 SQL_CONN_STR = os.getenv("SQL_CONNECTION_STRING") or os.getenv("DATABASE_URL")
 
@@ -363,6 +385,30 @@ def process_session_pipeline(
         if not os.path.exists(local_video_path) or os.path.getsize(local_video_path) == 0:
             raise ValueError(f"El archivo de grabación descargado está vacío o no es válido: '{blob_path}'")
 
+        # 1.1 Sellar evidencia inmutable de grabación para gobernanza y cola de etiquetado
+        recording_evidence = None
+        if STORAGE_CONN:
+            try:
+                try:
+                    from worker.services.recording_evidence import seal_recording_evidence
+                except ImportError:
+                    from services.recording_evidence import seal_recording_evidence
+
+                recording_evidence = seal_recording_evidence(
+                    storage_connection_string=STORAGE_CONN,
+                    container_name=CONTAINER_NAME or "recordings",
+                    source_blob_path=blob_path,
+                    local_path=local_video_path,
+                    session_id=session_id,
+                    job_id=job_id
+                )
+                logger.info(
+                    f"Evidencia de grabación sellada exitosamente: {recording_evidence.get('sealedPath')} "
+                    f"(SHA-256: {str(recording_evidence.get('sha256', ''))[:8]}...)"
+                )
+            except Exception as e_seal:
+                logger.warning(f"Aviso al sellar evidencia de grabación: {e_seal}")
+
         # 2. Extraer audio y fotogramas
         audio_path, frame_files = split_media(local_video_path, session_tmp_dir)
 
@@ -378,11 +424,12 @@ def process_session_pipeline(
 
         # 4. Análisis de Audio y Transcripción ASR (NVIDIA Riva + VAD RMS)
         logger.info("Ejecutando análisis acústico y transcripción de voz con NVIDIA Riva ASR...")
-        if not NVIDIA_API_KEY:
-            raise ValueError("NVIDIA_API_KEY no está configurada en el entorno.")
+        riva_key = NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY") or get_secret("NVIDIA_API_KEY") or get_secret("nvidia-api-key") or ""
+        if not riva_key:
+            raise ValueError("NVIDIA_API_KEY no está configurada en el entorno o Key Vault.")
 
         audio_analyzer = AudioAnalyzer(
-            api_key=NVIDIA_API_KEY,
+            api_key=riva_key,
             server=os.getenv("NVIDIA_RIVA_SERVER", "grpc.nvcf.nvidia.com:443"),
             function_id=os.getenv("NVIDIA_FUNCTION_ID", "71203149-d3b7-4460-8231-1be2543a1fca"),
             language_code=os.getenv("NVIDIA_LANGUAGE_CODE", "es-US")
@@ -409,6 +456,10 @@ def process_session_pipeline(
             raise ValueError("El servicio de transcripción (NVIDIA Riva ASR) no detectó palabras inteligibles en el audio.")
 
         audio_metrics = audio_res.get("metrics", {})
+        if words:
+            audio_metrics["words"] = words
+        if recording_evidence and total_duration > 0:
+            recording_evidence["durationSeconds"] = round(float(total_duration), 3)
         score_wpm = float(audio_metrics.get("score_wpm", 80.0))
         score_fluidez = float(audio_metrics.get("score_fluidez") if audio_metrics.get("score_fluidez") is not None else 0.0)
         score_diccion = float(audio_metrics.get("score_diccion") if audio_metrics.get("score_diccion") is not None else DICTION_FALLBACK_SCORE)
@@ -476,7 +527,6 @@ def process_session_pipeline(
                 logger.warning(f"Aviso actualizando respuesta para sesión sin turnos explícitos: {e_turns}")
 
         # 5. Evaluación de Contenido con LLM Juez
-        logger.info("Evaluando adherencia y control de crisis con LLM Juez (NVIDIA NIM)...")
         active_scen = db_metadata.get("scenario", {}) if isinstance(db_metadata, dict) else {}
         pregunta = "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
         mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el esclarecimiento de los hechos."]
@@ -484,10 +534,15 @@ def process_session_pipeline(
         red_lines = active_scen.get("red_lines") or []
 
         judge_svc = LLMJudgeService(
-            api_key=NVIDIA_API_KEY,
-            base_url=NVIDIA_BASE_URL,
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
             model=LLM_MODEL,
-            timeout=120.0
+            fast_model=LLM_FAST_MODEL,
+            timeout=30.0
+        )
+        logger.info(
+            f"Evaluando adherencia y control de crisis con LLM Juez "
+            f"[API Endpoint: {judge_svc.base_url}, Modelo: {judge_svc.model}, Respaldo: {judge_svc.fast_model}, Timeout: {judge_svc.timeout}s]..."
         )
         reporte_juez = judge_svc.evaluate_response(
             pregunta_periodista=pregunta,
@@ -566,12 +621,13 @@ def process_session_pipeline(
         )
 
         # 7. Generación Narrativa Ejecutiva VISUM (Llamada 2 a LLM)
-        logger.info("Generando Síntesis Ejecutiva VISUM con NVIDIA NIM...")
-        http_client = httpx.Client(verify=False, timeout=120.0)
+        logger.info(f"Generando Síntesis Ejecutiva VISUM [API Endpoint: {LLM_BASE_URL}, Modelo: {LLM_MODEL}]...")
+        http_client = httpx.Client(verify=False, timeout=30.0)
         client_visum = OpenAI(
-            base_url=NVIDIA_BASE_URL.rstrip("/").rstrip("/chat/completions"),
-            api_key=NVIDIA_API_KEY,
-            timeout=120.0,
+            base_url=LLM_BASE_URL,
+            api_key=LLM_API_KEY,
+            timeout=30.0,
+            max_retries=0,
             http_client=http_client
         )
         scenario_meta = {
@@ -640,6 +696,8 @@ def process_session_pipeline(
             segmented_turns=segmented_turns,
             governance=governance_metrics
         )
+        if recording_evidence:
+            cleaned_report["recordingEvidence"] = recording_evidence
 
         if db_svc and resolved_rubric_id:
             try:
@@ -656,19 +714,6 @@ def process_session_pipeline(
                 cleaned_report["reportId"] = report_id
                 cleaned_report["report_id"] = report_id
 
-                # Si la gobernanza exige revisión humana, enrutar a dbo.labeling_case
-                if governance_metrics.get("requires_human_review"):
-                    try:
-                        case_id = db_svc.create_labeling_case_if_needed(
-                            session_id=internal_session_id,
-                            rubric_version_id=resolved_rubric_id,
-                            reason=governance_metrics.get("labeling_reason")
-                        )
-                        if case_id:
-                            logger.info(f"Sesión {session_id} enrutada a dbo.labeling_case (ID: {case_id}, motivo: {governance_metrics.get('labeling_reason')})")
-                    except Exception as e_lab:
-                        logger.warning(f"Aviso creando labeling_case para sesión {session_id}: {e_lab}")
-
                 # Trazabilidad integral en analysis_pipeline_result (incluyendo fusion consolidado y governance)
                 pipeline_map = {
                     "vision": vision_metrics,
@@ -678,6 +723,26 @@ def process_session_pipeline(
                     "fusion": cleaned_report
                 }
                 persist_pipeline_results(db_svc, job_id, pipeline_map)
+
+                # Persistir caso en dbo.labeling_case para cola de etiquetado
+                try:
+                    case_id = db_svc.create_labeling_case_if_needed(
+                        session_id=internal_session_id,
+                        rubric_version_id=resolved_rubric_id,
+                        reason=governance_metrics.get("labeling_reason"),
+                        report_id=report_id,
+                        job_id=job_id,
+                        governance_metrics=governance_metrics,
+                        evidence=recording_evidence
+                    )
+                    if case_id:
+                        logger.info(
+                            f"Sesión {session_id} enrutada a dbo.labeling_case "
+                            f"(ID: {case_id}, motivo: {governance_metrics.get('labeling_reason') or 'routine'})"
+                        )
+                except Exception as e_lab:
+                    logger.warning(f"Aviso creando labeling_case para sesión {session_id}: {e_lab}")
+
                 update_analysis_job_status(db_svc, job_id, "completed")
             except Exception as dbe:
                 logger.error(f"Fallo en persistencia Azure SQL: {dbe}")
