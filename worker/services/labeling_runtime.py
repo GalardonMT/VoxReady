@@ -453,6 +453,128 @@ def ensure_labeling_case_for_report(cursor, report_id, *, materialize=True):
     return {"caseId": case_id, "created": True, **built}
 
 
+def _same_recording_evidence(row, evidence):
+    stored_digest = row[5]
+    if stored_digest is not None and not isinstance(stored_digest, bytes):
+        stored_digest = bytes(stored_digest)
+    return (
+        str(row[4] or "") == evidence["sealedPath"]
+        and stored_digest is not None
+        and stored_digest.hex() == evidence["sha256"]
+        and (str(row[6]) if row[6] else None) == evidence["versionId"]
+        and str(row[7] or "").strip() == evidence["etag"]
+        and str(row[8] or "").strip().lower() == evidence["contentType"]
+    )
+
+
+def _stored_recording_evidence_complete(row):
+    digest = row[5]
+    if digest is not None and not isinstance(digest, bytes):
+        digest = bytes(digest)
+    return (
+        str(row[4] or "").startswith("labeling-evidence/")
+        and digest is not None
+        and len(digest) == 32
+        and bool(str(row[7] or "").strip())
+        and str(row[8] or "").strip().lower().startswith("video/")
+    )
+
+
+def _stored_recording_evidence_conflicts(row, evidence):
+    digest = row[5]
+    if digest is not None and not isinstance(digest, bytes):
+        digest = bytes(digest)
+    comparisons = (
+        (row[4], evidence["sealedPath"]),
+        (digest.hex() if digest is not None else None, evidence["sha256"]),
+        (str(row[6]) if row[6] else None, evidence["versionId"]),
+        (str(row[7]).strip() if row[7] else None, evidence["etag"]),
+        (
+            str(row[8]).strip().lower() if row[8] else None,
+            evidence["contentType"],
+        ),
+    )
+    return any(
+        stored is not None and stored != supplied for stored, supplied in comparisons
+    )
+
+
+def repair_ambiguous_case(cursor, case_id, evidence, *, materialize=False):
+    """Repair one non-reviewable historical case using explicit sealed evidence."""
+    validated_evidence = validate_recording_evidence(evidence)
+    cursor.execute(
+        """SELECT id,report_id,status,source_status,recording_evidence_path,
+                  recording_sha256,recording_version_id,recording_etag,
+                  recording_content_type
+             FROM dbo.labeling_case WITH (UPDLOCK,HOLDLOCK)
+            WHERE id=?""",
+        case_id,
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise LabelingRuntimeError("El caso histórico no existe.")
+
+    result = {"caseId": str(row[0]), "repaired": False}
+    if str(row[2]) != "pending":
+        return {**result, "reason": "not_pending"}
+    source_status = str(row[3])
+    if source_status not in {"ambiguous", "partial"}:
+        if _same_recording_evidence(row, validated_evidence):
+            return {**result, "reason": "already_repaired"}
+        raise LabelingRuntimeError("El caso ya fue reparado con otra evidencia.")
+    if source_status == "partial" and _stored_recording_evidence_complete(row):
+        if _same_recording_evidence(row, validated_evidence):
+            return {**result, "reason": "already_valid"}
+        raise LabelingRuntimeError("El caso parcial ya tiene otra evidencia completa.")
+    if _stored_recording_evidence_conflicts(row, validated_evidence):
+        raise LabelingRuntimeError("El caso histórico contiene otra evidencia.")
+
+    report, areas, pipelines, metric_catalog, _ = _load_material(cursor, row[1])
+    built = build_labeling_snapshot(
+        report=report,
+        areas=areas,
+        pipeline_results=pipelines,
+        metric_catalog=metric_catalog,
+        evidence=validated_evidence,
+    )
+    if built["sourceStatus"] != "complete":
+        raise LabelingRuntimeError(
+            "El caso histórico no tiene un snapshot canónico completo."
+        )
+    if not materialize:
+        return {**result, "repairable": True, **built}
+
+    cursor.execute(
+        """UPDATE lc
+              SET queue_reason=?,reason_detail_json=?,ai_snapshot_json=?,
+                  source_status=?,recording_evidence_path=?,recording_version_id=?,
+                  recording_sha256=?,recording_etag=?,recording_content_type=?,
+                  recording_duration_seconds=?,content_revision=content_revision+1,
+                  updated_at=SYSUTCDATETIME()
+             FROM dbo.labeling_case AS lc
+            WHERE lc.id=? AND lc.status='pending'
+              AND lc.source_status IN ('ambiguous','partial')
+              AND NOT EXISTS (
+                  SELECT 1 FROM dbo.labeling_review AS lr
+                   WHERE lr.labeling_case_id=lc.id
+              )""",
+        built["queueReason"],
+        json.dumps(built["reasonDetail"], ensure_ascii=False, sort_keys=True),
+        json.dumps(built["snapshot"], ensure_ascii=False, sort_keys=True),
+        built["sourceStatus"],
+        validated_evidence["sealedPath"],
+        validated_evidence["versionId"],
+        bytes.fromhex(validated_evidence["sha256"]),
+        validated_evidence["etag"],
+        validated_evidence["contentType"],
+        validated_evidence["durationSeconds"],
+        str(row[0]),
+    )
+    if cursor.rowcount != 1:
+        raise LabelingRuntimeError("El caso histórico cambió durante la reparación.")
+    return {**result, "repaired": True, **built}
+
+
 def reconcile_completed_reports(cursor, *, limit=100, materialize=False):
     """Reconcile completed reports with exact evidence, including superseded ones."""
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 1000:

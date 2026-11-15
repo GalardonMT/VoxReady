@@ -4,7 +4,6 @@ import time
 import json
 import uuid
 import datetime
-from decimal import Decimal
 from typing import Optional, Dict, Any, Tuple, List
 try:
     from utils.logger import get_logger
@@ -330,6 +329,40 @@ class DatabaseService:
             return str(row[0])
         raise LookupError("Sesion no encontrada.")
 
+    def has_persisted_report(self, job_id: str, session_id: str) -> bool:
+        """Comprueba si el job ya confirmó un informe para esta sesión."""
+        try:
+            valid_job_uuid = str(uuid.UUID(str(job_id)))
+        except (TypeError, ValueError, AttributeError):
+            valid_job_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(job_id)))
+        with self._get_connection() as conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """IF @@TRANCOUNT=0 BEGIN TRANSACTION;
+                       DECLARE @lock_result int;
+                       EXEC @lock_result=sys.sp_getapplock
+                           @Resource=?, @LockMode='Exclusive',
+                           @LockOwner='Transaction', @LockTimeout=30000;
+                       IF @lock_result < 0
+                           THROW 51000, 'No fue posible confirmar el estado del job.', 1;""",
+                    f"voxready:analysis-job:{valid_job_uuid}",
+                )
+                valid_session_uuid = self._resolve_session_id(cur, session_id)
+                cur.execute(
+                    """SELECT TOP (1) 1
+                         FROM dbo.report
+                        WHERE analysis_job_id=? AND session_id=?""",
+                    valid_job_uuid,
+                    valid_session_uuid,
+                )
+                exists = cur.fetchone() is not None
+                conn.commit()
+                return exists
+            except Exception:
+                conn.rollback()
+                raise
+
     def finalize_session_analysis(
         self,
         session_id: str,
@@ -363,6 +396,56 @@ class DatabaseService:
         try:
             cur = conn.cursor()
             valid_session_uuid = self._resolve_session_id(cur, session_id)
+
+            # Un redelivery del mismo job puede ocurrir despues de confirmar el
+            # informe, pero antes de materializar los pipelines o el caso de
+            # etiquetado. Reutilizar ese informe permite reanudar el flujo sin
+            # crear otra version ni degradar una sesion ya completada.
+            if valid_job_uuid:
+                lock_resource = f"voxready:analysis-job:{valid_job_uuid}"
+                cur.execute("""
+                    IF @@TRANCOUNT=0 BEGIN TRANSACTION;
+                    DECLARE @lock_result int;
+                    EXEC @lock_result=sys.sp_getapplock
+                        @Resource=?, @LockMode='Exclusive',
+                        @LockOwner='Transaction', @LockTimeout=15000;
+                    IF @lock_result < 0
+                        THROW 51000, 'No fue posible serializar la persistencia del job.', 1;
+                """, lock_resource)
+                cur.execute("""
+                    SELECT TOP (2) id,session_id,rubric_version_id
+                    FROM dbo.report WITH (UPDLOCK,HOLDLOCK)
+                    WHERE analysis_job_id=?
+                    ORDER BY generated_at,id
+                """, valid_job_uuid)
+                existing_reports = list(cur.fetchall())
+                if len(existing_reports) > 1:
+                    raise ValueError("El job tiene mas de un informe persistido.")
+                if existing_reports:
+                    existing = existing_reports[0]
+                    same_identity = (
+                        str(existing[1]).lower() == str(valid_session_uuid).lower()
+                        and str(existing[2]).lower() == str(rubric_version_id).lower()
+                    )
+                    if not same_identity:
+                        raise ValueError(
+                            "El informe persistido para el job no coincide con la sesion o rubrica."
+                        )
+
+                    cur.execute("""
+                        UPDATE dbo.session
+                           SET status='completed',
+                               finished_at=COALESCE(finished_at,SYSUTCDATETIME()),
+                               updated_at=SYSUTCDATETIME()
+                         WHERE id=? AND status<>'completed'
+                    """, valid_session_uuid)
+                    conn.commit()
+                    logger.info(
+                        "Reutilizando Report ID %s ya persistido para el job %s.",
+                        existing[0],
+                        valid_job_uuid,
+                    )
+                    return str(existing[0])
 
             # 1. Insertar en report con analysis_job_id
             cur.execute("""
@@ -416,16 +499,11 @@ class DatabaseService:
         except Exception as e:
             conn.rollback()
             logger.error(f"Error persistiendo informe en SQL para {session_id} ({valid_session_uuid}): {e}")
-            try:
-                cur.execute("""
-                    UPDATE session
-                    SET status = 'failed', updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, valid_session_uuid)
-                conn.commit()
-            except Exception:
-                pass
-            raise e
+            # El estado operacional lo decide el orquestador despues del
+            # rollback. Mantenerlo fuera de esta transaccion evita que un
+            # redelivery concurrente degrade una sesion que otro worker ya
+            # completo correctamente.
+            raise
         finally:
             conn.close()
 
@@ -521,11 +599,18 @@ class DatabaseService:
         with self._get_connection() as conn:
             cur = conn.cursor()
             valid_session_uuid = self._resolve_session_id(cur, session_id)
-            cur.execute("""
-                UPDATE session
-                SET status = ?, updated_at = SYSUTCDATETIME()
-                WHERE id = ?
-            """, (status, valid_session_uuid))
+            if status == "failed":
+                cur.execute("""
+                    UPDATE session
+                    SET status = 'failed', updated_at = SYSUTCDATETIME()
+                    WHERE id = ? AND status <> 'completed'
+                """, valid_session_uuid)
+            else:
+                cur.execute("""
+                    UPDATE session
+                    SET status = ?, updated_at = SYSUTCDATETIME()
+                    WHERE id = ?
+                """, (status, valid_session_uuid))
             conn.commit()
             return True
 
@@ -609,209 +694,32 @@ class DatabaseService:
             logger.warning(f"Usando DynamicRubricConfig por defecto tras excepción SQL: {exc}")
         return cfg
 
-    def create_labeling_case_if_needed(
-        self,
-        session_id: str,
-        rubric_version_id: Optional[str] = None,
-        reason: Optional[str] = None,
-        report_id: Optional[str] = None,
-        job_id: Optional[str] = None,
-        governance_metrics: Optional[Dict[str, Any]] = None,
-        evidence: Optional[Dict[str, Any]] = None,
-    ) -> Optional[str]:
-        """
-        Inserta un caso pendiente en dbo.labeling_case cuando la sesión requiere auditoría o se completa.
-        Utiliza el pipeline canónico de labeling_runtime si es posible, con fallback seguro que cumple
-        el esquema estricto de dbo.labeling_case (queue_reason, reason_detail_json, ai_snapshot_json, etc.).
-        """
-        # 1. Intentar creación canónica usando ensure_labeling_case_for_report si hay report_id
-        if report_id:
-            try:
-                try:
-                    from worker.services.labeling_runtime import (
-                        ensure_labeling_case_for_report,
-                        runtime_enabled,
-                    )
-                except ImportError:
-                    from services.labeling_runtime import (
-                        ensure_labeling_case_for_report,
-                        runtime_enabled,
-                    )
-
-                if runtime_enabled():
-                    with self.get_connection() as conn:
-                        cursor = conn.cursor()
-                        result = ensure_labeling_case_for_report(cursor, str(report_id), materialize=True)
-                        conn.commit()
-                        if result and result.get("caseId"):
-                            logger.info(f"Caso de etiquetado canónico creado/asegurado: {result['caseId']}")
-                            return str(result["caseId"])
-            except Exception as e_canonical:
-                logger.warning(
-                    f"Aviso en ensure_labeling_case_for_report para report {report_id}: {e_canonical}. "
-                    "Intentando fallback directo conforme al esquema de dbo.labeling_case..."
-                )
-
-        # 2. Fallback resiliente que respeta el esquema formal de dbo.labeling_case
-        case_id = str(uuid.uuid4())
+    def create_labeling_case_if_needed(self, report_id: str) -> str:
+        """Create or return the canonical labeling case for an exact report."""
+        if not str(report_id or "").strip():
+            raise ValueError("report_id es obligatorio para crear el caso de etiquetado.")
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                valid_session_uuid = self._resolve_session_id(cursor, session_id)
+            from worker.services.labeling_runtime import (
+                ensure_labeling_case_for_report,
+                runtime_enabled,
+            )
+        except ImportError:
+            from services.labeling_runtime import (
+                ensure_labeling_case_for_report,
+                runtime_enabled,
+            )
 
-                resolved_report_id = str(report_id) if report_id else None
-                resolved_job_id = str(job_id) if job_id else None
-                resolved_rubric_id = str(rubric_version_id) if rubric_version_id else None
-                client_id = None
-                finished_at = None
+        if not runtime_enabled():
+            raise RuntimeError("El runtime de etiquetado está deshabilitado.")
 
-                if resolved_report_id:
-                    cursor.execute("""
-                        SELECT r.id, r.analysis_job_id, r.rubric_version_id, s.client_id,
-                               COALESCE(s.finished_at, s.updated_at, s.created_at, SYSUTCDATETIME())
-                        FROM dbo.report r
-                        JOIN dbo.[session] s ON s.id = r.session_id
-                        WHERE r.id = ?
-                    """, resolved_report_id)
-                    row = cursor.fetchone()
-                    if row:
-                        resolved_report_id = str(row[0])
-                        resolved_job_id = resolved_job_id or str(row[1])
-                        resolved_rubric_id = resolved_rubric_id or str(row[2])
-                        client_id = str(row[3])
-                        finished_at = row[4]
-
-                if not client_id:
-                    cursor.execute("""
-                        SELECT s.client_id, s.rubric_version_id,
-                               COALESCE(s.finished_at, s.updated_at, s.created_at, SYSUTCDATETIME())
-                        FROM dbo.[session] s
-                        WHERE s.id = ?
-                    """, valid_session_uuid)
-                    s_row = cursor.fetchone()
-                    if s_row:
-                        client_id = str(s_row[0])
-                        resolved_rubric_id = resolved_rubric_id or str(s_row[1])
-                        finished_at = finished_at or s_row[2]
-
-                if not resolved_report_id:
-                    cursor.execute("""
-                        SELECT TOP 1 r.id, r.analysis_job_id
-                        FROM dbo.report r
-                        WHERE r.session_id = ?
-                        ORDER BY r.generated_at DESC, r.version_no DESC
-                    """, valid_session_uuid)
-                    r_row = cursor.fetchone()
-                    if r_row:
-                        resolved_report_id = str(r_row[0])
-                        resolved_job_id = resolved_job_id or str(r_row[1])
-
-                if not resolved_job_id:
-                    cursor.execute("""
-                        SELECT TOP 1 j.id
-                        FROM dbo.analysis_job j
-                        WHERE j.session_id = ?
-                        ORDER BY j.created_at DESC
-                    """, valid_session_uuid)
-                    j_row = cursor.fetchone()
-                    if j_row:
-                        resolved_job_id = str(j_row[0])
-
-                if not client_id or not resolved_report_id or not resolved_job_id or not resolved_rubric_id:
-                    logger.warning(
-                        f"No se pudo resolver la identidad relacional para dbo.labeling_case "
-                        f"(client: {client_id}, report: {resolved_report_id}, job: {resolved_job_id}, rubric: {resolved_rubric_id})"
-                    )
-                    return None
-
-                # Evitar duplicados por report_id (UQ_labeling_case_report)
-                cursor.execute("SELECT id FROM dbo.labeling_case WHERE report_id = ?", resolved_report_id)
-                existing = cursor.fetchone()
-                if existing:
-                    return str(existing[0])
-
-                clean_reason = str(reason or "").strip().lower()
-                if clean_reason in ("critical", "borderline", "disparity", "routine"):
-                    queue_reason = clean_reason
-                elif clean_reason in ("low_confidence", "red_line", "audit", "human_review"):
-                    queue_reason = "critical"
-                else:
-                    queue_reason = "routine"
-
-                reason_detail = {
-                    "kind": queue_reason,
-                    "originalReason": str(reason or ""),
-                    "governance": governance_metrics or {}
-                }
-                reason_detail_json = json.dumps(reason_detail, ensure_ascii=False)
-
-                is_complete_evidence = False
-                rec_path = None
-                rec_version = None
-                rec_sha = None
-                rec_etag = None
-                rec_type = None
-                rec_dur = None
-
-                if isinstance(evidence, dict) and evidence.get("sealedPath") and evidence.get("sha256"):
-                    sha_str = str(evidence.get("sha256", "")).strip().lower()
-                    if len(sha_str) == 64:
-                        try:
-                            rec_sha = bytes.fromhex(sha_str)
-                            rec_path = str(evidence.get("sealedPath"))
-                            rec_version = str(evidence["versionId"]) if evidence.get("versionId") else None
-                            rec_etag = str(evidence.get("etag") or "sealed")
-                            rec_type = str(evidence.get("contentType") or "video/webm")
-                            dur_val = evidence.get("durationSeconds")
-                            rec_dur = Decimal(str(round(dur_val, 3))) if dur_val is not None else None
-                            is_complete_evidence = True
-                        except Exception:
-                            is_complete_evidence = False
-
-                source_status = "complete" if is_complete_evidence else "partial"
-
-                ai_snapshot = {
-                    "schemaVersion": 1,
-                    "identity": {
-                        "clientId": client_id,
-                        "sessionId": valid_session_uuid,
-                        "reportId": resolved_report_id,
-                        "analysisJobId": resolved_job_id,
-                        "rubricVersionId": resolved_rubric_id,
-                    },
-                    "sourceStatus": source_status,
-                    "queueReason": queue_reason,
-                }
-                ai_snapshot_json = json.dumps(ai_snapshot, ensure_ascii=False)
-
-                cursor.execute("""
-                    INSERT INTO dbo.labeling_case (
-                        id, client_id, session_id, report_id, analysis_job_id, rubric_version_id,
-                        session_finished_at, queue_reason, reason_detail_json, ai_snapshot_json,
-                        snapshot_schema_version, source_status, recording_evidence_path,
-                        recording_version_id, recording_sha256, recording_etag,
-                        recording_content_type, recording_duration_seconds, status,
-                        created_at, updated_at
-                    )
-                    VALUES (
-                        ?, ?, ?, ?, ?, ?,
-                        COALESCE(?, SYSUTCDATETIME()), ?, ?, ?,
-                        1, ?, ?,
-                        ?, ?, ?,
-                        ?, ?, 'pending',
-                        SYSUTCDATETIME(), SYSUTCDATETIME()
-                    )
-                """, (
-                    case_id, client_id, valid_session_uuid, resolved_report_id, resolved_job_id, resolved_rubric_id,
-                    finished_at, queue_reason, reason_detail_json, ai_snapshot_json,
-                    source_status, rec_path,
-                    rec_version, rec_sha, rec_etag,
-                    rec_type, rec_dur
-                ))
-                conn.commit()
-                logger.info(f"Caso de etiquetado insertado exitosamente en dbo.labeling_case (ID: {case_id}, motivo: {queue_reason})")
-                return case_id
-        except Exception as exc:
-            logger.error(f"No se pudo insertar en dbo.labeling_case para sesión {session_id}: {exc}", exc_info=True)
-            return None
+        with self.get_connection() as conn:
+            result = ensure_labeling_case_for_report(
+                conn.cursor(), str(report_id), materialize=True
+            )
+            case_id = result.get("caseId") if result else None
+            if not case_id:
+                raise RuntimeError("La creación canónica no devolvió un caso.")
+            conn.commit()
+        logger.info(f"Caso de etiquetado canónico creado/asegurado: {case_id}")
+        return str(case_id)
 

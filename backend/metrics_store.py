@@ -259,21 +259,27 @@ def get_ai_human_agreement_summary(conn) -> dict:
 
 def get_pending_labeling_cases_summary(conn) -> dict:
     """
-    Obtiene el conteo de casos pendientes en dbo.labeling_case desglosados por reason.
+    Obtiene los casos pendientes y revisables desglosados por queue_reason.
     """
     cursor = conn.cursor() if hasattr(conn, "cursor") else conn
     summary = {
         "total": 0,
-        "low_confidence": 0,
+        "critical": 0,
         "borderline": 0,
-        "random": 0,
+        "disparity": 0,
+        "routine": 0,
     }
     try:
         cursor.execute("""
-            SELECT reason, COUNT(1)
+            SELECT queue_reason, COUNT(1)
             FROM dbo.labeling_case
-            WHERE status = 'pending'
-            GROUP BY reason
+            WHERE status = 'pending' AND source_status <> 'ambiguous'
+              AND recording_evidence_path LIKE 'labeling-evidence/%'
+              AND recording_evidence_path NOT LIKE '%..%'
+              AND DATALENGTH(recording_sha256) = 32
+              AND NULLIF(LTRIM(RTRIM(recording_etag)), '') IS NOT NULL
+              AND LOWER(LTRIM(RTRIM(recording_content_type))) LIKE 'video/%'
+            GROUP BY queue_reason
         """)
         for reason_val, cnt in cursor.fetchall():
             r = str(reason_val or "").lower().strip()

@@ -138,12 +138,36 @@ def _wire_number(value):
     return int(integral) if parsed == integral else float(parsed)
 
 
+def _has_complete_recording_evidence(row):
+    path = str(row.get("recording_evidence_path") or "")
+    digest = row.get("recording_sha256")
+    if digest is not None and not isinstance(digest, bytes):
+        digest = bytes(digest)
+    return (
+        path.startswith("labeling-evidence/")
+        and ".." not in path
+        and digest is not None
+        and len(digest) == 32
+        and bool(str(row.get("recording_etag") or "").strip())
+        and str(row.get("recording_content_type") or "")
+        .strip()
+        .lower()
+        .startswith("video/")
+    )
+
+
+def _is_reviewable_source(row):
+    return (
+        str(row.get("source_status") or "") != "ambiguous"
+        and _has_complete_recording_evidence(row)
+    )
+
+
 def _lease_view(row, actor_id, now):
     status = str(row.get("status") or "")
-    source_status = str(row.get("source_status") or "")
     owner = row.get("lock_owner_id")
     expires = _naive_utc(row.get("lock_expires_at"))
-    if status == "reviewed" or source_status == "ambiguous":
+    if status == "reviewed" or not _is_reviewable_source(row):
         state = "not_claimable"
     elif owner is None:
         state = "available"
@@ -322,6 +346,7 @@ SELECT {top}
        lc.reason_detail_json,lc.ai_snapshot_json,lc.snapshot_schema_version,
        lc.source_status,lc.status,lc.lock_owner_id,lc.lock_expires_at,
        lc.lease_generation,lc.content_revision,lc.recording_evidence_path,
+       lc.recording_sha256,lc.recording_etag,lc.recording_content_type,
        lc.recording_duration_seconds,c.name AS client_name,s.user_id AS speaker_id,
        s.started_at,sc.title AS scenario_title,r.generated_at AS report_generated_at,
        r.overall_score,
@@ -359,12 +384,22 @@ def list_cases(cursor, *, status, limit=10, actor_id=None, now=None):
     limit = _limit(limit)
     actor = _uuid(actor_id, "actorId") if actor_id else None
     clock = _database_now(cursor, now)
+    visibility = (
+        " AND lc.source_status<>'ambiguous'"
+        " AND lc.recording_evidence_path LIKE 'labeling-evidence/%'"
+        " AND lc.recording_evidence_path NOT LIKE '%..%'"
+        " AND DATALENGTH(lc.recording_sha256)=32"
+        " AND NULLIF(LTRIM(RTRIM(lc.recording_etag)),'') IS NOT NULL"
+        " AND LOWER(LTRIM(RTRIM(lc.recording_content_type))) LIKE 'video/%'"
+        if status == "pending"
+        else ""
+    )
     cursor.execute(
-        """/* labeling:list:count */
+        f"""/* labeling:list:count */
         SELECT COUNT_BIG(*)
           FROM dbo.labeling_case AS lc
           JOIN dbo.[session] AS s ON s.id=lc.session_id AND s.is_deleted=0
-         WHERE lc.status=?""",
+         WHERE lc.status=?{visibility}""",
         status,
     )
     total_row = cursor.fetchone()
@@ -377,7 +412,7 @@ def list_cases(cursor, *, status, limit=10, actor_id=None, now=None):
     sql = (
         f"/* labeling:list:{status} */ "
         + _CASE_SELECT.format(top="TOP (?)")
-        + f" WHERE lc.status=? ORDER BY {order}"
+        + f" WHERE lc.status=?{visibility} ORDER BY {order}"
     )
     cursor.execute(sql, limit, status)
     items = [_case_payload(row, actor, clock) for row in _rows(cursor)]
@@ -402,6 +437,12 @@ def get_case_detail(cursor, case_id, *, actor_id=None, now=None):
     row = _single_dict(cursor)
     if not row:
         raise LabelingStoreError("CASE_NOT_FOUND", "Caso no encontrado.", status=404)
+    if row["status"] == "pending" and not _is_reviewable_source(row):
+        raise LabelingStoreError(
+            "SOURCE_NOT_REVIEWABLE",
+            "El caso no tiene evidencia sellada completa.",
+            status=409,
+        )
     return _case_payload(row, actor, clock, detail=True)
 
 
@@ -414,7 +455,8 @@ def _lock_case(cursor, case_id):
         """/* labeling:case:lock */
         SELECT id,client_id,status,source_status,lock_owner_id,lock_token_hash,
                lock_expires_at,lease_generation,content_revision,
-               ai_snapshot_json,rubric_version_id
+               ai_snapshot_json,rubric_version_id,recording_evidence_path,
+               recording_sha256,recording_etag,recording_content_type
           FROM dbo.labeling_case WITH (UPDLOCK,HOLDLOCK)
          WHERE id=?""",
         case_id,
@@ -434,6 +476,10 @@ def _lock_case(cursor, case_id):
         "content_revision",
         "ai_snapshot_json",
         "rubric_version_id",
+        "recording_evidence_path",
+        "recording_sha256",
+        "recording_etag",
+        "recording_content_type",
     )
     return dict(zip(keys, row))
 
@@ -487,7 +533,7 @@ def acquire_lease(
     _begin(cursor)
     clock = _database_now(cursor, now)
     case = _lock_case(cursor, case_id)
-    if case["source_status"] == "ambiguous" or (
+    if not _is_reviewable_source(case) or (
         case["status"] == "reviewed" and not allow_reviewed
     ):
         raise LabelingStoreError(
@@ -873,6 +919,12 @@ def submit_review(cursor, case_id, reviewer_id, request, *, now=None):
     _begin(cursor)
     clock = _database_now(cursor, now)
     case = _lock_case(cursor, case_id)
+    if not _is_reviewable_source(case):
+        raise LabelingStoreError(
+            "SOURCE_NOT_REVIEWABLE",
+            "El caso no tiene evidencia sellada completa.",
+            status=409,
+        )
     snapshot = _json_object(case["ai_snapshot_json"], "ai_snapshot_json")
     prepared = _prepare_review(snapshot, case["source_status"], request)
 

@@ -328,16 +328,23 @@ def test_agreement_evaluation_against_dynamic_target(monkeypatch):
 def test_pending_labeling_cases_summary():
     class Cursor:
         def __init__(self):
-            pass
+            self.sql = ""
         def execute(self, sql, *args):
+            self.sql = sql
             return self
         def fetchall(self):
-            return [("low_confidence", 3), ("borderline", 5), ("random", 2)]
+            return [("critical", 3), ("borderline", 5), ("routine", 2)]
 
     c = Cursor()
     res = metrics_store.get_pending_labeling_cases_summary(c)
     assert res["total"] == 10
-    assert res["low_confidence"] == 3
+    assert res["critical"] == 3
     assert res["borderline"] == 5
-    assert res["random"] == 2
+    assert res["routine"] == 2
+    assert "queue_reason" in c.sql
+    assert "source_status <> 'ambiguous'" in c.sql
+    assert "recording_evidence_path LIKE 'labeling-evidence/%'" in c.sql
+    assert "recording_evidence_path NOT LIKE '%..%'" in c.sql
+    assert "DATALENGTH(recording_sha256) = 32" in c.sql
+    assert "LOWER(LTRIM(RTRIM(recording_content_type))) LIKE 'video/%'" in c.sql
 

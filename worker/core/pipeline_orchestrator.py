@@ -38,7 +38,10 @@ try:
         DynamicRubricConfig,
     )
     from services.db_service import DatabaseService
+    from services.job_status import update_analysis_job_status
     from services.keyvault_service import get_secret
+    from services.pipeline_results import persist_pipeline_results
+    from services.recording_evidence import seal_recording_evidence
 except (ImportError, ValueError):
     from worker.core.audio_analyzer import AudioAnalyzer
     from worker.core.llm_judge import LLMJudgeService
@@ -63,6 +66,9 @@ except (ImportError, ValueError):
         DynamicRubricConfig,
     )
     from worker.services.db_service import DatabaseService
+    from worker.services.job_status import update_analysis_job_status
+    from worker.services.pipeline_results import persist_pipeline_results
+    from worker.services.recording_evidence import seal_recording_evidence
     try:
         from worker.services.keyvault_service import get_secret
     except ImportError:
@@ -297,46 +303,6 @@ def upload_report_to_blob(session_id: str, report_data: dict):
         logger.warning(f"Aviso al persistir reporte en Blob Storage: {e}")
 
 
-def persist_pipeline_results(db_svc: DatabaseService, job_id: str, results_map: Dict[str, Any]):
-    """Registra trazabilidad por pipeline en la tabla analysis_pipeline_result."""
-    try:
-        with db_svc._get_connection() as conn:
-            cur = conn.cursor()
-            for pipeline_name, result_data in results_map.items():
-                cur.execute("""
-                    INSERT INTO analysis_pipeline_result (
-                        id, analysis_job_id, pipeline, status, summary_json, created_at, updated_at
-                    )
-                    VALUES (NEWID(), ?, ?, 'completed', ?, SYSUTCDATETIME(), SYSUTCDATETIME())
-                """, (job_id, pipeline_name, json.dumps(result_data, ensure_ascii=False)))
-            conn.commit()
-            logger.info(f"Trazabilidad de pipelines persistida en analysis_pipeline_result para job {job_id}")
-    except Exception as e:
-        logger.warning(f"Aviso al guardar analysis_pipeline_result: {e}")
-
-
-def update_analysis_job_status(db_svc: DatabaseService, job_id: str, status: str, failure_reason: Optional[str] = None):
-    """Actualiza el estado de analysis_job a 'completed' o 'failed'."""
-    try:
-        with db_svc._get_connection() as conn:
-            cur = conn.cursor()
-            if status == "completed":
-                cur.execute("""
-                    UPDATE analysis_job
-                    SET status = 'completed', completed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, job_id)
-            else:
-                cur.execute("""
-                    UPDATE analysis_job
-                    SET status = 'failed', failure_reason = ?, updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, (str(failure_reason)[:500] if failure_reason else None, job_id))
-            conn.commit()
-    except Exception as e:
-        logger.warning(f"Aviso al actualizar analysis_job ({job_id}): {e}")
-
-
 def process_session_pipeline(
     session_id: str,
     job_id: str,
@@ -364,6 +330,7 @@ def process_session_pipeline(
 
     db_svc = None
     session_verified = False
+    report_persisted = False
     try:
         if not SQL_CONN_STR:
             raise RuntimeError("Azure SQL es obligatorio para resolver la sesion del analisis.")
@@ -386,28 +353,18 @@ def process_session_pipeline(
             raise ValueError(f"El archivo de grabación descargado está vacío o no es válido: '{blob_path}'")
 
         # 1.1 Sellar evidencia inmutable de grabación para gobernanza y cola de etiquetado
-        recording_evidence = None
-        if STORAGE_CONN:
-            try:
-                try:
-                    from worker.services.recording_evidence import seal_recording_evidence
-                except ImportError:
-                    from services.recording_evidence import seal_recording_evidence
-
-                recording_evidence = seal_recording_evidence(
-                    storage_connection_string=STORAGE_CONN,
-                    container_name=CONTAINER_NAME or "recordings",
-                    source_blob_path=blob_path,
-                    local_path=local_video_path,
-                    session_id=session_id,
-                    job_id=job_id
-                )
-                logger.info(
-                    f"Evidencia de grabación sellada exitosamente: {recording_evidence.get('sealedPath')} "
-                    f"(SHA-256: {str(recording_evidence.get('sha256', ''))[:8]}...)"
-                )
-            except Exception as e_seal:
-                logger.warning(f"Aviso al sellar evidencia de grabación: {e_seal}")
+        recording_evidence = seal_recording_evidence(
+            storage_connection_string=STORAGE_CONN,
+            container_name=CONTAINER_NAME or "recordings",
+            source_blob_path=blob_path,
+            local_path=local_video_path,
+            session_id=session_id,
+            job_id=job_id,
+        )
+        logger.info(
+            f"Evidencia de grabación sellada exitosamente: {recording_evidence['sealedPath']} "
+            f"(SHA-256: {recording_evidence['sha256'][:8]}...)"
+        )
 
         # 2. Extraer audio y fotogramas
         audio_path, frame_files = split_media(local_video_path, session_tmp_dir)
@@ -458,7 +415,7 @@ def process_session_pipeline(
         audio_metrics = audio_res.get("metrics", {})
         if words:
             audio_metrics["words"] = words
-        if recording_evidence and total_duration > 0:
+        if total_duration > 0:
             recording_evidence["durationSeconds"] = round(float(total_duration), 3)
         score_wpm = float(audio_metrics.get("score_wpm", 80.0))
         score_fluidez = float(audio_metrics.get("score_fluidez") if audio_metrics.get("score_fluidez") is not None else 0.0)
@@ -696,8 +653,7 @@ def process_session_pipeline(
             segmented_turns=segmented_turns,
             governance=governance_metrics
         )
-        if recording_evidence:
-            cleaned_report["recordingEvidence"] = recording_evidence
+        cleaned_report["recordingEvidence"] = recording_evidence
 
         if db_svc and resolved_rubric_id:
             try:
@@ -710,6 +666,7 @@ def process_session_pipeline(
                     rubric_areas=db_metadata.get("rubric_areas", {}),
                     job_id=job_id
                 )
+                report_persisted = True
                 logger.info(f"Reporte y puntajes persistidos en Azure SQL con ID: {report_id}")
                 cleaned_report["reportId"] = report_id
                 cleaned_report["report_id"] = report_id
@@ -724,24 +681,12 @@ def process_session_pipeline(
                 }
                 persist_pipeline_results(db_svc, job_id, pipeline_map)
 
-                # Persistir caso en dbo.labeling_case para cola de etiquetado
-                try:
-                    case_id = db_svc.create_labeling_case_if_needed(
-                        session_id=internal_session_id,
-                        rubric_version_id=resolved_rubric_id,
-                        reason=governance_metrics.get("labeling_reason"),
-                        report_id=report_id,
-                        job_id=job_id,
-                        governance_metrics=governance_metrics,
-                        evidence=recording_evidence
-                    )
-                    if case_id:
-                        logger.info(
-                            f"Sesión {session_id} enrutada a dbo.labeling_case "
-                            f"(ID: {case_id}, motivo: {governance_metrics.get('labeling_reason') or 'routine'})"
-                        )
-                except Exception as e_lab:
-                    logger.warning(f"Aviso creando labeling_case para sesión {session_id}: {e_lab}")
+                # Persistir caso canónico; no completar el job si falla la materialización.
+                case_id = db_svc.create_labeling_case_if_needed(report_id)
+                logger.info(
+                    f"Sesión {session_id} enrutada a dbo.labeling_case "
+                    f"(ID: {case_id}, motivo: {governance_metrics.get('labeling_reason') or 'routine'})"
+                )
 
                 update_analysis_job_status(db_svc, job_id, "completed")
             except Exception as dbe:
@@ -762,11 +707,34 @@ def process_session_pipeline(
             err_msg += f" - API Details: {ex.body}"
         logger.error(f"Fallo crítico en pipeline de sesión {session_id}: {err_msg}", exc_info=True)
         if db_svc and session_verified:
-            update_analysis_job_status(db_svc, job_id, "failed", failure_reason=err_msg)
-            try:
-                db_svc.update_session_status(session_id, "failed")
-            except Exception as dbe:
-                logger.warning(f"Aviso actualizando estado de sesión a 'failed': {dbe}")
+            update_analysis_job_status(
+                db_svc,
+                job_id,
+                "failed",
+                failure_reason=err_msg,
+                best_effort=True,
+            )
+            report_state_known = report_persisted
+            if not report_persisted:
+                try:
+                    report_persisted = db_svc.has_persisted_report(job_id, session_id)
+                    report_state_known = True
+                except Exception as report_check_error:
+                    logger.warning(
+                        "No se pudo confirmar si el job ya tiene informe; "
+                        "se preserva el estado de la sesión: %s",
+                        report_check_error,
+                    )
+            if report_state_known and not report_persisted:
+                try:
+                    db_svc.update_session_status(session_id, "failed")
+                except Exception as dbe:
+                    logger.warning(f"Aviso actualizando estado de sesión a 'failed': {dbe}")
+            elif report_persisted:
+                logger.error(
+                    "El análisis quedó persistido; la sesión permanece completed "
+                    "para permitir reconciliar la cola de etiquetado."
+                )
         raise ex
     finally:
         shutil.rmtree(session_tmp_dir, ignore_errors=True)

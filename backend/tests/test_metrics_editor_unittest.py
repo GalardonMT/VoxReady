@@ -114,18 +114,29 @@ class TestMetricsEditorUnittest(unittest.TestCase):
 
     def test_pending_labeling_cases_summary(self):
         class Cursor:
+            sql = ""
+
             def execute(self, sql, *args):
+                self.sql = sql
                 return self
 
             def fetchall(self):
-                return [("low_confidence", 3), ("borderline", 5), ("random", 2)]
+                return [("critical", 3), ("borderline", 5), ("routine", 2)]
 
         c = Cursor()
         res = metrics_store.get_pending_labeling_cases_summary(c)
         self.assertEqual(res["total"], 10)
-        self.assertEqual(res["low_confidence"], 3)
+        self.assertEqual(res["critical"], 3)
         self.assertEqual(res["borderline"], 5)
-        self.assertEqual(res["random"], 2)
+        self.assertEqual(res["routine"], 2)
+        self.assertIn("queue_reason", c.sql)
+        self.assertIn("source_status <> 'ambiguous'", c.sql)
+        self.assertIn("recording_evidence_path LIKE 'labeling-evidence/%'", c.sql)
+        self.assertIn("recording_evidence_path NOT LIKE '%..%'", c.sql)
+        self.assertIn("DATALENGTH(recording_sha256) = 32", c.sql)
+        self.assertIn(
+            "LOWER(LTRIM(RTRIM(recording_content_type))) LIKE 'video/%'", c.sql
+        )
 
     def test_schema_steps_include_labeling_tables(self):
         steps = " ".join(metrics_migration.SCHEMA_STEPS)
