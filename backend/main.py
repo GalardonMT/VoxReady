@@ -23,6 +23,8 @@ import metrics_store
 import client_store
 import client_scenarios as client_scenario_store
 import client_usage
+import master_dashboard_store
+from schemas.master_dashboard import MasterDashboardResponse
 from labeling_api import create_labeling_router, LabelingProblem
 
 # Cargar variables de entorno locales si existen
@@ -1260,6 +1262,16 @@ class MetricPublishRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+@app.get('/api/master/dashboard', response_model=MasterDashboardResponse)
+@app.get('/v1/master/dashboard', response_model=MasterDashboardResponse)
+@app.get('/v1/api/master/dashboard', response_model=MasterDashboardResponse)
+def master_dashboard(response: Response, user: dict = Depends(verify_token)):
+    response.headers['Cache-Control'] = 'no-store'
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return master_dashboard_store.dashboard(cursor)
+
+
 @app.get('/api/master/metrics')
 @app.get('/v1/api/master/metrics')
 def master_metrics(user: dict = Depends(verify_token)):
@@ -1309,21 +1321,6 @@ def master_discard_metric_draft(draft_id: uuid.UUID, payload: MetricPublishReque
     with master_store.database(SQL_CONN_STR) as cursor:
         master_store.resolve_user(cursor, user, master=True)
         metrics_store.discard_draft(cursor, draft_id, payload.revision)
-
-
-@app.get('/api/master/dashboard')
-@app.get('/v1/master/dashboard')
-@app.get('/v1/api/master/dashboard')
-def master_dashboard(user: dict = Depends(verify_token)):
-    with master_store.database(SQL_CONN_STR) as cursor:
-        master_store.resolve_user(cursor, user, master=True)
-        agreement_summary = metrics_store.get_ai_human_agreement_summary(cursor)
-        labeling_cases = metrics_store.get_pending_labeling_cases_summary(cursor)
-        return {
-            "agreementSummary": agreement_summary,
-            "labelingCases": labeling_cases,
-        }
-
 
 
 @app.get('/api/master/clients')

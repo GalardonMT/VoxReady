@@ -1,5 +1,42 @@
 export type Role = 'spokesperson' | 'client_admin' | 'master_config';
 
+export interface MasterDashboardResponse {
+  generatedAt: string;
+  activeClients: number;
+  sessionsWeek: {
+    timezone: 'UTC';
+    period: { from: string; to: string };
+    previousPeriod: { from: string; to: string };
+    count: number;
+    previousCount: number;
+    changePercent: number | null;
+    changeStatus: 'available' | 'no_previous_sessions';
+  };
+  pendingReviewCount: number;
+  publishedVersion: {
+    id: string;
+    versionLabel: string;
+    versionNumber: number;
+    publishedAt: string | null;
+  } | null;
+  scoreDistribution: {
+    population: 'all_completed_current_reports';
+    sampleCount: number;
+    bins: Array<{
+      label: string;
+      lowerBound: number;
+      upperBound: number;
+      upperInclusive: boolean;
+      count: number;
+    }>;
+    mean: number | null;
+    standardDeviation: number | null;
+    standardDeviationKind: 'population';
+    modalRanges: string[];
+  };
+  quality: { status: 'definition_required'; agreementPercent: null; kappa: null };
+}
+
 export type LifecycleStatus = 'active' | 'archived';
 export type ClientStatus = 'active' | 'suspended';
 export type MasterOptics = 'empathetic' | 'formal' | 'technical';

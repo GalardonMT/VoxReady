@@ -118,7 +118,7 @@ function MasterContent() {
       </header>
 
       <main className="canvas">
-        {masterScreen === 'm1' && <MasterDashboard onNavigate={handleMasterNavigate} />}
+        {masterScreen === 'm1' && <MasterDashboard onNavigate={handleMasterNavigate} labelingEnabled={labelingUiEnabled} />}
         {masterScreen === 'm2' && <RubricEditorView onNavigate={handleMasterNavigate} />}
         {metricsVisited && <div hidden={masterScreen !== 'm7'}><MetricsEditorView onNavigate={handleMasterNavigate} /></div>}
         {labelingUiEnabled && masterScreen === 'm3' && <LabelingQueueView onNavigate={handleMasterNavigate} />}
