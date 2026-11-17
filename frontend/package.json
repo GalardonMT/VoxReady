@@ -8,6 +8,8 @@
     "start": "npx serve@latest out -l 3000",
     "lint": "eslint",
     "test:routes": "node --experimental-strip-types tests/routeAccess.test.mjs",
+    "test:client-admin": "node --experimental-strip-types --test tests/clientAdminCleanup.test.mjs",
+    "test:client-scenarios": "node --experimental-strip-types --test tests/clientScenarioService.test.mjs",
     "test:labeling": "node --experimental-strip-types --test tests/labelingModel.test.mjs tests/labelingReviewModel.test.mjs tests/labelingRecordingModel.test.mjs tests/qualityReviewModel.test.mjs"
   },
   "dependencies": {
