@@ -55,8 +55,8 @@ export const es = {
     u6: "Informe tipo coach",
     u7: "Mi progreso",
     a1: "Panel del cliente",
-    a2: "Editor de tema",
-    a3: "Política de retención",
+    a2: "Voceros",
+    a4: "Actividad y uso",
     m1: "Panel maestro",
     m2: "Editor de rúbrica / patrón",
     m3: "Cola de etiquetado"
@@ -217,18 +217,10 @@ export const es = {
     a1: {
       crumbs: "Admin del cliente",
       title: "Panel del cliente",
-      sub: "El admin gestiona temas, usuarios y uso. No ve cómo se evalúa.",
-      st: ["Temas activos", "Voceros", "Sesiones (mes)", "Global medio"],
-      themesL: "Temas configurados",
-      newT: "+ Nuevo tema",
-      th: ["Tema", "Público interno", "Idiomas", "Retención", "Acciones"],
-      edit: "Editar",
-      rows: [
-        ["Retiro de producto", "Dirección", "ES, EN", "90 días"],
-        ["Incidente de seguridad", "Planta", "ES", "Solo métricas"],
-        ["Crisis reputacional", "Dirección", "ES, EN, PT", "30 días"]
-      ],
-      note: "La tabla expone público interno y retención porque son las decisiones estratégicas que el admin toca a diario."
+      sub: "El admin consulta los temas asignados por el Maestro y gestiona el uso de su organización.",
+      st: ["Temas activos", "Voceros", "Sesiones (mes)", "Participación"],
+      themesL: "Temas asignados",
+      th: ["Tema", "Público interno", "Idiomas"]
     },
     a2: {
       crumbs: "Admin del cliente › Temas",
@@ -249,23 +241,6 @@ export const es = {
       save: "Guardar tema",
       preview: "Vista previa de una sesión",
       note: "Mensajes clave y líneas rojas se editan como listas claras; alimentan la evaluación de “coherencia” aunque el admin no vea la rúbrica de scoring."
-    },
-    a3: {
-      crumbs: "Admin del cliente › Configuración",
-      title: "Política de retención y privacidad biométrica",
-      sub: "Decisión sensible de datos biométricos. La define el admin del cliente según UK GDPR.",
-      q1: "¿Qué se conserva tras cada sesión?",
-      opt1: "Video + audio completos y métricas (permite autorrevisión y coaching)",
-      opt2: "Solo métricas derivadas (no se almacena la grabación cruda)",
-      termL: "Plazo de conservación de grabaciones",
-      terms: ["30 días", "90 días", "180 días", "Personalizado"],
-      termLeg: "Al expirar, las grabaciones se borran/anonimizan automáticamente mediante jobs por tenant.",
-      delL: "Solicitudes de borrado por voceros (derecho al olvido)",
-      th: ["Usuario", "Fecha solicitud", "Estado", "Acción"],
-      delRow: ["Vocero #14 (Ana Torres)", "22 de junio de 2026", "Pendiente"],
-      process: "Procesar borrado",
-      processedMsg: "Grabación borrada y anonimizada con éxito.",
-      note: "El borrado por expiración y a solicitud son funciones de primera clase, no ajustes ocultos — exigido por el tratamiento de datos biométricos."
     },
     m1: {
       crumbs: "Configurador maestro",

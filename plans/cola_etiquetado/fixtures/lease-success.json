@@ -1,9 +1,0 @@
-{
-  "caseId": "10000000-0000-4000-8000-000000000001",
-  "leaseToken": "fixture-token-not-a-real-secret",
-  "leaseGeneration": 4,
-  "contentRevision": 1,
-  "expiresAt": "2026-10-27T19:20:00Z",
-  "serverTime": "2026-10-27T19:00:00Z",
-  "readOnly": false
-}

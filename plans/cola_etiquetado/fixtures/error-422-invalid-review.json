@@ -1,8 +1,0 @@
-{
-  "type": "https://voxready.example/problems/invalid-observation-value",
-  "title": "El valor corregido no es válido",
-  "status": 422,
-  "detail": "La corrección no coincide con el tipo o la envolvente técnica de la observación.",
-  "code": "INVALID_OBSERVATION_VALUE",
-  "correlationId": "fixture-correlation-422"
-}

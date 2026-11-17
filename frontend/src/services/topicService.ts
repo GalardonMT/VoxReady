@@ -2,8 +2,8 @@
  * Service for Topics & Scenarios management (Client Admin)
  */
 import { apiFetch, isAccessError } from './apiClient';
-import { TopicConfig, RetentionSettings, InstitutionalOptics, InternalAudience } from '../types/api';
-import { INITIAL_TOPICS, INITIAL_RETENTION_SETTINGS } from '../mock/mockData';
+import { TopicConfig, InstitutionalOptics, InternalAudience } from '../types/api';
+import { INITIAL_TOPICS } from '../mock/mockData';
 
 const TOPICS_STORAGE_KEY = 'voxready_topics';
 
@@ -14,20 +14,9 @@ interface BackendTopic {
   optics: string;
   audience: string;
   languages?: string[];
-  retentionDays?: number;
   keyMessages?: string[];
   redLines?: string[];
 }
-
-// Mapeo de ópticas entre UI (Español) y Backend (Inglés)
-const opticsToBackendMap: Record<string, 'empathetic' | 'formal' | 'technical'> = {
-  'Empática': 'empathetic',
-  'empathetic': 'empathetic',
-  'Formal': 'formal',
-  'formal': 'formal',
-  'Técnica': 'technical',
-  'technical': 'technical'
-};
 
 const opticsToFrontendMap: Record<string, InstitutionalOptics> = {
   'empathetic': 'Empática',
@@ -72,7 +61,6 @@ export const topicService = {
           optics: opticsToFrontendMap[item.optics] || 'Empática',
           audience: (item.audience as InternalAudience) || 'Dirección',
           languages: (item.languages || ['es']).map((l: string) => l.toUpperCase()),
-          retention: item.retentionDays ? `${item.retentionDays} días` : '90 días',
           keyMessages: item.keyMessages || [],
           redLines: item.redLines || []
         }));
@@ -89,137 +77,5 @@ export const topicService = {
       // Fallback a localStorage o datos iniciales
     }
     return getStoredTopics();
-  },
-
-  /**
-   * Obtiene un tema específico por su ID
-   */
-  async getTopicById(id: string): Promise<TopicConfig | null> {
-    const topics = await this.getTopics();
-    return topics.find((t) => t.id === id) || null;
-  },
-
-  /**
-   * Guarda o actualiza un tema institucional
-   */
-  async saveTopic(topicData: Partial<TopicConfig>): Promise<TopicConfig> {
-    const currentList = getStoredTopics();
-    const isNew = !topicData.id || topicData.id === 'new';
-    const topicId = isNew ? `top-${Date.now()}` : topicData.id!;
-
-    const opticsVal = topicData.optics || 'Empática';
-    const backendOptics = opticsToBackendMap[opticsVal] || 'empathetic';
-
-    const normalizedLanguages = (
-      topicData.languages && topicData.languages.length > 0 ? topicData.languages : ['ES']
-    ).map((l) => l.toUpperCase());
-
-    const backendLangs = normalizedLanguages.map(
-      (l) => l.toLowerCase() as 'es' | 'en' | 'pt'
-    );
-
-    const validKeyMessages =
-      topicData.keyMessages && topicData.keyMessages.length > 0
-        ? topicData.keyMessages
-        : [topicData.name || 'Mensaje institucional principal.'];
-
-    const validRedLines = topicData.redLines || [];
-
-    const payload = {
-      name: topicData.name?.trim() || 'Nuevo tema de crisis',
-      context: topicData.context?.trim() || 'Contexto de crisis',
-      optics: backendOptics,
-      audience: topicData.audience || 'Dirección',
-      languages: backendLangs,
-      keyMessages: validKeyMessages,
-      redLines: validRedLines
-    };
-
-    let savedId = topicId;
-
-    // Intentar sincronizar con backend si está disponible
-    try {
-      if (!isNew && !topicId.startsWith('top-')) {
-        await apiFetch(`/topics/${topicId}`, {
-          method: 'PUT',
-          body: JSON.stringify(payload)
-        });
-      } else {
-        const res = await apiFetch<{ id: string; name: string }>('/topics', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-        if (res && res.id) {
-          savedId = res.id;
-        }
-      }
-    } catch (error) {
-      throw error;
-    }
-
-    const savedTopic: TopicConfig = {
-      id: savedId,
-      name: payload.name,
-      context: payload.context,
-      optics: opticsToFrontendMap[backendOptics] || 'Empática',
-      audience: payload.audience as InternalAudience,
-      languages: normalizedLanguages,
-      retention: topicData.retention || '90 días',
-      keyMessages: validKeyMessages,
-      redLines: validRedLines
-    };
-
-    let updatedList: TopicConfig[];
-    if (isNew) {
-      updatedList = [savedTopic, ...currentList];
-    } else {
-      updatedList = currentList.map((t) => (t.id === topicId ? savedTopic : t));
-    }
-
-    setStoredTopics(updatedList);
-    return savedTopic;
-  },
-
-  /**
-   * Elimina un tema
-   */
-  async deleteTopic(id: string): Promise<TopicConfig[]> {
-    try {
-      if (!id.startsWith('top-')) {
-        await apiFetch(`/topics/${id}`, { method: 'DELETE' });
-      }
-    } catch (error) {
-      throw error;
-    }
-
-    const currentList = getStoredTopics();
-    const filtered = currentList.filter((t) => t.id !== id);
-    setStoredTopics(filtered);
-    return filtered;
-  },
-
-  /**
-   * Obtiene la configuración de política de retención
-   */
-  async getRetentionSettings(): Promise<RetentionSettings> {
-    try {
-      return await apiFetch<RetentionSettings>('/privacy/retention');
-    } catch (error) { if (isAccessError(error)) throw error;
-      return INITIAL_RETENTION_SETTINGS;
-    }
-  },
-
-  /**
-   * Actualiza la política de retención
-   */
-  async updateRetentionSettings(settings: Partial<RetentionSettings>): Promise<RetentionSettings> {
-    try {
-      return await apiFetch<RetentionSettings>('/privacy/retention', {
-        method: 'PUT',
-        body: JSON.stringify(settings)
-      });
-    } catch (error) {
-      throw error;
-    }
   }
 };

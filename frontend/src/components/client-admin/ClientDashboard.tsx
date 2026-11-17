@@ -3,21 +3,18 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { topicService } from '../../services/topicService';
+import { clientAdminService } from '../../services/clientAdminService';
 import { TopicConfig } from '../../types/api';
 
-export type AdminScreen = 'a1' | 'a2' | 'a3';
-
-interface ClientDashboardProps {
-  onNavigate: (screen: AdminScreen, topicId?: string | null) => void;
-}
-
-export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) => {
+export const ClientDashboard: React.FC = () => {
   const { t } = useI18n();
   const d = t.L.a1;
 
   const [topics, setTopics] = useState<TopicConfig[]>([]);
+  const [spokespersonCount, setSpokespersonCount] = useState<number | null>(null);
+  const [completedSessions, setCompletedSessions] = useState<number | null>(null);
+  const [participationRate, setParticipationRate] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -36,23 +33,42 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) 
         }
       }
     }
+    async function loadSpokespersonCount() {
+      try {
+        const items = await clientAdminService.spokespersons();
+        if (isMounted) setSpokespersonCount(items.length);
+      } catch {
+        if (isMounted) setSpokespersonCount(null);
+      }
+    }
+    async function loadUsageSummary() {
+      try {
+        const result = await clientAdminService.usage({ days: 30 });
+        if (isMounted) {
+          setCompletedSessions(result.summary.completedSessions);
+          setParticipationRate(result.summary.participationRate);
+        }
+      } catch {
+        if (isMounted) {
+          setCompletedSessions(null);
+          setParticipationRate(null);
+        }
+      }
+    }
     loadTopics();
+    loadSpokespersonCount();
+    loadUsageSummary();
     return () => {
       isMounted = false;
     };
   }, []);
 
-  const handleDelete = async (id: string) => {
-    try {
-      const updated = await topicService.deleteTopic(id);
-      setTopics(updated);
-      setDeleteConfirmId(null);
-    } catch {
-      alert('Error al eliminar el tema.');
-    }
-  };
-
-  const statValues = [topics.length, 38, 152, 71];
+  const statValues: Array<number | string> = [
+    topics.length,
+    spokespersonCount ?? '—',
+    completedSessions ?? '—',
+    participationRate === null ? '—' : `${participationRate}%`,
+  ];
 
   return (
     <div className="canvas-content">
@@ -66,7 +82,7 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) 
         ))}
       </div>
 
-      {/* Themes Table Section Header */}
+      {/* Assigned topics are managed by the Master role and are read-only here. */}
       <div
         className="card"
         style={{
@@ -82,16 +98,9 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) 
             📋 {d.themesL} ({topics.length})
           </div>
           <div style={{ fontSize: '12.5px', color: 'var(--muted)', marginTop: '2px' }}>
-            Temas y escenarios de crisis configurados para la práctica de tus voceros
+            Temas y escenarios asignados por el configurador Maestro a tu organización
           </div>
         </div>
-        <button
-          type="button"
-          className="btn pri"
-          onClick={() => onNavigate('a2', 'new')}
-        >
-          {d.newT}
-        </button>
       </div>
 
       {/* Themes Table */}
@@ -102,16 +111,9 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) 
           </div>
         ) : topics.length === 0 ? (
           <div style={{ padding: '40px 20px', textAlign: 'center' }}>
-            <p style={{ color: 'var(--muted)', fontSize: '14px', marginBottom: '14px' }}>
-              No hay temas configurados todavía.
+            <p style={{ color: 'var(--muted)', fontSize: '14px' }}>
+              El configurador Maestro todavía no ha asignado temas a tu organización.
             </p>
-            <button
-              type="button"
-              className="btn pri"
-              onClick={() => onNavigate('a2', 'new')}
-            >
-              ➕ Crear el primer tema
-            </button>
           </div>
         ) : (
           <table className="wf">
@@ -121,8 +123,6 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) 
                 <th>{d.th[1] || 'Público interno'}</th>
                 <th>Óptica</th>
                 <th>{d.th[2] || 'Idiomas'}</th>
-                <th>{d.th[3] || 'Retención'}</th>
-                <th style={{ textAlign: 'right' }}>{d.th[4] || 'Acciones'}</th>
               </tr>
             </thead>
             <tbody>
@@ -171,53 +171,6 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) 
                           {lang}
                         </span>
                       ))}
-                    </div>
-                  </td>
-                  <td>
-                    <span className="tagm">{topic.retention || '90 días'}</span>
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
-                      <button
-                        type="button"
-                        className="btn"
-                        style={{ padding: '4px 10px', fontSize: '11.5px' }}
-                        onClick={() => onNavigate('a2', topic.id)}
-                        title="Editar tema"
-                      >
-                        ✏️ {d.edit || 'Editar'}
-                      </button>
-
-                      {deleteConfirmId === topic.id ? (
-                        <div style={{ display: 'inline-flex', gap: '4px', alignItems: 'center' }}>
-                          <button
-                            type="button"
-                            className="btn danger"
-                            style={{ padding: '4px 8px', fontSize: '11px', background: 'var(--danger)', color: '#fff' }}
-                            onClick={() => handleDelete(topic.id)}
-                          >
-                            Confirmar
-                          </button>
-                          <button
-                            type="button"
-                            className="btn ghost"
-                            style={{ padding: '4px 6px', fontSize: '11px' }}
-                            onClick={() => setDeleteConfirmId(null)}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn ghost"
-                          style={{ padding: '4px 8px', fontSize: '11.5px', color: 'var(--muted)' }}
-                          onClick={() => setDeleteConfirmId(topic.id)}
-                          title="Eliminar tema"
-                        >
-                          🗑️
-                        </button>
-                      )}
                     </div>
                   </td>
                 </tr>

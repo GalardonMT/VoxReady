@@ -21,6 +21,7 @@ import spokesperson_store
 import microlessons as microlesson_store
 import metrics_store
 import client_store
+import client_usage
 from labeling_api import create_labeling_router, LabelingProblem
 
 # Cargar variables de entorno locales si existen
@@ -1257,6 +1258,147 @@ def master_link_spokespersons(
     with master_store.database(SQL_CONN_STR) as cursor:
         master_store.resolve_user(cursor, user, master=True)
         return client_store.link_spokespersons(cursor, client_id, payload.spokespersonIds)
+
+
+@app.get('/api/client/spokespersons')
+@app.get('/v1/api/client/spokespersons')
+def client_spokespersons(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        items = client_store.list_client_spokespersons(cursor, profile['client_id'])
+        return {'items': items, 'total': len(items)}
+
+
+@app.get('/api/client/usage')
+@app.get('/v1/api/client/usage')
+def client_usage_summary(
+    days: int = Query(30),
+    user_id: uuid.UUID | None = Query(None, alias='userId'),
+    scenario_id: uuid.UUID | None = Query(None, alias='scenarioId'),
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_usage(
+            cursor,
+            profile['client_id'],
+            days=days,
+            user_id=user_id,
+            scenario_id=scenario_id,
+        )
+
+
+@app.get('/api/client/usage/recent')
+@app.get('/v1/api/client/usage/recent')
+def client_recent_activity(
+    days: int = Query(30),
+    user_id: uuid.UUID | None = Query(None, alias='userId'),
+    scenario_id: uuid.UUID | None = Query(None, alias='scenarioId'),
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias='pageSize', ge=1, le=20)] = 5,
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_recent_activity(
+            cursor,
+            profile['client_id'],
+            days=days,
+            user_id=user_id,
+            scenario_id=scenario_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+
+
+@app.get('/api/client/spokespersons/{spokesperson_id}/detail')
+@app.get('/v1/api/client/spokespersons/{spokesperson_id}/detail')
+def client_spokesperson_detail(
+    spokesperson_id: uuid.UUID,
+    days: int = Query(30),
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_spokesperson_detail(
+            cursor, profile['client_id'], spokesperson_id, days=days,
+        )
+
+
+@app.get('/api/client/spokespersons/{spokesperson_id}/sessions')
+@app.get('/v1/api/client/spokespersons/{spokesperson_id}/sessions')
+def client_spokesperson_sessions(
+    spokesperson_id: uuid.UUID,
+    days: int = Query(30),
+    status: Literal['all', 'completed', 'in_progress', 'abandoned'] = 'all',
+    scenario_id: uuid.UUID | None = Query(None, alias='scenarioId'),
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias='pageSize', ge=1, le=20)] = 5,
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_spokesperson_sessions(
+            cursor,
+            profile['client_id'],
+            spokesperson_id,
+            days=days,
+            status=status,
+            scenario_id=scenario_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+
+
+@app.get('/api/client/spokespersons/{spokesperson_id}/microlessons')
+@app.get('/v1/api/client/spokespersons/{spokesperson_id}/microlessons')
+def client_spokesperson_microlessons(
+    spokesperson_id: uuid.UUID,
+    days: int = Query(30),
+    status: Literal['all', 'assigned', 'in_progress', 'completed', 'revoked'] = 'all',
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias='pageSize', ge=1, le=20)] = 5,
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_spokesperson_microlessons(
+            cursor,
+            profile['client_id'],
+            spokesperson_id,
+            days=days,
+            status=status,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
 
 
 @app.get('/api/master/topics')

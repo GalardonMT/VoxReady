@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "npx serve@latest out -l 3000",
     "lint": "eslint",
+    "test:client-admin": "node --test tests/clientAdminScope.test.mjs",
     "test:routes": "node --experimental-strip-types tests/routeAccess.test.mjs",
     "test:labeling": "node --experimental-strip-types --test tests/labelingModel.test.mjs tests/labelingReviewModel.test.mjs tests/labelingRecordingModel.test.mjs tests/qualityReviewModel.test.mjs"
   },

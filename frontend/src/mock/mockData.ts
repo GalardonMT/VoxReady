@@ -2,7 +2,6 @@ import {
   Scenario,
   DemoMicrolesson,
   TopicConfig,
-  RetentionSettings,
   MasterRubric,
   CoachReport,
   UserSession
@@ -186,7 +185,6 @@ export const INITIAL_TOPICS: TopicConfig[] = [
     optics: 'Empática',
     audience: 'Dirección',
     languages: ['ES', 'EN'],
-    retention: '90 días',
     keyMessages: [
       'La salud y seguridad de nuestros usuarios es la prioridad intransable.',
       'Hemos habilitado canales de canje y devolución inmediata sin costo.'
@@ -203,7 +201,6 @@ export const INITIAL_TOPICS: TopicConfig[] = [
     optics: 'Técnica',
     audience: 'Planta',
     languages: ['ES'],
-    retention: 'Solo métricas',
     keyMessages: [
       'Los sistemas perimetrales contuvieron el 98% del tráfico anómalo.',
       'Se activó el protocolo SOC nivel 3 con restablecimiento de claves forzado.'
@@ -220,7 +217,6 @@ export const INITIAL_TOPICS: TopicConfig[] = [
     optics: 'Formal',
     audience: 'Dirección',
     languages: ['ES', 'EN', 'PT'],
-    retention: '30 días',
     keyMessages: [
       'Cumplimos el 100% de la norma ambiental vigente con certificaciones al día.',
       'Iniciaremos mesas de diálogo abiertas con las comunidades ribereñas.'
@@ -230,20 +226,6 @@ export const INITIAL_TOPICS: TopicConfig[] = [
     ]
   }
 ];
-
-export const INITIAL_RETENTION_SETTINGS: RetentionSettings = {
-  keep: 'full_recording',
-  termDays: 90,
-  deletionRequests: [
-    {
-      id: 'del-01',
-      userId: 'usr-spokesperson-01',
-      userLabel: 'Vocero #14 (Ana Torres)',
-      requestedAt: '22 jun 2026',
-      status: 'pending'
-    }
-  ]
-};
 
 export const INITIAL_MASTER_RUBRIC: MasterRubric = {
   version: 'v0.4',

@@ -5,7 +5,7 @@ import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
 import type { Role } from '../../types/api';
 
-export type ScreenId = 'u1' | 'u2' | 'u3' | 'u4' | 'u5' | 'u6' | 'u7' | 'lesson' | 'a1' | 'a2' | 'a3' | 'm1' | 'm2' | 'm3';
+export type ScreenId = 'u1' | 'u2' | 'u3' | 'u4' | 'u5' | 'u6' | 'u7' | 'lesson' | 'a1' | 'a2' | 'a4' | 'm1' | 'm2' | 'm3';
 
 export const Sidebar: React.FC<{ currentScreen: ScreenId; onSelectScreen: (screen: ScreenId) => void }> = ({ currentScreen, onSelectScreen }) => {
   const { t } = useI18n();
@@ -13,7 +13,7 @@ export const Sidebar: React.FC<{ currentScreen: ScreenId; onSelectScreen: (scree
   if (!user) return null;
   const ids: Record<Role, ScreenId[]> = {
     spokesperson: ['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7'],
-    client_admin: ['a1', 'a2', 'a3'], master_config: ['m1', 'm2', 'm3'],
+    client_admin: ['a1', 'a2', 'a4'], master_config: ['m1', 'm2', 'm3'],
   };
   return <aside className="sidebar">
     <div className="brand"><img src="/VoxReady_logo.png" alt="VoxReady" style={{ height: 34 }} /><p>{t.brandP}</p></div>

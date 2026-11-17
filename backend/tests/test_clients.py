@@ -90,6 +90,7 @@ def _database(cursor):
 
 class MembershipCursor(ClientCursor):
     USER_COLUMNS = ("id", "displayName", "email", "clientId", "clientName")
+    CLIENT_USER_COLUMNS = ("id", "displayName", "email", "preferredLanguage")
 
     def __init__(self):
         super().__init__()
@@ -105,6 +106,7 @@ class MembershipCursor(ClientCursor):
             "client_id": client_id,
             "name": name,
             "email": email or f"{user_id}@example.invalid",
+            "preferred_language": "es",
         }
         return user_id
 
@@ -113,6 +115,20 @@ class MembershipCursor(ClientCursor):
         self.executed_sql.append(normalized)
         self.rowcount = -1
         if normalized.startswith("select u.id,u.display_name as displayname"):
+            if "u.preferred_language" in normalized:
+                client_id = str(params[0])
+                rows = [
+                    (user["id"], user["name"], user["email"], user["preferred_language"])
+                    for user in self.users.values()
+                    if user["role"] == "spokesperson" and user["client_id"] == client_id
+                ]
+                self.description = [(column,) for column in self.CLIENT_USER_COLUMNS]
+                self.selected_client_users = sorted(
+                    rows,
+                    key=lambda row: (row[1].casefold(), row[2].casefold(), row[0]),
+                )
+                self.mode = "client_users"
+                return self
             search = str(params[0]).casefold()
             rows = []
             for user in self.users.values():
@@ -153,6 +169,8 @@ class MembershipCursor(ClientCursor):
         return super().fetchone()
 
     def fetchall(self):
+        if self.mode == "client_users":
+            return list(self.selected_client_users)
         if self.mode == "candidate_users":
             return list(self.selected_users)
         return super().fetchall()
@@ -223,6 +241,49 @@ def test_database_role_denies_spokesperson_and_client_admin(monkeypatch):
                 assert denied.status_code == 403
         assert cursor.insert_count == 0
         assert cursor.client_query_count == 0
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_client_admin_lists_only_spokespersons_from_own_client(monkeypatch):
+    cursor = MembershipCursor()
+    own_client = _add_client(cursor, "Empresa propia")
+    other_client = _add_client(cursor, "Empresa ajena")
+    cursor.role = "client_admin"
+    cursor.actor_client_id = own_client
+    own_user = cursor.add_user(client_id=own_client, name="Ana Propia", email="ana@example.invalid")
+    cursor.add_user(client_id=other_client, name="Beto Ajeno", email="beto@example.invalid")
+    cursor.add_user(client_id=None, name="Carla Disponible", email="carla@example.invalid")
+    cursor.add_user(role="client_admin", client_id=own_client, name="Admin", email="admin@example.invalid")
+    try:
+        with _api(monkeypatch, cursor) as api:
+            response = api.get('/v1/api/client/spokespersons')
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "items": [{
+                "id": own_user,
+                "displayName": "Ana Propia",
+                "email": "ana@example.invalid",
+                "preferredLanguage": "es",
+            }],
+            "total": 1,
+        }
+        assert "and u.client_id=?" in cursor.executed_sql[-1]
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_spokesperson_cannot_open_client_admin_spokesperson_list(monkeypatch):
+    cursor = MembershipCursor()
+    cursor.role = "spokesperson"
+    cursor.actor_client_id = _add_client(cursor)
+    try:
+        with _api(monkeypatch, cursor) as api:
+            response = api.get('/v1/api/client/spokespersons')
+            usage_response = api.get('/v1/api/client/usage')
+        assert response.status_code == 403
+        assert usage_response.status_code == 403
+        assert not any("u.preferred_language" in sql for sql in cursor.executed_sql)
     finally:
         main.app.dependency_overrides.clear()
 

@@ -169,6 +169,27 @@ def list_spokespersons(cursor, *, client_id=None, query=""):
     return items
 
 
+def list_client_spokespersons(cursor, client_id):
+    """Lista solamente los voceros activos del cliente autenticado."""
+    cursor.execute(
+        """SELECT u.id,u.display_name AS displayName,u.email,
+                  COALESCE(u.preferred_language,'es') AS preferredLanguage
+           FROM dbo.app_user u
+           WHERE u.role='spokesperson'
+             AND u.client_id=?
+             AND (u.is_deleted IS NULL OR u.is_deleted=0)
+           ORDER BY u.display_name,u.email,u.id""",
+        str(client_id),
+    )
+    columns = [column[0] for column in cursor.description]
+    items = []
+    for row in cursor.fetchall():
+        item = dict(zip(columns, row))
+        item["id"] = str(item["id"])
+        items.append(item)
+    return items
+
+
 def link_spokespersons(cursor, client_id, spokesperson_ids):
     """Vincula voceros de forma atomica, idempotente y segura ante carreras."""
     target_id, _ = require_client(cursor, client_id, lock=True)
