@@ -1,4 +1,15 @@
 export const en = {
+  clientSpokespersons: {
+    view: 'View spokespeople', back: 'Back to Clients', title: 'Spokespeople at', clientNavigation: 'Client navigation',
+    list: 'Associated spokespeople', name: 'Name', email: 'Email', detail: 'Progress for',
+    select: 'Select a spokesperson to view their progress.',
+    loadingList: 'Loading spokespeople…', loadingProgress: 'Loading progress…',
+    listError: 'Could not load this client’s spokespeople.',
+    progressError: 'Could not load this spokesperson’s progress.',
+    emptyList: 'This client has no associated spokespeople.',
+    emptyProgress: 'This spokesperson has no completed sessions with a report yet.',
+    completedSessions: 'Completed sessions', progressHeading: 'PROGRESS', retry: 'Retry',
+  },
   masterTopics: {
     catalog: 'Topic catalog', editor: 'Topic and scenario editor', newTopic: '+ Create New Topic',
     active: 'Active', archived: 'Archived', all: 'All', activeTopics: 'Active topics',

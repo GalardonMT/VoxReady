@@ -71,6 +71,12 @@ export interface SpokespersonCandidate {
   linkState: SpokespersonLinkState;
 }
 
+export interface ClientSpokesperson {
+  id: string;
+  displayName: string;
+  email: string;
+}
+
 export interface SpokespersonLinkResult {
   clientId: string;
   spokespersonIds: string[];

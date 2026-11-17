@@ -268,6 +268,8 @@ def test_queries_are_parameterized_and_scoped_to_resolved_user_and_tenant(monkey
         assert "s.is_deleted = 0" in compact
         assert "r.is_current = 1" in compact
         assert "ROW_NUMBER() OVER" in compact
+        assert "PARTITION BY r.session_id" in compact
+        assert "r.report_rank = 1" in compact
         assert "r.generated_at DESC, r.id DESC" in compact
         assert "attacker" not in sql and "other-client" not in sql
     assert count_params == (USER_ID, CLIENT_ID)

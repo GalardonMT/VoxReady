@@ -1,4 +1,15 @@
 export const es = {
+  clientSpokespersons: {
+    view: 'Ver voceros', back: 'Volver a Clientes', title: 'Voceros de', clientNavigation: 'Navegación del cliente',
+    list: 'Voceros asociados', name: 'Nombre', email: 'Correo', detail: 'Progreso de',
+    select: 'Selecciona un vocero para consultar su progreso.',
+    loadingList: 'Cargando voceros…', loadingProgress: 'Cargando progreso…',
+    listError: 'No se pudieron cargar los voceros del cliente.',
+    progressError: 'No se pudo cargar el progreso del vocero.',
+    emptyList: 'Este cliente no tiene voceros asociados.',
+    emptyProgress: 'Este vocero aún no tiene sesiones completadas con reporte.',
+    completedSessions: 'Sesiones completadas', progressHeading: 'PROGRESO', retry: 'Reintentar',
+  },
   masterTopics: {
     catalog: 'Catálogo de temas', editor: 'Editor de temas y escenarios', newTopic: '+ Crear Nuevo Tema',
     active: 'Activos', archived: 'Archivados', all: 'Todos', activeTopics: 'Temas activos',

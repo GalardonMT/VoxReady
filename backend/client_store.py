@@ -169,6 +169,42 @@ def list_spokespersons(cursor, *, client_id=None, query=""):
     return items
 
 
+def list_client_spokespersons(cursor, client_id):
+    """List only active spokesperson accounts belonging to an existing client."""
+    target_id, _ = require_client(cursor, client_id)
+    cursor.execute(
+        """SELECT id,display_name AS displayName,email
+           FROM dbo.app_user
+           WHERE client_id=? AND role='spokesperson'
+             AND (is_deleted IS NULL OR is_deleted=0)
+           ORDER BY display_name,email,id""",
+        target_id,
+    )
+    columns = [column[0] for column in cursor.description]
+    items = []
+    for row in cursor.fetchall():
+        item = dict(zip(columns, row))
+        item["id"] = str(item["id"])
+        items.append(item)
+    return items
+
+
+def require_client_spokesperson(cursor, client_id, spokesperson_id):
+    """Reject a missing or foreign spokesperson without exposing another tenant."""
+    target_id, _ = require_client(cursor, client_id)
+    cursor.execute(
+        """SELECT id FROM dbo.app_user
+           WHERE id=? AND client_id=? AND role='spokesperson'
+             AND (is_deleted IS NULL OR is_deleted=0)""",
+        str(spokesperson_id),
+        target_id,
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(404, "Vocero no encontrado para este cliente.")
+    return str(row[0]), target_id
+
+
 def link_spokespersons(cursor, client_id, spokesperson_ids):
     """Vincula voceros de forma atomica, idempotente y segura ante carreras."""
     target_id, _ = require_client(cursor, client_id, lock=True)

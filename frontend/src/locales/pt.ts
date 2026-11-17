@@ -1,4 +1,15 @@
 export const pt = {
+  clientSpokespersons: {
+    view: 'Ver porta-vozes', back: 'Voltar a Clientes', title: 'Porta-vozes de', clientNavigation: 'Navegação do cliente',
+    list: 'Porta-vozes associados', name: 'Nome', email: 'E-mail', detail: 'Progresso de',
+    select: 'Selecione um porta-voz para consultar seu progresso.',
+    loadingList: 'Carregando porta-vozes…', loadingProgress: 'Carregando progresso…',
+    listError: 'Não foi possível carregar os porta-vozes do cliente.',
+    progressError: 'Não foi possível carregar o progresso do porta-voz.',
+    emptyList: 'Este cliente não tem porta-vozes associados.',
+    emptyProgress: 'Este porta-voz ainda não tem sessões concluídas com relatório.',
+    completedSessions: 'Sessões concluídas', progressHeading: 'PROGRESSO', retry: 'Tentar novamente',
+  },
   masterTopics: {
     catalog: 'Catálogo de temas', editor: 'Editor de temas e cenários', newTopic: '+ Criar Novo Tema',
     active: 'Ativos', archived: 'Arquivados', all: 'Todos', activeTopics: 'Temas ativos',
