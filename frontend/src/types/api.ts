@@ -366,32 +366,6 @@ export interface ActionableRecommendation {
   lessonTitle: string;
 }
 
-export interface TopicConfig {
-  id: string;
-  name: string;
-  context: string;
-  optics: InstitutionalOptics;
-  audience: InternalAudience;
-  languages: string[];
-  retention: string;
-  keyMessages: string[];
-  redLines: string[];
-}
-
-export interface DeletionRequest {
-  id: string;
-  userId: string;
-  userLabel: string;
-  requestedAt: string;
-  status: 'pending' | 'processed';
-}
-
-export interface RetentionSettings {
-  keep: 'full_recording' | 'metrics_only';
-  termDays: number; // 30, 90, 180, etc.
-  deletionRequests: DeletionRequest[];
-}
-
 export interface MasterRubricArea {
   area: string;
   channel: string;

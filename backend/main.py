@@ -6,7 +6,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, field_validator
-from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
@@ -21,6 +21,7 @@ import spokesperson_store
 import microlessons as microlesson_store
 import metrics_store
 import client_store
+import client_scenarios as client_scenario_store
 from labeling_api import create_labeling_router, LabelingProblem
 
 # Cargar variables de entorno locales si existen
@@ -345,6 +346,47 @@ def list_scenarios(category: str = "", q: str = "", page: int = 1, pageSize: int
 @app.get("/v1/scenarios/{scenario_id}")
 def get_scenario(scenario_id: str, user: dict = Depends(verify_token)):
     return spokesperson_store.scenario_detail(SQL_CONN_STR, user, scenario_id)
+
+
+@app.get(
+    "/api/client/scenarios",
+    response_model=client_scenario_store.ClientScenarioListResponse,
+)
+@app.get(
+    "/v1/api/client/scenarios",
+    response_model=client_scenario_store.ClientScenarioListResponse,
+)
+def list_client_scenarios(
+    response: Response,
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    user: dict = Depends(verify_token),
+):
+    client_scenario_store.mark_private_no_store(response)
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        client_id = client_scenario_store.require_client_admin(profile)
+        return client_scenario_store.list_available(cursor, client_id, page, pageSize)
+
+
+@app.get(
+    "/api/client/scenarios/{scenario_id}",
+    response_model=client_scenario_store.ClientScenarioDetail,
+)
+@app.get(
+    "/v1/api/client/scenarios/{scenario_id}",
+    response_model=client_scenario_store.ClientScenarioDetail,
+)
+def get_client_scenario(
+    scenario_id: uuid.UUID,
+    response: Response,
+    user: dict = Depends(verify_token),
+):
+    client_scenario_store.mark_private_no_store(response)
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        client_id = client_scenario_store.require_client_admin(profile)
+        return client_scenario_store.get_available(cursor, client_id, scenario_id)
 
 @app.post("/sessions", status_code=201)
 @app.post("/v1/sessions", status_code=201)

@@ -23,7 +23,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS application
-COPY main.py master_topics.py spokesperson_store.py progress_store.py schedule_store.py microlessons.py client_store.py microlesson_assignment_migration.py metrics_catalog.py metrics_migration.py metrics_store.py labeling_api.py labeling_classification.py labeling_migration.py labeling_store.py ./
+COPY main.py client_scenarios.py master_topics.py spokesperson_store.py progress_store.py schedule_store.py microlessons.py client_store.py microlesson_assignment_migration.py metrics_catalog.py metrics_migration.py metrics_store.py labeling_api.py labeling_classification.py labeling_migration.py labeling_store.py ./
 COPY schemas ./schemas
 COPY services ./services
 COPY scripts ./scripts

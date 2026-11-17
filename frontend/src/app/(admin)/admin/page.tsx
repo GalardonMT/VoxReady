@@ -3,8 +3,8 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ClientDashboard, AdminScreen } from '../../../components/client-admin/ClientDashboard';
-import { TopicEditorView } from '../../../components/client-admin/TopicEditorView';
 import { RetentionPolicyView } from '../../../components/client-admin/RetentionPolicyView';
+import { ClientScenariosView } from '../../../components/client-admin/ClientScenariosView';
 import { useAuth } from '../../../context/AuthContext';
 import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
 
@@ -20,19 +20,17 @@ function AdminContent() {
   const router = useRouter();
   const { user, logout } = useAuth();
   const [adminScreen, setAdminScreen] = useState<AdminScreen>('a1');
-  const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
 
   if (!user) return null; // guaranteed by ProtectedRoute
 
-  const handleAdminNavigate = (screen: AdminScreen, topicId?: string | null) => {
-    setSelectedTopicId(topicId ?? null);
+  const handleAdminNavigate = (screen: AdminScreen) => {
     setAdminScreen(screen);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const adminNavItems: { id: AdminScreen; label: string; icon: string }[] = [
     { id: 'a1', label: 'Panel del Cliente', icon: '📊' },
-    { id: 'a2', label: 'Editor de Tema', icon: '✏️' },
+    { id: 'a4', label: 'Escenarios disponibles', icon: '📚' },
     { id: 'a3', label: 'Política de Retención', icon: '🛡️' }
   ];
 
@@ -99,10 +97,8 @@ function AdminContent() {
 
       <main className="canvas">
         {adminScreen === 'a1' && <ClientDashboard onNavigate={handleAdminNavigate} />}
-        {adminScreen === 'a2' && (
-          <TopicEditorView topicId={selectedTopicId} onNavigate={handleAdminNavigate} />
-        )}
         {adminScreen === 'a3' && <RetentionPolicyView />}
+        {adminScreen === 'a4' && <ClientScenariosView />}
       </main>
     </div>
   );
