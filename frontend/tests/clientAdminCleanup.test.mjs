@@ -7,13 +7,16 @@ import { fileURLToPath } from 'node:url';
 const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
 const source = (path) => readFileSync(`${frontendRoot}/${path}`, 'utf8');
 
-test('client admin navigation keeps only dashboard, scenarios and retention', () => {
+test('client admin navigation combines dashboard, spokespersons, scenarios, activity and retention', () => {
   const adminPage = source('src/app/(admin)/admin/page.tsx');
+  const clientHeader = source('src/components/client-admin/ClientAdminHeader.tsx');
 
-  assert.match(adminPage, /Panel del Cliente/);
-  assert.match(adminPage, /Escenarios disponibles/);
-  assert.match(adminPage, /Política de Retención/);
-  assert.doesNotMatch(adminPage, /Editor de Tema|TopicEditorView|adminScreen === 'a2'/);
+  assert.match(clientHeader, /Panel del Cliente/);
+  assert.match(clientHeader, /Escenarios disponibles/);
+  assert.match(clientHeader, /Política de Retención/);
+  assert.match(clientHeader, /Voceros/);
+  assert.match(clientHeader, /Actividad y uso/);
+  assert.doesNotMatch(adminPage, /Editor de Tema|TopicEditorView/);
 });
 
 test('legacy client topic editor and mutation service are removed', () => {
@@ -30,8 +33,8 @@ test('client dashboard contains no simulated KPIs or editable topic table', () =
 
   assert.doesNotMatch(dashboard, /\b38\b|\b152\b|\b71\b/);
   assert.doesNotMatch(dashboard, /deleteTopic|getTopics|Nuevo tema|Editar tema/);
-  assert.match(dashboard, /onNavigate\('a4'\)/);
-  assert.match(dashboard, /onNavigate\('a3'\)/);
+  assert.match(dashboard, /clientScenarioService\.list/);
+  assert.match(dashboard, /clientAdminService\.usage/);
 });
 
 test('obsolete client scenario, topic and retention fixtures are removed', () => {

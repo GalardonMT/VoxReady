@@ -55,8 +55,8 @@ export const pt = {
     u6: "Relatório tipo coach",
     u7: "Meu progresso",
     a1: "Painel do cliente",
-    a2: "Editor de tema",
-    a3: "Política de retenção",
+    a2: "Porta-vozes",
+    a4: "Atividade e uso",
     m1: "Painel mestre",
     m2: "Editor de rubrica / padrão",
     m3: "Fila de rotulagem"
@@ -217,18 +217,10 @@ export const pt = {
     a1: {
       crumbs: "Admin do cliente",
       title: "Painel do cliente",
-      sub: "O admin gerencia temas, usuários e uso sem interferir na rubrica central.",
-      st: ["Temas ativos", "Porta-vozes", "Sessões (mês)", "Média global"],
-      themesL: "Temas configurados",
-      newT: "+ Novo tema",
-      th: ["Tema", "Público interno", "Idiomas", "Retenção", "Ações"],
-      edit: "Editar",
-      rows: [
-        ["Recall de produto", "Direção", "ES, EN", "90 dias"],
-        ["Incidente de segurança", "Operação", "ES", "Só métricas"],
-        ["Crise reputacional", "Direção", "ES, EN, PT", "30 dias"]
-      ],
-      note: "A tabela expõe público interno e retenção porque são decisões cotidianas do gestor corporativo."
+      sub: "O admin consulta os temas atribuídos pelo Mestre e gerencia o uso da organização.",
+      st: ["Cenários ativos", "Porta-vozes", "Sessões (mês)", "Participação"],
+      themesL: "Temas atribuídos",
+      th: ["Tema", "Público interno", "Idiomas"]
     },
     a2: {
       crumbs: "Admin do cliente › Temas",
@@ -249,23 +241,6 @@ export const pt = {
       save: "Salvar tema",
       preview: "Prévia de uma sessão",
       note: "Mensagens-chave e linhas vermelhas alimentam a pontuação de 'coerência'."
-    },
-    a3: {
-      crumbs: "Admin do cliente › Configuração",
-      title: "Política de retenção e privacidade biométrica",
-      sub: "Decisão sensível de dados biométricos conforme UK GDPR.",
-      q1: "O que se conserva após cada sessão?",
-      opt1: "Vídeo + áudio completos e métricas (permite autorrevisão e coaching)",
-      opt2: "Apenas métricas derivadas (gravação bruta descartada imediatamente)",
-      termL: "Prazo de conservação das gravações",
-      terms: ["30 dias", "90 dias", "180 dias", "Personalizado"],
-      termLeg: "Ao expirar, as gravações são apagadas/anonimizadas por jobs automáticos por cliente.",
-      delL: "Solicitações de exclusão de porta-vozes (direito ao esquecimento)",
-      th: ["Usuário", "Data solicitação", "Status", "Ação"],
-      delRow: ["Porta-voz #14 (Ana Torres)", "22 de junho de 2026", "Pendente"],
-      process: "Processar exclusão",
-      processedMsg: "Gravação excluída e anonimizada com sucesso.",
-      note: "A exclusão programada ou solicitada é um requisito de primeira classe na arquitetura."
     },
     m1: {
       crumbs: "Configurador mestre",

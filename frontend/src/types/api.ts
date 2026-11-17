@@ -40,6 +40,121 @@ export interface SpokespersonLinkResult {
   total: number;
 }
 
+export interface ClientSpokesperson {
+  id: string;
+  displayName: string | null;
+  email: string;
+  preferredLanguage: 'es' | 'en' | 'pt';
+}
+
+export interface ClientRetentionPolicy {
+  configured: boolean;
+  version: string | null;
+  keep: 'full_recording' | 'metrics_only' | null;
+  termDays: number | null;
+  effectiveFrom: string | null;
+}
+
+export interface ClientUsageSummary {
+  assignedSpokespersons: number;
+  activeSpokespersons: number;
+  participationRate: number;
+  completedSessions: number;
+  previousCompletedSessions: number;
+  sessionChangePct: number | null;
+  trainingSeconds: number;
+}
+
+export interface ClientUsageSpokesperson {
+  id: string;
+  displayName: string | null;
+  email: string;
+  lastActivityAt: string | null;
+  completedSessions: number;
+  trainingSeconds: number;
+  activityStatus: 'active' | 'low_activity' | 'not_started';
+}
+
+export interface ClientUsageResponse {
+  periodDays: 7 | 30 | 90;
+  summary: ClientUsageSummary;
+  statusBreakdown: { completed: number; inProgress: number; abandoned: number };
+  trend: Array<{ activityDate: string; sessions: number; activeSpokespersons: number }>;
+  scenarios: Array<{ scenarioId: string; title: string; sessions: number; activeSpokespersons: number }>;
+  spokespersons: ClientUsageSpokesperson[];
+  recentActivity: Array<{
+    id: string;
+    type: 'session_completed' | 'session_activity' | 'microlesson_completed' | 'microlesson_started';
+    displayName: string;
+    title: string;
+    occurredAt: string;
+  }>;
+}
+
+export type ClientRecentActivityItem = ClientUsageResponse['recentActivity'][number];
+
+export interface ClientRecentActivityPage {
+  items: ClientRecentActivityItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export type ClientParticipationStatus = 'active' | 'low_activity' | 'inactive' | 'not_started';
+
+export interface ClientSpokespersonDetail {
+  spokesperson: ClientSpokesperson & {
+    lastActivityAt: string | null;
+    participationStatus: ClientParticipationStatus;
+    inactiveDays: number | null;
+  };
+  periodDays: 7 | 30 | 90;
+  summary: {
+    completedSessions: number;
+    trainingSeconds: number;
+    scenariosUsed: number;
+    completedMicrolessons: number;
+  };
+  statusBreakdown: { completed: number; inProgress: number; abandoned: number };
+  trend: ClientUsageResponse['trend'];
+  scenarios: ClientUsageResponse['scenarios'];
+  alerts: Array<{
+    type: 'not_started' | 'inactive' | 'abandoned_sessions' | 'pending_lessons' | 'unused_scenarios';
+    severity: 'warning' | 'attention' | 'info';
+    message: string;
+  }>;
+}
+
+export interface ClientSpokespersonSession {
+  id: string;
+  scenarioId: string | null;
+  scenarioTitle: string;
+  status: 'completed' | 'in_progress' | 'abandoned';
+  activityAt: string;
+  durationSeconds: number | null;
+}
+
+export interface ClientSpokespersonMicrolesson {
+  assignmentId: string;
+  id: string;
+  title: string;
+  scenarioTitle: string;
+  status: MicrolessonAssignmentStatus;
+  durationMinutes: number;
+  assignedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface ClientPagedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
 export interface MasterQuestion {
   id: string;
   text: string;

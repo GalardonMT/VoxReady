@@ -1,12 +1,18 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { ClientDashboard, AdminScreen } from '../../../components/client-admin/ClientDashboard';
-import { RetentionPolicyView } from '../../../components/client-admin/RetentionPolicyView';
-import { ClientScenariosView } from '../../../components/client-admin/ClientScenariosView';
-import { useAuth } from '../../../context/AuthContext';
+import React, { useEffect, useState } from 'react';
 import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
+import { ActivityUsageView } from '../../../components/client-admin/ActivityUsageView';
+import {
+  ClientAdminHeader,
+  type ClientAdminScreen,
+} from '../../../components/client-admin/ClientAdminHeader';
+import { ClientDashboard } from '../../../components/client-admin/ClientDashboard';
+import { ClientScenariosView } from '../../../components/client-admin/ClientScenariosView';
+import { RetentionPolicyView } from '../../../components/client-admin/RetentionPolicyView';
+import { SpokespersonListView } from '../../../components/client-admin/SpokespersonListView';
+
+const CLIENT_ADMIN_SCREENS: ClientAdminScreen[] = ['a1', 'a2', 'a3', 'a4', 'a5'];
 
 export default function AdminPage() {
   return (
@@ -17,88 +23,37 @@ export default function AdminPage() {
 }
 
 function AdminContent() {
-  const router = useRouter();
-  const { user, logout } = useAuth();
-  const [adminScreen, setAdminScreen] = useState<AdminScreen>('a1');
+  const [adminScreen, setAdminScreen] = useState<ClientAdminScreen>('a1');
 
-  if (!user) return null; // guaranteed by ProtectedRoute
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('screen');
+    if (requested && CLIENT_ADMIN_SCREENS.includes(requested as ClientAdminScreen)) {
+      const timer = window.setTimeout(
+        () => setAdminScreen(requested as ClientAdminScreen),
+        0,
+      );
+      return () => window.clearTimeout(timer);
+    }
+  }, []);
 
-  const handleAdminNavigate = (screen: AdminScreen) => {
+  const handleAdminNavigate = (screen: ClientAdminScreen) => {
     setAdminScreen(screen);
+    const url = new URL(window.location.href);
+    url.searchParams.set('screen', screen);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const adminNavItems: { id: AdminScreen; label: string; icon: string }[] = [
-    { id: 'a1', label: 'Panel del Cliente', icon: '📊' },
-    { id: 'a4', label: 'Escenarios disponibles', icon: '📚' },
-    { id: 'a3', label: 'Política de Retención', icon: '🛡️' }
-  ];
-
   return (
     <div className="platform-container">
-      <header className="vocero-header">
-        <div className="vocero-brand" onClick={() => handleAdminNavigate('a1')} style={{ cursor: 'pointer' }}>
-          <img
-            src="/VoxReady_logo.png"
-            alt="VoxReady"
-            style={{ height: '32px', width: 'auto', display: 'block' }}
-          />
-        </div>
-
-        <div
-          className="tagm"
-          style={{
-            background: 'var(--soft)',
-            color: 'var(--ink)',
-            fontWeight: 600,
-            fontSize: '11.5px',
-            padding: '3px 10px'
-          }}
-        >
-          🏢 {user.clientName || 'Cliente'}
-        </div>
-
-        <nav className="vocero-nav-tabs">
-          {adminNavItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`vtab ${adminScreen === item.id ? 'active' : ''}`}
-              onClick={() => handleAdminNavigate(item.id)}
-            >
-              <span>{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-
-        <div className="vocero-user">
-          <div className="uava" style={{ backgroundColor: 'var(--accent2)' }}>
-            {user.initials}
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-            <span className="uname">{user.displayName}</span>
-            <span style={{ fontSize: '10.5px', color: 'var(--muted)' }}>Admin del cliente</span>
-          </div>
-          <button
-            type="button"
-            className="vocero-logout"
-            onClick={() => {
-              logout();
-              router.push('/login');
-            }}
-            title="Cerrar sesión"
-          >
-            <span>⎋</span>
-            <span>Salir</span>
-          </button>
-        </div>
-      </header>
+      <ClientAdminHeader activeScreen={adminScreen} onNavigate={handleAdminNavigate} />
 
       <main className="canvas">
-        {adminScreen === 'a1' && <ClientDashboard onNavigate={handleAdminNavigate} />}
+        {adminScreen === 'a1' && <ClientDashboard />}
+        {adminScreen === 'a2' && <SpokespersonListView />}
         {adminScreen === 'a3' && <RetentionPolicyView />}
         {adminScreen === 'a4' && <ClientScenariosView />}
+        {adminScreen === 'a5' && <ActivityUsageView />}
       </main>
     </div>
   );

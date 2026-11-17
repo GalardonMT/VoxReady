@@ -55,8 +55,8 @@ export const en = {
     u6: "Coach-style report",
     u7: "My progress",
     a1: "Client dashboard",
-    a2: "Topic editor",
-    a3: "Retention policy",
+    a2: "Spokespersons",
+    a4: "Activity and usage",
     m1: "Master dashboard",
     m2: "Rubric / standard editor",
     m3: "Labeling queue"
@@ -217,18 +217,10 @@ export const en = {
     a1: {
       crumbs: "Client admin",
       title: "Client dashboard",
-      sub: "The admin manages topics, users, and usage without altering the central evaluation rubric.",
-      st: ["Active topics", "Spokespersons", "Sessions (month)", "Mean score"],
-      themesL: "Configured practice topics",
-      newT: "+ New topic",
-      th: ["Topic", "Internal audience", "Languages", "Retention", "Actions"],
-      edit: "Edit",
-      rows: [
-        ["Product recall", "Leadership", "ES, EN", "90 days"],
-        ["Security incident", "Frontline", "ES", "Metrics only"],
-        ["Reputational crisis", "Leadership", "ES, EN, PT", "30 days"]
-      ],
-      note: "The table spotlights audience and retention policies because these are everyday administrative decisions."
+      sub: "The admin reviews topics assigned by the Master and manages organizational usage.",
+      st: ["Active scenarios", "Spokespersons", "Sessions (month)", "Participation"],
+      themesL: "Assigned topics",
+      th: ["Topic", "Internal audience", "Languages"]
     },
     a2: {
       crumbs: "Client admin › Topics",
@@ -249,23 +241,6 @@ export const en = {
       save: "Save topic",
       preview: "Preview session flow",
       note: "Key messages and red lines provide the ground truth for content coherence scoring."
-    },
-    a3: {
-      crumbs: "Client admin › Settings",
-      title: "Retention & biometric privacy policy",
-      sub: "Governs storage duration and handling of employee recordings under UK GDPR.",
-      q1: "What is preserved after each session?",
-      opt1: "Full video + audio recordings and metrics (supports self-review and coaching)",
-      opt2: "Derived numerical metrics only (raw media discarded immediately)",
-      termL: "Recording retention period",
-      terms: ["30 days", "90 days", "180 days", "Custom"],
-      termLeg: "Upon expiry, recordings are automatically erased/anonymized via automated tenant jobs.",
-      delL: "User deletion requests (right to erasure)",
-      th: ["User", "Request date", "Status", "Action"],
-      delRow: ["Spokesperson #14 (Ana Torres)", "June 22, 2026", "Pending"],
-      process: "Process erasure",
-      processedMsg: "Recording safely erased and anonymized.",
-      note: "Retention and on-demand deletion are built-in first-class architecture requirements."
     },
     m1: {
       crumbs: "Master configurator",

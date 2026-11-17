@@ -1,132 +1,79 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useI18n } from '../../context/I18nContext';
+import React, { useEffect, useState } from 'react';
+import { ShieldCheck } from 'lucide-react';
+import { clientAdminService } from '../../services/clientAdminService';
+import type { ClientRetentionPolicy } from '../../types/api';
+
+const KEEP_LABELS: Record<NonNullable<ClientRetentionPolicy['keep']>, string> = {
+  full_recording: 'Grabación completa y métricas',
+  metrics_only: 'Solo métricas',
+};
 
 export const RetentionPolicyView: React.FC = () => {
-  const { t } = useI18n();
-  const d = t.L.a3;
+  const [policy, setPolicy] = useState<ClientRetentionPolicy | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const [keepOption, setKeepOption] = useState<'full' | 'metrics'>('full');
-  const [selectedTerm, setSelectedTerm] = useState('90 días');
-  const [deletionProcessed, setDeletionProcessed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    clientAdminService.retentionPolicy()
+      .then((response) => {
+        if (active) setPolicy(response);
+      })
+      .catch(() => {
+        if (active) setError('No pudimos consultar la política de retención vigente.');
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
-    <div className="canvas-content">
-      {/* What is preserved */}
-      <div className="card" style={{ marginBottom: '16px' }}>
-        <div className="label">{d.q1}</div>
-        <label
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            margin: '12px 0',
-            cursor: 'pointer',
-            fontSize: '13px'
-          }}
-        >
-          <input
-            type="radio"
-            name="retentionKeep"
-            checked={keepOption === 'full'}
-            onChange={() => setKeepOption('full')}
-            style={{ width: '16px', height: '16px', accentColor: 'var(--accent2)' }}
-          />
-          <span>{d.opt1}</span>
-        </label>
-
-        <label
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            margin: '12px 0',
-            cursor: 'pointer',
-            fontSize: '13px'
-          }}
-        >
-          <input
-            type="radio"
-            name="retentionKeep"
-            checked={keepOption === 'metrics'}
-            onChange={() => setKeepOption('metrics')}
-            style={{ width: '16px', height: '16px', accentColor: 'var(--accent2)' }}
-          />
-          <span>{d.opt2}</span>
-        </label>
-      </div>
-
-      {/* Retention Term */}
-      <div className="card" style={{ marginBottom: '16px' }}>
-        <div className="label">{d.termL}</div>
-        <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
-          {d.terms.map((term) => (
-            <span
-              key={term}
-              className={`pill ${selectedTerm === term ? 'on' : ''}`}
-              onClick={() => setSelectedTerm(term)}
-            >
-              {term}
-            </span>
-          ))}
-        </div>
-        <div className="legend" style={{ marginTop: '10px' }}>
-          {d.termLeg}
-        </div>
-      </div>
-
-      {/* Deletion requests */}
+    <section className="canvas-content" aria-labelledby="retention-policy-title">
       <div className="card">
-        <div className="label">{d.delL}</div>
-        <table className="wf" style={{ marginTop: '10px' }}>
-          <thead>
-            <tr>
-              {d.th.map((h, i) => (
-                <th key={i}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td style={{ fontWeight: 600 }}>{d.delRow[0]}</td>
-              <td>{d.delRow[1]}</td>
-              <td>
-                <span
-                  className="tagm"
-                  style={{
-                    color: deletionProcessed ? 'var(--success)' : '#ba7517'
-                  }}
-                >
-                  {deletionProcessed ? 'Completado' : d.delRow[2] || 'Pendiente'}
-                </span>
-              </td>
-              <td>
-                <button
-                  type="button"
-                  className={`btn ${deletionProcessed ? 'disabled' : 'pri'}`}
-                  style={{ padding: '4px 12px', fontSize: '11.5px' }}
-                  onClick={() => setDeletionProcessed(true)}
-                >
-                  {deletionProcessed ? '✓ Atendido' : d.process}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        {deletionProcessed && (
-          <div
-            style={{
-              marginTop: '10px',
-              fontSize: '12px',
-              color: 'var(--success)',
-              fontWeight: 500
-            }}
-          >
-            ✓ {d.processedMsg}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <ShieldCheck size={24} aria-hidden="true" />
+          <div>
+            <h1 id="retention-policy-title" style={{ margin: 0 }}>Política de Retención</h1>
+            <p style={{ color: 'var(--muted)', marginBottom: 0 }}>
+              Consulta la configuración vigente de tu organización. Esta vista es de solo lectura.
+            </p>
           </div>
+        </div>
+
+        {!policy && !error && (
+          <p role="status" style={{ marginTop: '24px' }}>Cargando política vigente...</p>
+        )}
+
+        {error && (
+          <p role="alert" style={{ color: 'var(--danger)', marginTop: '24px' }}>{error}</p>
+        )}
+
+        {policy && !policy.configured && (
+          <p role="status" style={{ marginTop: '24px' }}>
+            Tu organización todavía no tiene una política de retención vigente configurada.
+          </p>
+        )}
+
+        {policy?.configured && (
+          <dl className="grid3" style={{ marginTop: '24px' }}>
+            <div className="stat">
+              <dt className="k">Conservación</dt>
+              <dd className="v" style={{ fontSize: '18px' }}>
+                {policy.keep ? KEEP_LABELS[policy.keep] : 'No informada'}
+              </dd>
+            </div>
+            <div className="stat">
+              <dt className="k">Plazo</dt>
+              <dd className="v">{policy.termDays === null ? '—' : `${policy.termDays} días`}</dd>
+            </div>
+            <div className="stat">
+              <dt className="k">Versión</dt>
+              <dd className="v" style={{ fontSize: '18px' }}>{policy.version ?? '—'}</dd>
+            </div>
+          </dl>
         )}
       </div>
-    </div>
+    </section>
   );
 };
