@@ -84,14 +84,6 @@ export interface ClientSpokesperson {
   preferredLanguage: 'es' | 'en' | 'pt';
 }
 
-export interface ClientRetentionPolicy {
-  configured: boolean;
-  version: string | null;
-  keep: 'full_recording' | 'metrics_only' | null;
-  termDays: number | null;
-  effectiveFrom: string | null;
-}
-
 export interface ClientUsageSummary {
   assignedSpokespersons: number;
   activeSpokespersons: number;

@@ -273,26 +273,10 @@ def test_client_admin_lists_only_spokespersons_from_own_client(monkeypatch):
         main.app.dependency_overrides.clear()
 
 
-def test_client_retention_policy_returns_only_persisted_values():
-    effective_from = datetime(2026, 11, 1, tzinfo=timezone.utc)
-
-    class RetentionCursor:
-        def execute(self, sql, *params):
-            normalized = " ".join(sql.split()).lower()
-            assert "from dbo.retention_policy" in normalized
-            assert params == ("client-1",)
-            return self
-
-        def fetchone(self):
-            return "v2", "metrics_only", 90, effective_from
-
-    assert client_store.get_client_retention_policy(RetentionCursor(), "client-1") == {
-        "configured": True,
-        "version": "v2",
-        "keep": "metrics_only",
-        "termDays": 90,
-        "effectiveFrom": effective_from.isoformat(),
-    }
+def test_client_retention_policy_routes_are_removed():
+    paths = {route.path for route in main.app.routes}
+    assert '/api/client/retention-policy' not in paths
+    assert '/v1/api/client/retention-policy' not in paths
 
 
 def test_spokesperson_cannot_open_client_admin_spokesperson_list(monkeypatch):
@@ -303,10 +287,8 @@ def test_spokesperson_cannot_open_client_admin_spokesperson_list(monkeypatch):
         with _api(monkeypatch, cursor) as api:
             response = api.get('/v1/api/client/spokespersons')
             usage_response = api.get('/v1/api/client/usage')
-            retention_response = api.get('/v1/api/client/retention-policy')
         assert response.status_code == 403
         assert usage_response.status_code == 403
-        assert retention_response.status_code == 403
         assert not any("u.preferred_language" in sql for sql in cursor.executed_sql)
     finally:
         main.app.dependency_overrides.clear()

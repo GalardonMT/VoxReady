@@ -2,7 +2,6 @@ import { apiFetch } from './apiClient';
 import type {
   ClientPagedResponse,
   ClientRecentActivityPage,
-  ClientRetentionPolicy,
   ClientSpokesperson,
   ClientSpokespersonDetail,
   ClientSpokespersonMicrolesson,
@@ -12,9 +11,6 @@ import type {
 } from '../types/api';
 
 export const clientAdminService = {
-  retentionPolicy(): Promise<ClientRetentionPolicy> {
-    return apiFetch<ClientRetentionPolicy>('/api/client/retention-policy', { cache: 'no-store' });
-  },
   async spokespersons(): Promise<ClientSpokesperson[]> {
     const response = await apiFetch<{ items: ClientSpokesperson[]; total: number }>(
       '/api/client/spokespersons',

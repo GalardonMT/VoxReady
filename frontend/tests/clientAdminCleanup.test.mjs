@@ -7,15 +7,16 @@ import { fileURLToPath } from 'node:url';
 const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
 const source = (path) => readFileSync(`${frontendRoot}/${path}`, 'utf8');
 
-test('client admin navigation combines dashboard, spokespersons, scenarios, activity and retention', () => {
+test('client admin navigation contains only dashboard, spokespersons, scenarios and activity', () => {
   const adminPage = source('src/app/(admin)/admin/page.tsx');
   const clientHeader = source('src/components/client-admin/ClientAdminHeader.tsx');
 
   assert.match(clientHeader, /Panel del Cliente/);
   assert.match(clientHeader, /Escenarios disponibles/);
-  assert.match(clientHeader, /Política de Retención/);
   assert.match(clientHeader, /Voceros/);
   assert.match(clientHeader, /Actividad y uso/);
+  assert.doesNotMatch(clientHeader, /Política de Retención|id: 'a3'/);
+  assert.doesNotMatch(adminPage, /RetentionPolicyView|adminScreen === 'a3'/);
   assert.doesNotMatch(adminPage, /Editor de Tema|TopicEditorView/);
 });
 

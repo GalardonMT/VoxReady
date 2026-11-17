@@ -1381,16 +1381,6 @@ def client_spokespersons(user: dict = Depends(verify_token)):
         return {'items': items, 'total': len(items)}
 
 
-@app.get('/api/client/retention-policy')
-@app.get('/v1/api/client/retention-policy')
-def client_retention_policy(user: dict = Depends(verify_token)):
-    with master_store.database(SQL_CONN_STR) as cursor:
-        profile = master_store.resolve_user(cursor, user)
-        if profile['role'] != 'client_admin':
-            raise HTTPException(403, 'Se requiere el rol client_admin.')
-        return client_store.get_client_retention_policy(cursor, profile['client_id'])
-
-
 @app.get('/api/client/usage')
 @app.get('/v1/api/client/usage')
 def client_usage_summary(

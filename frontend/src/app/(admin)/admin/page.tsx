@@ -9,10 +9,9 @@ import {
 } from '../../../components/client-admin/ClientAdminHeader';
 import { ClientDashboard } from '../../../components/client-admin/ClientDashboard';
 import { ClientScenariosView } from '../../../components/client-admin/ClientScenariosView';
-import { RetentionPolicyView } from '../../../components/client-admin/RetentionPolicyView';
 import { SpokespersonListView } from '../../../components/client-admin/SpokespersonListView';
 
-const CLIENT_ADMIN_SCREENS: ClientAdminScreen[] = ['a1', 'a2', 'a3', 'a4', 'a5'];
+const CLIENT_ADMIN_SCREENS: ClientAdminScreen[] = ['a1', 'a2', 'a4', 'a5'];
 
 export default function AdminPage() {
   return (
@@ -51,7 +50,6 @@ function AdminContent() {
       <main className="canvas">
         {adminScreen === 'a1' && <ClientDashboard />}
         {adminScreen === 'a2' && <SpokespersonListView />}
-        {adminScreen === 'a3' && <RetentionPolicyView />}
         {adminScreen === 'a4' && <ClientScenariosView />}
         {adminScreen === 'a5' && <ActivityUsageView />}
       </main>

@@ -4,14 +4,13 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
 
-export type ClientAdminScreen = 'a1' | 'a2' | 'a3' | 'a4' | 'a5';
+export type ClientAdminScreen = 'a1' | 'a2' | 'a4' | 'a5';
 
 const navItems: { id: ClientAdminScreen; label: string; icon: string }[] = [
   { id: 'a1', label: 'Panel del Cliente', icon: '📊' },
   { id: 'a2', label: 'Voceros', icon: '👥' },
   { id: 'a4', label: 'Escenarios disponibles', icon: '📚' },
   { id: 'a5', label: 'Actividad y uso', icon: '📈' },
-  { id: 'a3', label: 'Política de Retención', icon: '🛡️' },
 ];
 
 interface ClientAdminHeaderProps {

@@ -30,19 +30,23 @@ const spokespersonDetailRoute = new URL(
 const pagination = readFileSync(new URL('../src/components/common/Pagination.tsx', import.meta.url), 'utf8');
 const editorUrl = new URL('../src/components/client-admin/TopicEditorView.tsx', import.meta.url);
 const retentionViewUrl = new URL('../src/components/client-admin/RetentionPolicyView.tsx', import.meta.url);
+const clientAdminService = readFileSync(
+  new URL('../src/services/clientAdminService.ts', import.meta.url),
+  'utf8',
+);
+const apiTypes = readFileSync(new URL('../src/types/api.ts', import.meta.url), 'utf8');
 
 test('client admin has no topic editor section', () => {
   assert.equal(existsSync(editorUrl), false);
   assert.doesNotMatch(adminPage, /TopicEditorView|Editor de Tema/);
 });
 
-test('client admin keeps a real read-only retention policy section', () => {
-  assert.equal(existsSync(retentionViewUrl), true);
-  assert.match(adminPage, /RetentionPolicyView|adminScreen === 'a3'/);
-  assert.match(clientHeader, /Política de Retención|id: 'a3'/);
-  const retentionView = readFileSync(retentionViewUrl, 'utf8');
-  assert.match(retentionView, /clientAdminService\.retentionPolicy\(\)/);
-  assert.doesNotMatch(retentionView, /del-01|Ana Torres|setDeletionProcessed/);
+test('client admin has no retention policy section', () => {
+  assert.equal(existsSync(retentionViewUrl), false);
+  assert.doesNotMatch(adminPage, /RetentionPolicyView|adminScreen === 'a3'/);
+  assert.doesNotMatch(clientHeader, /Política de Retención|id: 'a3'/);
+  assert.doesNotMatch(clientAdminService, /retentionPolicy|client\/retention-policy/);
+  assert.doesNotMatch(apiTypes, /ClientRetentionPolicy/);
 });
 
 test('client admin can open the read-only spokesperson list', () => {

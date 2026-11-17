@@ -190,35 +190,6 @@ def list_client_spokespersons(cursor, client_id):
     return items
 
 
-def get_client_retention_policy(cursor, client_id):
-    """Obtiene la política vigente del cliente sin inventar valores por defecto."""
-    cursor.execute(
-        """SELECT TOP 1 version_label AS version,keep,term_days AS termDays,
-                         effective_from AS effectiveFrom
-           FROM dbo.retention_policy
-           WHERE client_id=? AND is_current=1
-           ORDER BY effective_from DESC""",
-        str(client_id),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return {
-            "configured": False,
-            "version": None,
-            "keep": None,
-            "termDays": None,
-            "effectiveFrom": None,
-        }
-    effective_from = row[3]
-    return {
-        "configured": True,
-        "version": row[0],
-        "keep": row[1],
-        "termDays": int(row[2]) if row[2] is not None else None,
-        "effectiveFrom": effective_from.isoformat() if hasattr(effective_from, "isoformat") else effective_from,
-    }
-
-
 def link_spokespersons(cursor, client_id, spokesperson_ids):
     """Vincula voceros de forma atomica, idempotente y segura ante carreras."""
     target_id, _ = require_client(cursor, client_id, lock=True)
