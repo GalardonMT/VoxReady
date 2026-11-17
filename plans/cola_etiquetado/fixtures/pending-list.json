@@ -1,0 +1,61 @@
+{
+  "items": [
+    {
+      "caseId": "10000000-0000-4000-8000-000000000001",
+      "caseNumber": "VR-2026-0008844",
+      "status": "pending",
+      "queueReason": "critical",
+      "reasonDetail": {
+        "kind": "critical",
+        "overallScore": 47,
+        "overallThreshold": 50,
+        "criticalAreaKeys": ["empathy"]
+      },
+      "client": { "code": "CLI-DEMO-01", "displayName": "Cliente Demo Norte" },
+      "speakerCode": "VOC-7K2Q",
+      "scenario": { "title": "Crisis reputacional" },
+      "session": {
+        "startedAt": "2026-10-27T18:31:00Z",
+        "finishedAt": "2026-10-27T18:35:10Z",
+        "durationSeconds": 250
+      },
+      "report": {
+        "reportId": "20000000-0000-4000-8000-000000000001",
+        "generatedAt": "2026-10-27T18:36:04Z",
+        "overallScore": 47
+      },
+      "criticalAreas": [{ "areaKey": "empathy", "label": "Nivel de empatía", "value": 42 }],
+      "lease": { "state": "available", "ownerCode": null, "expiresAt": null },
+      "latestReview": null
+    },
+    {
+      "caseId": "10000000-0000-4000-8000-000000000002",
+      "caseNumber": "VR-2026-0008843",
+      "status": "pending",
+      "queueReason": "routine",
+      "reasonDetail": { "kind": "routine", "selectionRule": "all_completed_current_reports" },
+      "client": { "code": "CLI-DEMO-02", "displayName": "Cliente Demo Centro" },
+      "speakerCode": "VOC-4M8R",
+      "scenario": { "title": "Incidente de seguridad" },
+      "session": {
+        "startedAt": "2026-10-27T17:50:00Z",
+        "finishedAt": "2026-10-27T17:52:45Z",
+        "durationSeconds": 165
+      },
+      "report": {
+        "reportId": "20000000-0000-4000-8000-000000000002",
+        "generatedAt": "2026-10-27T17:53:31Z",
+        "overallScore": 69
+      },
+      "criticalAreas": [],
+      "lease": {
+        "state": "locked_by_other",
+        "ownerCode": "EXP-9P2D",
+        "expiresAt": "2026-10-27T18:12:45Z"
+      },
+      "latestReview": null
+    }
+  ],
+  "total": 23,
+  "limit": 10
+}

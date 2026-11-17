@@ -1,0 +1,8 @@
+{
+  "type": "https://voxready.example/problems/recording-retained-or-deleted",
+  "title": "La grabación ya no está disponible",
+  "status": 410,
+  "detail": "La evidencia audiovisual fue eliminada conforme a la política de retención; la revisión histórica permanece disponible.",
+  "code": "RECORDING_RETAINED_OR_DELETED",
+  "correlationId": "fixture-correlation-410"
+}

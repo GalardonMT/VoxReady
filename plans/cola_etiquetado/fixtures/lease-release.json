@@ -1,0 +1,4 @@
+{
+  "leaseToken": "fixture-token-not-a-real-secret",
+  "leaseGeneration": 4
+}

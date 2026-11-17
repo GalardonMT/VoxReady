@@ -1,5 +1,42 @@
 export type Role = 'spokesperson' | 'client_admin' | 'master_config';
 
+export interface MasterDashboardResponse {
+  generatedAt: string;
+  activeClients: number;
+  sessionsWeek: {
+    timezone: 'UTC';
+    period: { from: string; to: string };
+    previousPeriod: { from: string; to: string };
+    count: number;
+    previousCount: number;
+    changePercent: number | null;
+    changeStatus: 'available' | 'no_previous_sessions';
+  };
+  pendingReviewCount: number;
+  publishedVersion: {
+    id: string;
+    versionLabel: string;
+    versionNumber: number;
+    publishedAt: string | null;
+  } | null;
+  scoreDistribution: {
+    population: 'all_completed_current_reports';
+    sampleCount: number;
+    bins: Array<{
+      label: string;
+      lowerBound: number;
+      upperBound: number;
+      upperInclusive: boolean;
+      count: number;
+    }>;
+    mean: number | null;
+    standardDeviation: number | null;
+    standardDeviationKind: 'population';
+    modalRanges: string[];
+  };
+  quality: { status: 'definition_required'; agreementPercent: null; kappa: null };
+}
+
 export type LifecycleStatus = 'active' | 'archived';
 export type ClientStatus = 'active' | 'suspended';
 export type MasterOptics = 'empathetic' | 'formal' | 'technical';
@@ -38,6 +75,113 @@ export interface SpokespersonLinkResult {
   clientId: string;
   spokespersonIds: string[];
   total: number;
+}
+
+export interface ClientSpokesperson {
+  id: string;
+  displayName: string | null;
+  email: string;
+  preferredLanguage: 'es' | 'en' | 'pt';
+}
+
+export interface ClientUsageSummary {
+  assignedSpokespersons: number;
+  activeSpokespersons: number;
+  participationRate: number;
+  completedSessions: number;
+  previousCompletedSessions: number;
+  sessionChangePct: number | null;
+  trainingSeconds: number;
+}
+
+export interface ClientUsageSpokesperson {
+  id: string;
+  displayName: string | null;
+  email: string;
+  lastActivityAt: string | null;
+  completedSessions: number;
+  trainingSeconds: number;
+  activityStatus: 'active' | 'low_activity' | 'not_started';
+}
+
+export interface ClientUsageResponse {
+  periodDays: 7 | 30 | 90;
+  summary: ClientUsageSummary;
+  statusBreakdown: { completed: number; inProgress: number; abandoned: number };
+  trend: Array<{ activityDate: string; sessions: number; activeSpokespersons: number }>;
+  scenarios: Array<{ scenarioId: string; title: string; sessions: number; activeSpokespersons: number }>;
+  spokespersons: ClientUsageSpokesperson[];
+  recentActivity: Array<{
+    id: string;
+    type: 'session_completed' | 'session_activity' | 'microlesson_completed' | 'microlesson_started';
+    displayName: string;
+    title: string;
+    occurredAt: string;
+  }>;
+}
+
+export type ClientRecentActivityItem = ClientUsageResponse['recentActivity'][number];
+
+export interface ClientRecentActivityPage {
+  items: ClientRecentActivityItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export type ClientParticipationStatus = 'active' | 'low_activity' | 'inactive' | 'not_started';
+
+export interface ClientSpokespersonDetail {
+  spokesperson: ClientSpokesperson & {
+    lastActivityAt: string | null;
+    participationStatus: ClientParticipationStatus;
+    inactiveDays: number | null;
+  };
+  periodDays: 7 | 30 | 90;
+  summary: {
+    completedSessions: number;
+    trainingSeconds: number;
+    scenariosUsed: number;
+    completedMicrolessons: number;
+  };
+  statusBreakdown: { completed: number; inProgress: number; abandoned: number };
+  trend: ClientUsageResponse['trend'];
+  scenarios: ClientUsageResponse['scenarios'];
+  alerts: Array<{
+    type: 'not_started' | 'inactive' | 'abandoned_sessions' | 'pending_lessons' | 'unused_scenarios';
+    severity: 'warning' | 'attention' | 'info';
+    message: string;
+  }>;
+}
+
+export interface ClientSpokespersonSession {
+  id: string;
+  scenarioId: string | null;
+  scenarioTitle: string;
+  status: 'completed' | 'in_progress' | 'abandoned';
+  activityAt: string;
+  durationSeconds: number | null;
+}
+
+export interface ClientSpokespersonMicrolesson {
+  assignmentId: string;
+  id: string;
+  title: string;
+  scenarioTitle: string;
+  status: MicrolessonAssignmentStatus;
+  durationMinutes: number;
+  assignedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface ClientPagedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 export interface MasterQuestion {
@@ -364,32 +508,6 @@ export interface ActionableRecommendation {
   description: string;
   lessonId: string;
   lessonTitle: string;
-}
-
-export interface TopicConfig {
-  id: string;
-  name: string;
-  context: string;
-  optics: InstitutionalOptics;
-  audience: InternalAudience;
-  languages: string[];
-  retention: string;
-  keyMessages: string[];
-  redLines: string[];
-}
-
-export interface DeletionRequest {
-  id: string;
-  userId: string;
-  userLabel: string;
-  requestedAt: string;
-  status: 'pending' | 'processed';
-}
-
-export interface RetentionSettings {
-  keep: 'full_recording' | 'metrics_only';
-  termDays: number; // 30, 90, 180, etc.
-  deletionRequests: DeletionRequest[];
 }
 
 export interface MasterRubricArea {

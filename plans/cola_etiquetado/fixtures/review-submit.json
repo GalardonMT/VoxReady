@@ -1,0 +1,20 @@
+{
+  "leaseToken": "fixture-token-not-a-real-secret",
+  "leaseGeneration": 4,
+  "expectedContentRevision": 1,
+  "idempotencyKey": "60000000-0000-4000-8000-000000000001",
+  "overallComment": "La respuesta fue coherente; se ajustan empatía y contacto visual según la evidencia observable.",
+  "rubricCorrections": [
+    { "areaId": "40000000-0000-4000-8000-000000000001", "correctedValue": 55, "comment": null },
+    { "areaId": "40000000-0000-4000-8000-000000000002", "correctedValue": 52, "comment": null },
+    { "areaId": "40000000-0000-4000-8000-000000000003", "correctedValue": 49, "comment": null },
+    { "areaId": "40000000-0000-4000-8000-000000000004", "correctedValue": 50, "comment": "Se observó reconocimiento explícito del impacto en las personas." }
+  ],
+  "metricCorrections": [
+    { "metricKey": "voice.wpm", "correctedValue": 136, "comment": null },
+    { "metricKey": "voice.filler_density", "correctedValue": 2.4, "comment": null },
+    { "metricKey": "voice.phonation_ratio", "correctedValue": 68, "comment": null },
+    { "metricKey": "vision.eye_contact", "correctedValue": 55, "comment": "El tramo central mantiene mirada a cámara por más tiempo que la detección automática." }
+  ],
+  "supersedesReviewId": null
+}

@@ -909,17 +909,19 @@ function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void |
   return <div className="progress-error" role="alert"><span>{message}</span><button type="button" className="btn" onClick={() => void onRetry()}>Reintentar</button></div>;
 }
 
-function ProgressSummary({ progress, loading, error, onRetry, onChooseScenario }: {
+export function ProgressSummary({ progress, loading, error, onRetry, onChooseScenario, emptyMessage, heading = 'MI PROGRESO' }: {
   progress: ProgressResponse | null;
   loading: boolean;
   error: string;
   onRetry: () => Promise<void>;
-  onChooseScenario: () => void;
+  onChooseScenario?: () => void;
+  emptyMessage?: string;
+  heading?: string;
 }) {
   if (loading) return <div className="card" role="status">Cargando tu progreso…</div>;
-  if (error) return <div className="card"><div className="label">MI PROGRESO</div><ErrorBox message={error} onRetry={onRetry} /></div>;
+  if (error) return <div className="card"><div className="label">{heading}</div><ErrorBox message={error} onRetry={onRetry} /></div>;
   if (!progress || progress.trendSessions.length === 0) {
-    return <div className="card progress-empty"><div><div className="label">MI PROGRESO</div><h3>Completa tu primera práctica para comenzar a ver tu progreso</h3><p className="legend">Aquí aparecerán las tendencias y la comparación entre tus sesiones completadas.</p></div><button type="button" className="btn pri" onClick={onChooseScenario}>Elegir escenario</button></div>;
+    return <div className="card progress-empty"><div><div className="label">{heading}</div><h3>{emptyMessage || 'Completa tu primera práctica para comenzar a ver tu progreso'}</h3>{onChooseScenario && <p className="legend">Aquí aparecerán las tendencias y la comparación entre tus sesiones completadas.</p>}</div>{onChooseScenario && <button type="button" className="btn pri" onClick={onChooseScenario}>Elegir escenario</button>}</div>;
   }
   return (
     <div className="row" style={{ marginBottom: '18px', alignItems: 'stretch' }}>

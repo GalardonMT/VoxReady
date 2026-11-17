@@ -1,8 +1,5 @@
 import {
-  Scenario,
   DemoMicrolesson,
-  TopicConfig,
-  RetentionSettings,
   MasterRubric,
   CoachReport,
   UserSession
@@ -38,81 +35,6 @@ export const TEST_USERS: UserSession[] = [
     clientName: 'VoxReady Platform',
     initials: 'ED',
     preferredLanguage: 'es'
-  }
-];
-
-export const INITIAL_SCENARIOS: Scenario[] = [
-  {
-    id: 'scen-01',
-    name: 'Retiro de producto',
-    category: 'Sanitaria',
-    context: 'Eres el vocero ante la prensa tras detectar un defecto grave en un lote de producción farmacéutica. Entrevista de 8 preguntas.',
-    audience: 'Dirección',
-    difficulty: 'Intermedio',
-    estimatedMinutes: 6,
-    questionsCount: 8,
-    languages: ['es', 'en'],
-    imageUrl: ''
-  },
-  {
-    id: 'scen-02',
-    name: 'Incidente de seguridad',
-    category: 'Operativa',
-    context: 'Filtración masiva de datos y registros confidenciales de clientes. Debes informar a la comunidad con serenidad sin detonar alarma desproporcionada.',
-    audience: 'Planta',
-    difficulty: 'Difícil',
-    estimatedMinutes: 5,
-    questionsCount: 6,
-    languages: ['es'],
-    imageUrl: ''
-  },
-  {
-    id: 'scen-03',
-    name: 'Crisis reputacional en redes',
-    category: 'Reputacional',
-    context: 'Campaña viral en redes sociales acusando a la empresa de prácticas laborales cuestionables. Respuesta rápida frente a medios digitales.',
-    audience: 'Dirección',
-    difficulty: 'Intermedio',
-    estimatedMinutes: 7,
-    questionsCount: 8,
-    languages: ['es', 'en', 'pt'],
-    imageUrl: ''
-  },
-  {
-    id: 'scen-04',
-    name: 'Accidente en línea de envasado',
-    category: 'Operativa',
-    context: 'Paralización de faenas por falla mecánica con heridos leves. Declaración formal ante autoridades y sindicatos.',
-    audience: 'Planta',
-    difficulty: 'Fácil',
-    estimatedMinutes: 4,
-    questionsCount: 5,
-    languages: ['es'],
-    imageUrl: ''
-  },
-  {
-    id: 'scen-05',
-    name: 'Falla crítica de infraestructura cloud',
-    category: 'Operativa',
-    context: 'Caída de servicios que impacta transacciones bancarias de millones de usuarios. Vocería técnica pero con empatía hacia el usuario final.',
-    audience: 'Técnicos',
-    difficulty: 'Difícil',
-    estimatedMinutes: 6,
-    questionsCount: 7,
-    languages: ['es', 'en'],
-    imageUrl: ''
-  },
-  {
-    id: 'scen-06',
-    name: 'Contaminación microbiológica de lotes',
-    category: 'Sanitaria',
-    context: 'Retiro preventivo en cadenas de supermercados. Manejo riguroso de evidencia científica y medidas correctivas.',
-    audience: 'Dirección',
-    difficulty: 'Intermedio',
-    estimatedMinutes: 6,
-    questionsCount: 8,
-    languages: ['es', 'en', 'pt'],
-    imageUrl: ''
   }
 ];
 
@@ -176,73 +98,6 @@ export const INITIAL_PROGRESS = {
     [40, 46, 50, 54, 58]  // Empatía
   ],
   chartColors: ['#17354F', '#DB6427', '#2f9c83', '#8a8a8a']
-};
-
-export const INITIAL_TOPICS: TopicConfig[] = [
-  {
-    id: 'top-01',
-    name: 'Retiro de producto',
-    context: 'Detección de defecto en lote cosmético y farmacéutico. Gestión de retiro voluntario preventivo.',
-    optics: 'Empática',
-    audience: 'Dirección',
-    languages: ['ES', 'EN'],
-    retention: '90 días',
-    keyMessages: [
-      'La salud y seguridad de nuestros usuarios es la prioridad intransable.',
-      'Hemos habilitado canales de canje y devolución inmediata sin costo.'
-    ],
-    redLines: [
-      'No admitir culpa civil antes del peritaje técnico concluyente.',
-      'No descalificar las quejas de los usuarios en redes sociales.'
-    ]
-  },
-  {
-    id: 'top-02',
-    name: 'Incidente de seguridad informática',
-    context: 'Acceso no autorizado a base de datos de auditoría interna. Posible filtración de credenciales.',
-    optics: 'Técnica',
-    audience: 'Planta',
-    languages: ['ES'],
-    retention: 'Solo métricas',
-    keyMessages: [
-      'Los sistemas perimetrales contuvieron el 98% del tráfico anómalo.',
-      'Se activó el protocolo SOC nivel 3 con restablecimiento de claves forzado.'
-    ],
-    redLines: [
-      'No especular sobre el origen geográfico del ciberataque.',
-      'No prometer plazos que no dependan del equipo de ciberseguridad.'
-    ]
-  },
-  {
-    id: 'top-03',
-    name: 'Crisis reputacional',
-    context: 'Reportaje televisivo sobre impacto ambiental en cuenca hídrica.',
-    optics: 'Formal',
-    audience: 'Dirección',
-    languages: ['ES', 'EN', 'PT'],
-    retention: '30 días',
-    keyMessages: [
-      'Cumplimos el 100% de la norma ambiental vigente con certificaciones al día.',
-      'Iniciaremos mesas de diálogo abiertas con las comunidades ribereñas.'
-    ],
-    redLines: [
-      'No atacar la credibilidad de los periodistas o medios de comunicación.'
-    ]
-  }
-];
-
-export const INITIAL_RETENTION_SETTINGS: RetentionSettings = {
-  keep: 'full_recording',
-  termDays: 90,
-  deletionRequests: [
-    {
-      id: 'del-01',
-      userId: 'usr-spokesperson-01',
-      userLabel: 'Vocero #14 (Ana Torres)',
-      requestedAt: '22 jun 2026',
-      status: 'pending'
-    }
-  ]
 };
 
 export const INITIAL_MASTER_RUBRIC: MasterRubric = {

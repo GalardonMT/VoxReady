@@ -6,7 +6,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, field_validator
-from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
@@ -21,6 +21,10 @@ import spokesperson_store
 import microlessons as microlesson_store
 import metrics_store
 import client_store
+import client_scenarios as client_scenario_store
+import client_usage
+import master_dashboard_store
+from schemas.master_dashboard import MasterDashboardResponse
 from labeling_api import create_labeling_router, LabelingProblem
 
 # Cargar variables de entorno locales si existen
@@ -160,10 +164,12 @@ try:
     from schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
     from schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from services.worker_client import trigger_worker_analysis
+    from services.ai_inference import FollowUpInput, FollowUpResponse, get_ai_inference_service
 except (ImportError, ValueError):
     from backend.schemas.session import TurnInterval, FinishSessionRequest, WorkerTriggerPayload
     from backend.schemas.schedule import ScheduleCreateRequest, ScheduleUpdateRequest
     from backend.services.worker_client import trigger_worker_analysis
+    from backend.services.ai_inference import FollowUpInput, FollowUpResponse, get_ai_inference_service
 
 # 5. Servicios de persistencia de usuarios (Azure SQL)
 def _normalize_sql_conn_str(conn_str: str) -> str:
@@ -343,6 +349,47 @@ def list_scenarios(category: str = "", q: str = "", page: int = 1, pageSize: int
 @app.get("/v1/scenarios/{scenario_id}")
 def get_scenario(scenario_id: str, user: dict = Depends(verify_token)):
     return spokesperson_store.scenario_detail(SQL_CONN_STR, user, scenario_id)
+
+
+@app.get(
+    "/api/client/scenarios",
+    response_model=client_scenario_store.ClientScenarioListResponse,
+)
+@app.get(
+    "/v1/api/client/scenarios",
+    response_model=client_scenario_store.ClientScenarioListResponse,
+)
+def list_client_scenarios(
+    response: Response,
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    user: dict = Depends(verify_token),
+):
+    client_scenario_store.mark_private_no_store(response)
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        client_id = client_scenario_store.require_client_admin(profile)
+        return client_scenario_store.list_available(cursor, client_id, page, pageSize)
+
+
+@app.get(
+    "/api/client/scenarios/{scenario_id}",
+    response_model=client_scenario_store.ClientScenarioDetail,
+)
+@app.get(
+    "/v1/api/client/scenarios/{scenario_id}",
+    response_model=client_scenario_store.ClientScenarioDetail,
+)
+def get_client_scenario(
+    scenario_id: uuid.UUID,
+    response: Response,
+    user: dict = Depends(verify_token),
+):
+    client_scenario_store.mark_private_no_store(response)
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        client_id = client_scenario_store.require_client_admin(profile)
+        return client_scenario_store.get_available(cursor, client_id, scenario_id)
 
 @app.post("/sessions", status_code=201)
 @app.post("/v1/sessions", status_code=201)
@@ -810,6 +857,54 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
     }
 
 
+@app.post("/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+@app.post("/v1/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+@app.post("/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+@app.post("/v1/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+async def generate_session_follow_up(
+    session_id: str,
+    payload: FollowUpInput,
+    user: dict = Depends(verify_token)
+):
+    """
+    Genera una contrapregunta periodística dinámica de baja latencia con Gemini 3.5 Flash Lite
+    cuando el usuario avanza de pregunta durante la entrevista (Tarea 2 de Indicaciones.md).
+    """
+    ai_svc = get_ai_inference_service()
+
+    # Si no se proporcionan líneas rojas explícitas, recuperarlas desde Azure SQL si la sesión existe
+    if not payload.topicRedLines and SQL_CONN_STR:
+        try:
+            conn_str = _normalize_sql_conn_str(SQL_CONN_STR)
+            with pyodbc.connect(conn_str, timeout=5) as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT r.rule_text 
+                    FROM dbo.topic_red_line r
+                    JOIN dbo.scenario s ON s.topic_id = r.topic_id
+                    JOIN dbo.session sess ON sess.scenario_id = s.id
+                    WHERE sess.id = ?
+                """, _safe_uuid(session_id))
+                rows = cur.fetchall()
+                if rows:
+                    payload.topicRedLines = [r[0] for r in rows if r[0]]
+        except Exception as e_rl:
+            logger.warning(f"Aviso recuperando líneas rojas para follow-up: {e_rl}")
+
+    return ai_svc.generate_dynamic_follow_up(payload)
+
+
+@app.post("/api/ai/follow-up", response_model=FollowUpResponse)
+@app.post("/v1/api/ai/follow-up", response_model=FollowUpResponse)
+async def generate_direct_follow_up(
+    payload: FollowUpInput,
+    user: dict = Depends(verify_token)
+):
+    """Generación directa de contrapregunta periodística sin vincular a sesión específica."""
+    ai_svc = get_ai_inference_service()
+    return ai_svc.generate_dynamic_follow_up(payload)
+
+
 def _generate_playback_sas_url(session_id: str, duration_minutes: int = 60) -> str:
     """Genera URL temporal SAS de lectura para la grabación de la sesión."""
     if not STORAGE_CONN_STR:
@@ -1040,6 +1135,12 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         "visumExecutive": visum_executive,
         "metricsSummary": metrics_summary,
         "metrics": metrics_obj,
+        "governance": final_report.get("governance") or {
+            "pipelineConfidenceScore": 70.0,
+            "interChannelDisparityDelta": 0.0,
+            "requiresHumanReview": False,
+            "rubricVersionCode": "published"
+        },
         "puntuacion_global": final_report.get("puntuacion_global", {}),
         "transcript": final_report.get("transcript") or ""
     }
@@ -1161,6 +1262,16 @@ class MetricPublishRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+@app.get('/api/master/dashboard', response_model=MasterDashboardResponse)
+@app.get('/v1/master/dashboard', response_model=MasterDashboardResponse)
+@app.get('/v1/api/master/dashboard', response_model=MasterDashboardResponse)
+def master_dashboard(response: Response, user: dict = Depends(verify_token)):
+    response.headers['Cache-Control'] = 'no-store'
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return master_dashboard_store.dashboard(cursor)
+
+
 @app.get('/api/master/metrics')
 @app.get('/v1/api/master/metrics')
 def master_metrics(user: dict = Depends(verify_token)):
@@ -1247,6 +1358,31 @@ def master_spokespersons(
         return {"items": items, "total": len(items)}
 
 
+@app.get('/api/master/clients/{client_id}/spokespersons')
+@app.get('/v1/api/master/clients/{client_id}/spokespersons')
+def master_client_spokespersons(client_id: uuid.UUID, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        items = client_store.list_client_spokespersons(cursor, client_id)
+        return {"items": items, "total": len(items)}
+
+
+@app.get('/api/master/clients/{client_id}/spokespersons/{spokesperson_id}/progress')
+@app.get('/v1/api/master/clients/{client_id}/spokespersons/{spokesperson_id}/progress')
+def master_client_spokesperson_progress(
+    client_id: uuid.UUID,
+    spokesperson_id: uuid.UUID,
+    lastN: int = 5,
+    user: dict = Depends(verify_token),
+):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        member_id, target_client_id = client_store.require_client_spokesperson(
+            cursor, client_id, spokesperson_id
+        )
+        return progress_store.progress_for_spokesperson(cursor, member_id, target_client_id, lastN)
+
+
 @app.post('/api/master/clients/{client_id}/spokespersons')
 @app.post('/v1/api/master/clients/{client_id}/spokespersons')
 def master_link_spokespersons(
@@ -1257,6 +1393,147 @@ def master_link_spokespersons(
     with master_store.database(SQL_CONN_STR) as cursor:
         master_store.resolve_user(cursor, user, master=True)
         return client_store.link_spokespersons(cursor, client_id, payload.spokespersonIds)
+
+
+@app.get('/api/client/spokespersons')
+@app.get('/v1/api/client/spokespersons')
+def client_spokespersons(user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        items = client_store.list_client_spokespersons(cursor, profile['client_id'])
+        return {'items': items, 'total': len(items)}
+
+
+@app.get('/api/client/usage')
+@app.get('/v1/api/client/usage')
+def client_usage_summary(
+    days: int = Query(30),
+    user_id: uuid.UUID | None = Query(None, alias='userId'),
+    scenario_id: uuid.UUID | None = Query(None, alias='scenarioId'),
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_usage(
+            cursor,
+            profile['client_id'],
+            days=days,
+            user_id=user_id,
+            scenario_id=scenario_id,
+        )
+
+
+@app.get('/api/client/usage/recent')
+@app.get('/v1/api/client/usage/recent')
+def client_recent_activity(
+    days: int = Query(30),
+    user_id: uuid.UUID | None = Query(None, alias='userId'),
+    scenario_id: uuid.UUID | None = Query(None, alias='scenarioId'),
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias='pageSize', ge=1, le=20)] = 5,
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_recent_activity(
+            cursor,
+            profile['client_id'],
+            days=days,
+            user_id=user_id,
+            scenario_id=scenario_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+
+
+@app.get('/api/client/spokespersons/{spokesperson_id}/detail')
+@app.get('/v1/api/client/spokespersons/{spokesperson_id}/detail')
+def client_spokesperson_detail(
+    spokesperson_id: uuid.UUID,
+    days: int = Query(30),
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_spokesperson_detail(
+            cursor, profile['client_id'], spokesperson_id, days=days,
+        )
+
+
+@app.get('/api/client/spokespersons/{spokesperson_id}/sessions')
+@app.get('/v1/api/client/spokespersons/{spokesperson_id}/sessions')
+def client_spokesperson_sessions(
+    spokesperson_id: uuid.UUID,
+    days: int = Query(30),
+    status: Literal['all', 'completed', 'in_progress', 'abandoned'] = 'all',
+    scenario_id: uuid.UUID | None = Query(None, alias='scenarioId'),
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias='pageSize', ge=1, le=20)] = 5,
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_spokesperson_sessions(
+            cursor,
+            profile['client_id'],
+            spokesperson_id,
+            days=days,
+            status=status,
+            scenario_id=scenario_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+
+
+@app.get('/api/client/spokespersons/{spokesperson_id}/microlessons')
+@app.get('/v1/api/client/spokespersons/{spokesperson_id}/microlessons')
+def client_spokesperson_microlessons(
+    spokesperson_id: uuid.UUID,
+    days: int = Query(30),
+    status: Literal['all', 'assigned', 'in_progress', 'completed', 'revoked'] = 'all',
+    query: Annotated[str, StringConstraints(strip_whitespace=True, max_length=150)] = '',
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias='pageSize', ge=1, le=20)] = 5,
+    user: dict = Depends(verify_token),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(422, 'days debe ser 7, 30 o 90.')
+    with master_store.database(SQL_CONN_STR) as cursor:
+        profile = master_store.resolve_user(cursor, user)
+        if profile['role'] != 'client_admin':
+            raise HTTPException(403, 'Se requiere el rol client_admin.')
+        return client_usage.get_spokesperson_microlessons(
+            cursor,
+            profile['client_id'],
+            spokesperson_id,
+            days=days,
+            status=status,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
 
 
 @app.get('/api/master/topics')

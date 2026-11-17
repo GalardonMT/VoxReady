@@ -5,6 +5,8 @@ import type { ClientInfo, ClientStatus, SpokespersonCandidate } from '../../type
 import { ApiError } from '../../services/apiClient';
 import { clientService } from '../../services/clientService';
 import { normalizeClient, validateClient } from '../../services/clientRules';
+import { ClientSpokespersonsView } from './ClientSpokespersonsView';
+import { useI18n } from '../../context/I18nContext';
 
 const statusLabels: Record<ClientStatus, string> = { active: 'Activo', suspended: 'Suspendido' };
 
@@ -73,6 +75,7 @@ const SpokespersonSelector: React.FC<SelectorProps> = ({
 };
 
 export const ClientManagerView: React.FC = () => {
+  const { t } = useI18n();
   const [clients, setClients] = useState<ClientInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -88,6 +91,7 @@ export const ClientManagerView: React.FC = () => {
   const [formSearch, setFormSearch] = useState('');
   const [formSpokespersonIds, setFormSpokespersonIds] = useState<string[]>([]);
   const [managedClient, setManagedClient] = useState<ClientInfo | null>(null);
+  const [viewedClient, setViewedClient] = useState<ClientInfo | null>(null);
   const [manageCandidates, setManageCandidates] = useState<SpokespersonCandidate[]>([]);
   const [manageCandidatesLoading, setManageCandidatesLoading] = useState(false);
   const [manageCandidatesError, setManageCandidatesError] = useState('');
@@ -166,6 +170,12 @@ export const ClientManagerView: React.FC = () => {
     void loadManageCandidates(client);
   };
 
+  const openSpokespersons = (client: ClientInfo) => {
+    setShowForm(false);
+    setManagedClient(null);
+    setViewedClient(client);
+  };
+
   const saveManagement = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!managedClient) return;
@@ -178,6 +188,10 @@ export const ClientManagerView: React.FC = () => {
       setManageError(errorMessage(cause, 'No se pudieron vincular los voceros.'));
     } finally { setManageSaving(false); }
   };
+
+  if (viewedClient) {
+    return <ClientSpokespersonsView key={viewedClient.id} client={viewedClient} onBack={() => setViewedClient(null)} />;
+  }
 
   return <div className="canvas-content">
     <div className="master-heading"><div><h2>Clientes</h2><p className="legend">Empresas registradas en VoxReady.</p></div>
@@ -223,7 +237,10 @@ export const ClientManagerView: React.FC = () => {
         : clients.length === 0 ? <p>No hay clientes registrados.</p> : <div className="master-table-wrap"><table className="master-table">
           <thead><tr><th>Nombre</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{clients.map(client => <tr key={client.id}>
             <td>{client.name}</td><td><span className={`client-status ${client.status ?? 'active'}`}>{statusLabels[client.status ?? 'active']}</span></td>
-            <td><button type="button" className="btn ghost" disabled={manageSaving} onClick={() => openManagement(client)}>Gestionar voceros</button></td>
+            <td><div className="master-actions">
+              <button type="button" className="btn ghost" onClick={() => openSpokespersons(client)}>{t.clientSpokespersons.view}</button>
+              <button type="button" className="btn ghost" disabled={manageSaving} onClick={() => openManagement(client)}>Gestionar voceros</button>
+            </div></td>
           </tr>)}</tbody></table></div>}
     </section>
   </div>;

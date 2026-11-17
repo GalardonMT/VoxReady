@@ -91,7 +91,8 @@ CASE_COLUMNS = [
     "session_finished_at", "queue_reason", "reason_detail_json", "ai_snapshot_json",
     "snapshot_schema_version", "source_status", "status", "lock_owner_id",
     "lock_expires_at", "lease_generation", "content_revision",
-    "recording_evidence_path", "recording_duration_seconds", "client_name",
+    "recording_evidence_path", "recording_sha256", "recording_etag",
+    "recording_content_type", "recording_duration_seconds", "client_name",
     "speaker_id", "started_at", "scenario_title", "report_generated_at",
     "overall_score", "latest_review_id", "latest_review_no", "latest_reviewer_id",
     "latest_submitted_at", "current_review_id", "current_review_no",
@@ -99,15 +100,27 @@ CASE_COLUMNS = [
 ]
 
 
-def case_row(*, status="pending", finished=None, case_id=CASE_ID, reviewed=False):
+def case_row(
+    *,
+    status="pending",
+    source_status="complete",
+    evidence=True,
+    finished=None,
+    case_id=CASE_ID,
+    reviewed=False,
+):
     finished = finished or NOW
     latest = "77777777-7777-4777-8777-777777777777" if reviewed else None
     return (
         case_id, 8844, CLIENT_ID, REPORT_ID, RUBRIC_ID, finished, "critical",
         json.dumps({"kind": "critical", "overallScore": 48, "overallThreshold": 50,
                     "criticalAreaKeys": ["empathy"]}),
-        json.dumps(snapshot()), 1, "complete", status, None, None, 0, 1,
-        "labeling-evidence/session/job/hash.webm", 249.6, "Organización de prueba",
+        json.dumps(snapshot()), 1, source_status, status, None, None, 0, 1,
+        "labeling-evidence/session/job/hash.webm" if evidence else None,
+        bytes.fromhex("a" * 64) if evidence else None,
+        '"etag"' if evidence else None,
+        "video/webm" if evidence else None,
+        249.6 if evidence else None, "Organización de prueba",
         SESSION_ID, finished - timedelta(minutes=4, seconds=10), "Crisis reputacional",
         finished + timedelta(seconds=10), 48, latest, 1 if reviewed else None,
         ACTOR_A if reviewed else None, finished + timedelta(minutes=5) if reviewed else None,
@@ -165,7 +178,16 @@ def test_pending_and_reviewed_lists_are_bounded_stable_and_exclusive():
     pending_sql = next(sql for sql, _ in pending_cursor.statements if "labeling:list:pending" in sql)
     reviewed_sql = next(sql for sql, _ in reviewed_cursor.statements if "labeling:list:reviewed" in sql)
     assert "lc.status=?" in pending_sql and "lc.session_finished_at DESC,lc.id DESC" in pending_sql
+    assert "lc.source_status<>'ambiguous'" in pending_sql
+    assert "lc.recording_evidence_path LIKE 'labeling-evidence/%'" in pending_sql
+    assert "lc.recording_evidence_path NOT LIKE '%..%'" in pending_sql
+    assert "DATALENGTH(lc.recording_sha256)=32" in pending_sql
+    assert "LOWER(LTRIM(RTRIM(lc.recording_content_type))) LIKE 'video/%'" in pending_sql
     assert "lc.status=?" in reviewed_sql and "latest.submitted_at DESC,latest.id DESC" in reviewed_sql
+    assert "lc.source_status<>'ambiguous'" not in reviewed_sql
+    pending_count_sql = next(sql for sql, _ in pending_cursor.statements if "labeling:list:count" in sql)
+    assert "lc.source_status<>'ambiguous'" in pending_count_sql
+    assert "DATALENGTH(lc.recording_sha256)=32" in pending_count_sql
     assert "UPDLOCK" not in pending_sql and "HOLDLOCK" not in pending_sql
     with pytest.raises(labeling_store.LabelingStoreError) as error:
         labeling_store.list_cases(ReadCursor([]), status="pending", limit=11, now=NOW)
@@ -205,8 +227,51 @@ def test_detail_marks_expired_lease_without_exposing_former_owner():
     }
 
 
+def test_detail_blocks_pending_partial_case_without_sealed_evidence():
+    cursor = ReadCursor([case_row(source_status="partial", evidence=False)])
+
+    with pytest.raises(labeling_store.LabelingStoreError) as error:
+        labeling_store.get_case_detail(cursor, CASE_ID, actor_id=ACTOR_A, now=NOW)
+
+    assert error.value.code == "SOURCE_NOT_REVIEWABLE"
+    assert error.value.status == 409
+
+
+def test_detail_allows_partial_case_with_complete_evidence():
+    detail = labeling_store.get_case_detail(
+        ReadCursor([case_row(source_status="partial", evidence=True)]),
+        CASE_ID,
+        actor_id=ACTOR_A,
+        now=NOW,
+    )
+
+    assert detail["sourceStatus"] == "partial"
+    assert detail["recording"]["availability"] == "available"
+
+
+def test_detail_keeps_reviewed_historical_case_visible_without_evidence():
+    detail = labeling_store.get_case_detail(
+        ReadCursor(
+            [
+                case_row(
+                    status="reviewed",
+                    source_status="partial",
+                    evidence=False,
+                    reviewed=True,
+                )
+            ]
+        ),
+        CASE_ID,
+        actor_id=ACTOR_A,
+        now=NOW,
+    )
+
+    assert detail["status"] == "reviewed"
+    assert detail["lease"]["state"] == "not_claimable"
+
+
 class DomainCursor:
-    def __init__(self, *, source_status="complete", status="pending"):
+    def __init__(self, *, source_status="complete", status="pending", evidence=True):
         self.case = {
             "id": CASE_ID,
             "client_id": CLIENT_ID,
@@ -219,6 +284,12 @@ class DomainCursor:
             "content_revision": 1,
             "ai_snapshot_json": json.dumps(snapshot()),
             "rubric_version_id": RUBRIC_ID,
+            "recording_evidence_path": (
+                "labeling-evidence/session/job/hash.webm" if evidence else None
+            ),
+            "recording_sha256": bytes.fromhex("a" * 64) if evidence else None,
+            "recording_etag": '"etag"' if evidence else None,
+            "recording_content_type": "video/webm" if evidence else None,
         }
         self.row = None
         self.rows = []
@@ -245,6 +316,8 @@ class DomainCursor:
                 "id", "client_id", "status", "source_status", "lock_owner_id",
                 "lock_token_hash", "lock_expires_at", "lease_generation",
                 "content_revision", "ai_snapshot_json", "rubric_version_id",
+                "recording_evidence_path", "recording_sha256", "recording_etag",
+                "recording_content_type",
             ))
         elif "labeling:lease:claim" in statement:
             self.case.update({
@@ -375,6 +448,27 @@ def review_request(lease, *, key="88888888-8888-4888-8888-888888888888",
              "comment": "Se excluyó el silencio inicial"}
         ],
     }
+
+
+def test_partial_without_sealed_evidence_cannot_be_claimed_or_reviewed():
+    cursor = DomainCursor(source_status="partial", evidence=False)
+
+    with pytest.raises(labeling_store.LabelingStoreError) as claim_error:
+        acquire(cursor)
+    assert claim_error.value.code == "CASE_NOT_CLAIMABLE"
+
+    with pytest.raises(labeling_store.LabelingStoreError) as review_error:
+        labeling_store.submit_review(cursor, CASE_ID, ACTOR_A, {}, now=NOW)
+    assert review_error.value.code == "SOURCE_NOT_REVIEWABLE"
+    assert not any("labeling:lease:claim" in sql for sql, _ in cursor.statements)
+    assert cursor.review_inserts == 0
+
+
+def test_partial_with_complete_evidence_can_be_claimed():
+    lease = acquire(DomainCursor(source_status="partial", evidence=True))
+
+    assert lease["leaseGeneration"] == 1
+    assert lease["readOnly"] is False
 
 
 def test_claim_claim_renew_release_reclaim_and_two_tabs():

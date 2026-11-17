@@ -1,72 +1,96 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useI18n } from '../../context/I18nContext';
-import { topicService } from '../../services/topicService';
-import { TopicConfig } from '../../types/api';
+import { clientAdminService } from '../../services/clientAdminService';
+import {
+  clientScenarioLabels,
+  clientScenarioService,
+  type ClientScenarioSummary,
+} from '../../services/clientScenarioService';
 
-export type AdminScreen = 'a1' | 'a2' | 'a3';
-
-interface ClientDashboardProps {
-  onNavigate: (screen: AdminScreen, topicId?: string | null) => void;
-}
-
-export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) => {
+export const ClientDashboard: React.FC = () => {
   const { t } = useI18n();
   const d = t.L.a1;
 
-  const [topics, setTopics] = useState<TopicConfig[]>([]);
+  const [scenarios, setScenarios] = useState<ClientScenarioSummary[]>([]);
+  const [scenarioTotal, setScenarioTotal] = useState<number | null>(null);
+  const [spokespersonCount, setSpokespersonCount] = useState<number | null>(null);
+  const [completedSessions, setCompletedSessions] = useState<number | null>(null);
+  const [participationRate, setParticipationRate] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
-    async function loadTopics() {
-      setIsLoading(true);
+
+    async function loadScenarios() {
       try {
-        const data = await topicService.getTopics();
+        const response = await clientScenarioService.list({ page: 1, pageSize: 100 });
         if (isMounted) {
-          setTopics(data);
+          setScenarios(response.items);
+          setScenarioTotal(response.total);
         }
       } catch {
-        // Manejado por topicService
-      } finally {
         if (isMounted) {
-          setIsLoading(false);
+          setScenarios([]);
+          setScenarioTotal(null);
+        }
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    }
+
+    async function loadSpokespersonCount() {
+      try {
+        const items = await clientAdminService.spokespersons();
+        if (isMounted) setSpokespersonCount(items.length);
+      } catch {
+        if (isMounted) setSpokespersonCount(null);
+      }
+    }
+
+    async function loadUsageSummary() {
+      try {
+        const result = await clientAdminService.usage({ days: 30 });
+        if (isMounted) {
+          setCompletedSessions(result.summary.completedSessions);
+          setParticipationRate(result.summary.participationRate);
+        }
+      } catch {
+        if (isMounted) {
+          setCompletedSessions(null);
+          setParticipationRate(null);
         }
       }
     }
-    loadTopics();
+
+    void loadScenarios();
+    void loadSpokespersonCount();
+    void loadUsageSummary();
+
     return () => {
       isMounted = false;
     };
   }, []);
 
-  const handleDelete = async (id: string) => {
-    try {
-      const updated = await topicService.deleteTopic(id);
-      setTopics(updated);
-      setDeleteConfirmId(null);
-    } catch {
-      alert('Error al eliminar el tema.');
-    }
-  };
-
-  const statValues = [topics.length, 38, 152, 71];
+  const statValues: Array<number | string> = [
+    scenarioTotal ?? '—',
+    spokespersonCount ?? '—',
+    completedSessions ?? '—',
+    participationRate === null ? '—' : `${participationRate}%`,
+  ];
 
   return (
     <div className="canvas-content">
-      {/* KPI Stats */}
       <div className="grid4" style={{ marginBottom: '20px' }}>
-        {d.st.map((k, i) => (
-          <div key={i} className="stat">
-            <div className="k">{k}</div>
-            <div className="v">{statValues[i]}</div>
+        {d.st.map((label, index) => (
+          <div key={label} className="stat">
+            <div className="k">{label}</div>
+            <div className="v">{statValues[index]}</div>
           </div>
         ))}
       </div>
 
-      {/* Themes Table Section Header */}
       <div
         className="card"
         style={{
@@ -74,152 +98,59 @@ export const ClientDashboard: React.FC<ClientDashboardProps> = ({ onNavigate }) 
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          padding: '14px 18px'
+          padding: '14px 18px',
         }}
       >
         <div>
           <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--ink)' }}>
-            📋 {d.themesL} ({topics.length})
+            📋 Escenarios asignados ({scenarioTotal ?? 0})
           </div>
           <div style={{ fontSize: '12.5px', color: 'var(--muted)', marginTop: '2px' }}>
-            Temas y escenarios de crisis configurados para la práctica de tus voceros
+            Escenarios activos asignados por el configurador Maestro a tu organización
           </div>
         </div>
-        <button
-          type="button"
-          className="btn pri"
-          onClick={() => onNavigate('a2', 'new')}
-        >
-          {d.newT}
-        </button>
       </div>
 
-      {/* Themes Table */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         {isLoading ? (
           <div style={{ padding: '30px', textAlign: 'center', color: 'var(--muted)' }}>
-            Cargando temas configurados...
+            Cargando escenarios asignados...
           </div>
-        ) : topics.length === 0 ? (
+        ) : scenarios.length === 0 ? (
           <div style={{ padding: '40px 20px', textAlign: 'center' }}>
-            <p style={{ color: 'var(--muted)', fontSize: '14px', marginBottom: '14px' }}>
-              No hay temas configurados todavía.
+            <p style={{ color: 'var(--muted)', fontSize: '14px' }}>
+              El configurador Maestro todavía no ha asignado escenarios activos a tu organización.
             </p>
-            <button
-              type="button"
-              className="btn pri"
-              onClick={() => onNavigate('a2', 'new')}
-            >
-              ➕ Crear el primer tema
-            </button>
           </div>
         ) : (
           <table className="wf">
             <thead>
               <tr>
-                <th>{d.th[0] || 'Tema'}</th>
-                <th>{d.th[1] || 'Público interno'}</th>
+                <th>Escenario</th>
+                <th>Categoría</th>
+                <th>Público interno</th>
                 <th>Óptica</th>
-                <th>{d.th[2] || 'Idiomas'}</th>
-                <th>{d.th[3] || 'Retención'}</th>
-                <th style={{ textAlign: 'right' }}>{d.th[4] || 'Acciones'}</th>
+                <th>Dificultad</th>
               </tr>
             </thead>
             <tbody>
-              {topics.map((topic) => (
-                <tr key={topic.id}>
+              {scenarios.map((scenario) => (
+                <tr key={scenario.id}>
                   <td>
-                    <div style={{ fontWeight: 600, color: 'var(--ink)' }}>{topic.name}</div>
-                    {topic.context && (
-                      <div
-                        style={{
-                          fontSize: '11.5px',
-                          color: 'var(--muted)',
-                          maxWidth: '280px',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          marginTop: '2px'
-                        }}
-                      >
-                        {topic.context}
-                      </div>
-                    )}
+                    <div style={{ fontWeight: 600, color: 'var(--ink)' }}>{scenario.title}</div>
+                    <div style={{ fontSize: '11.5px', color: 'var(--muted)', marginTop: '2px' }}>
+                      {scenario.estimatedMinutes} min · {scenario.questionCount}{' '}
+                      {scenario.questionCount === 1 ? 'pregunta' : 'preguntas'}
+                    </div>
                   </td>
+                  <td>{clientScenarioLabels.category[scenario.category]}</td>
                   <td>
                     <span className="pill on" style={{ fontSize: '11px', padding: '2px 8px' }}>
-                      {topic.audience || 'Dirección'}
+                      {clientScenarioLabels.audience[scenario.audience]}
                     </span>
                   </td>
-                  <td>
-                    <span
-                      style={{
-                        fontSize: '11.5px',
-                        padding: '2px 8px',
-                        borderRadius: '4px',
-                        background: 'var(--soft)',
-                        fontWeight: 500
-                      }}
-                    >
-                      {topic.optics || 'Empática'}
-                    </span>
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      {(topic.languages || ['ES']).map((lang) => (
-                        <span key={lang} className="tagm" style={{ padding: '1px 6px', fontSize: '10.5px' }}>
-                          {lang}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td>
-                    <span className="tagm">{topic.retention || '90 días'}</span>
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
-                      <button
-                        type="button"
-                        className="btn"
-                        style={{ padding: '4px 10px', fontSize: '11.5px' }}
-                        onClick={() => onNavigate('a2', topic.id)}
-                        title="Editar tema"
-                      >
-                        ✏️ {d.edit || 'Editar'}
-                      </button>
-
-                      {deleteConfirmId === topic.id ? (
-                        <div style={{ display: 'inline-flex', gap: '4px', alignItems: 'center' }}>
-                          <button
-                            type="button"
-                            className="btn danger"
-                            style={{ padding: '4px 8px', fontSize: '11px', background: 'var(--danger)', color: '#fff' }}
-                            onClick={() => handleDelete(topic.id)}
-                          >
-                            Confirmar
-                          </button>
-                          <button
-                            type="button"
-                            className="btn ghost"
-                            style={{ padding: '4px 6px', fontSize: '11px' }}
-                            onClick={() => setDeleteConfirmId(null)}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn ghost"
-                          style={{ padding: '4px 8px', fontSize: '11.5px', color: 'var(--muted)' }}
-                          onClick={() => setDeleteConfirmId(topic.id)}
-                          title="Eliminar tema"
-                        >
-                          🗑️
-                        </button>
-                      )}
-                    </div>
-                  </td>
+                  <td>{clientScenarioLabels.optics[scenario.optics]}</td>
+                  <td>{clientScenarioLabels.difficulty[scenario.difficulty]}</td>
                 </tr>
               ))}
             </tbody>
