@@ -315,6 +315,202 @@ def test_ensure_case_is_idempotent_by_report_id():
     assert cursor.inserts == 1
 
 
+class RepairCursor(MaterialCursor):
+    def __init__(self, *, status="pending", source_status="ambiguous"):
+        super().__init__()
+        self.status = status
+        self.source_status = source_status
+        self.stored_path = None
+        self.stored_sha = None
+        self.stored_version = None
+        self.stored_etag = None
+        self.stored_content_type = None
+        self.updates = []
+        self.rowcount = -1
+
+    def execute(self, statement, *params):
+        normalized = " ".join(statement.split()).lower()
+        if "select id,report_id,status,source_status" in normalized:
+            self.row = (
+                "case-id",
+                "report-id",
+                self.status,
+                self.source_status,
+                self.stored_path,
+                self.stored_sha,
+                self.stored_version,
+                self.stored_etag,
+                self.stored_content_type,
+            )
+            self.rowcount = -1
+            return self
+        if "update lc set" in normalized:
+            self.updates.append(params)
+            self.source_status = params[3]
+            self.stored_path = params[4]
+            self.stored_sha = params[6]
+            self.stored_version = params[5]
+            self.stored_etag = params[7]
+            self.stored_content_type = params[8]
+            self.rowcount = 1
+            return self
+        self.rowcount = -1
+        return super().execute(statement, *params)
+
+
+def test_repair_ambiguous_case_rebuilds_canonical_snapshot_once():
+    cursor = RepairCursor()
+    evidence = exact_material()[3]
+
+    first = labeling_runtime.repair_ambiguous_case(
+        cursor, "case-id", evidence, materialize=True
+    )
+    second = labeling_runtime.repair_ambiguous_case(
+        cursor, "case-id", evidence, materialize=True
+    )
+
+    assert first["repaired"] is True
+    assert first["sourceStatus"] == "complete"
+    assert second == {
+        "caseId": "case-id",
+        "repaired": False,
+        "reason": "already_repaired",
+    }
+    assert len(cursor.updates) == 1
+    snapshot = json.loads(cursor.updates[0][2])
+    assert len(snapshot["areas"]) == 4
+    assert len(snapshot["metrics"]) == 16
+    assert snapshot["recording"]["sha256"] == evidence["sha256"]
+
+
+def test_repair_ambiguous_case_dry_run_does_not_update():
+    cursor = RepairCursor()
+
+    result = labeling_runtime.repair_ambiguous_case(
+        cursor, "case-id", exact_material()[3], materialize=False
+    )
+
+    assert result["repairable"] is True
+    assert result["repaired"] is False
+    assert cursor.updates == []
+
+
+def test_repair_partial_case_without_evidence_rebuilds_snapshot():
+    cursor = RepairCursor(source_status="partial")
+
+    result = labeling_runtime.repair_ambiguous_case(
+        cursor, "case-id", exact_material()[3], materialize=True
+    )
+
+    assert result["repaired"] is True
+    assert result["sourceStatus"] == "complete"
+    assert len(cursor.updates) == 1
+
+
+def test_repair_partial_case_with_same_complete_evidence_is_noop():
+    cursor = RepairCursor(source_status="partial")
+    current = exact_material()[3]
+    cursor.stored_path = current["sealedPath"]
+    cursor.stored_sha = bytes.fromhex(current["sha256"])
+    cursor.stored_version = current["versionId"]
+    cursor.stored_etag = current["etag"]
+    cursor.stored_content_type = current["contentType"]
+
+    result = labeling_runtime.repair_ambiguous_case(
+        cursor, "case-id", current, materialize=True
+    )
+
+    assert result == {
+        "caseId": "case-id",
+        "repaired": False,
+        "reason": "already_valid",
+    }
+    assert cursor.updates == []
+
+
+def test_repair_rejects_conflicting_incomplete_historical_evidence():
+    cursor = RepairCursor(source_status="partial")
+    cursor.stored_path = "labeling-evidence/other/job/hash.webm"
+
+    with pytest.raises(labeling_runtime.LabelingRuntimeError, match="otra evidencia"):
+        labeling_runtime.repair_ambiguous_case(
+            cursor, "case-id", exact_material()[3], materialize=True
+        )
+
+    assert cursor.updates == []
+
+
+def test_repair_does_not_modify_reviewed_case():
+    cursor = RepairCursor(status="reviewed")
+
+    result = labeling_runtime.repair_ambiguous_case(
+        cursor, "case-id", exact_material()[3], materialize=True
+    )
+
+    assert result == {
+        "caseId": "case-id",
+        "repaired": False,
+        "reason": "not_pending",
+    }
+    assert cursor.updates == []
+
+
+def test_repair_rejects_different_evidence_after_success():
+    cursor = RepairCursor(source_status="complete")
+    cursor.stored_path = exact_material()[3]["sealedPath"]
+    cursor.stored_sha = bytes.fromhex(exact_material()[3]["sha256"])
+    cursor.stored_version = exact_material()[3]["versionId"]
+    cursor.stored_etag = exact_material()[3]["etag"]
+    cursor.stored_content_type = exact_material()[3]["contentType"]
+    different = {**exact_material()[3], "sha256": "b" * 64}
+
+    with pytest.raises(labeling_runtime.LabelingRuntimeError, match="otra evidencia"):
+        labeling_runtime.repair_ambiguous_case(
+            cursor, "case-id", different, materialize=True
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("versionId", "different-version"),
+        ("etag", '"different-etag"'),
+        ("contentType", "video/mp4"),
+    ],
+)
+def test_repair_rejects_any_different_evidence_identity(field, value):
+    cursor = RepairCursor(source_status="complete")
+    current = exact_material()[3]
+    cursor.stored_path = current["sealedPath"]
+    cursor.stored_sha = bytes.fromhex(current["sha256"])
+    cursor.stored_version = current["versionId"]
+    cursor.stored_etag = current["etag"]
+    cursor.stored_content_type = current["contentType"]
+
+    with pytest.raises(labeling_runtime.LabelingRuntimeError, match="otra evidencia"):
+        labeling_runtime.repair_ambiguous_case(
+            cursor, "case-id", {**current, field: value}, materialize=True
+        )
+
+
+def test_repair_rejects_partial_snapshot_without_update(monkeypatch):
+    cursor = RepairCursor()
+    original_builder = labeling_runtime.build_labeling_snapshot
+
+    def partial_builder(**kwargs):
+        built = original_builder(**kwargs)
+        return {**built, "sourceStatus": "partial"}
+
+    monkeypatch.setattr(labeling_runtime, "build_labeling_snapshot", partial_builder)
+
+    with pytest.raises(labeling_runtime.LabelingRuntimeError, match="snapshot canónico completo"):
+        labeling_runtime.repair_ambiguous_case(
+            cursor, "case-id", exact_material()[3], materialize=True
+        )
+
+    assert cursor.updates == []
+
+
 class ListingCursor:
     def __init__(self):
         self.statement = ""

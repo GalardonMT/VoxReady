@@ -19,7 +19,12 @@ try:
     from core.llm_judge import LLMJudgeService
     from core.narrative_generator import generate_visum_report
     from core.vision_client import VisionClient
-    from core.report_builder import calculate_expression_area_score, sanitize_report_json, compute_empathy_score
+    from core.report_builder import (
+        calculate_expression_area_score,
+        sanitize_report_json,
+        compute_empathy_score,
+        compute_governance_metrics,
+    )
     from core.scoring_rules import (
         WEIGHT_EXPRESSION,
         WEIGHT_VOICE,
@@ -30,14 +35,24 @@ try:
         VOICE_WEIGHT_DICTION,
         RED_LINE_SCORE_CAP,
         DICTION_FALLBACK_SCORE,
+        DynamicRubricConfig,
     )
     from services.db_service import DatabaseService
+    from services.job_status import update_analysis_job_status
+    from services.keyvault_service import get_secret
+    from services.pipeline_results import persist_pipeline_results
+    from services.recording_evidence import seal_recording_evidence
 except (ImportError, ValueError):
     from worker.core.audio_analyzer import AudioAnalyzer
     from worker.core.llm_judge import LLMJudgeService
     from worker.core.narrative_generator import generate_visum_report
     from worker.core.vision_client import VisionClient
-    from worker.core.report_builder import calculate_expression_area_score, sanitize_report_json, compute_empathy_score
+    from worker.core.report_builder import (
+        calculate_expression_area_score,
+        sanitize_report_json,
+        compute_empathy_score,
+        compute_governance_metrics,
+    )
     from worker.config.scoring_rules import (
         WEIGHT_EXPRESSION,
         WEIGHT_VOICE,
@@ -48,16 +63,41 @@ except (ImportError, ValueError):
         VOICE_WEIGHT_DICTION,
         RED_LINE_SCORE_CAP,
         DICTION_FALLBACK_SCORE,
+        DynamicRubricConfig,
     )
     from worker.services.db_service import DatabaseService
+    from worker.services.job_status import update_analysis_job_status
+    from worker.services.pipeline_results import persist_pipeline_results
+    from worker.services.recording_evidence import seal_recording_evidence
+    try:
+        from worker.services.keyvault_service import get_secret
+    except ImportError:
+        get_secret = lambda k, d=None: os.getenv(k, d)
 
 logger = logging.getLogger("analysis-worker.orchestrator")
 
 STORAGE_CONN = os.getenv("STORAGE_CONNECTION_STRING")
 CONTAINER_NAME = os.getenv("STORAGE_CONTAINER_NAME") or os.getenv("BLOB_CONTAINER_NAME", "recordings")
-NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
+NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or get_secret("NVIDIA_API_KEY") or get_secret("nvidia-api-key") or "").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-LLM_MODEL = os.getenv("LLM_MODEL_NAME", "meta/llama-3.2-11b-vision-instruct")
+gemini_key = (os.getenv("GEMINI_API_KEY") or get_secret("GEMINI_API_KEY") or get_secret("gemini-api-key") or "").strip()
+
+if gemini_key:
+    LLM_API_KEY = gemini_key
+    raw_base = (os.getenv("GEMINI_OPENAI_BASE_URL") or get_secret("GEMINI_OPENAI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/").strip()
+    LLM_MODEL = (os.getenv("GEMINI_JUDGE_MODEL") or get_secret("GEMINI_JUDGE_MODEL") or "gemini-3.5-flash-lite").strip()
+    LLM_FAST_MODEL = (os.getenv("GEMINI_FAST_MODEL") or get_secret("GEMINI_FAST_MODEL") or "gemini-3.5-flash-lite").strip()
+else:
+    LLM_API_KEY = NVIDIA_API_KEY
+    raw_base = (os.getenv("NVIDIA_BASE_URL") or "https://integrate.api.nvidia.com/v1").strip()
+    LLM_MODEL = (os.getenv("LLM_MODEL_NAME") or "deepseek-ai/deepseek-v4.1-flash").strip()
+    LLM_FAST_MODEL = "deepseek-ai/deepseek-v4.1-flash"
+
+if "generativelanguage.googleapis.com" in raw_base and not raw_base.endswith("/"):
+    raw_base += "/"
+elif raw_base.endswith("/chat/completions"):
+    raw_base = raw_base[:-len("/chat/completions")].rstrip("/")
+LLM_BASE_URL = raw_base
 VISION_URL = os.getenv("VISION_SERVICE_URL")
 SQL_CONN_STR = os.getenv("SQL_CONNECTION_STRING") or os.getenv("DATABASE_URL")
 
@@ -263,46 +303,6 @@ def upload_report_to_blob(session_id: str, report_data: dict):
         logger.warning(f"Aviso al persistir reporte en Blob Storage: {e}")
 
 
-def persist_pipeline_results(db_svc: DatabaseService, job_id: str, results_map: Dict[str, Any]):
-    """Registra trazabilidad por pipeline en la tabla analysis_pipeline_result."""
-    try:
-        with db_svc._get_connection() as conn:
-            cur = conn.cursor()
-            for pipeline_name, result_data in results_map.items():
-                cur.execute("""
-                    INSERT INTO analysis_pipeline_result (
-                        id, analysis_job_id, pipeline, status, summary_json, created_at, updated_at
-                    )
-                    VALUES (NEWID(), ?, ?, 'completed', ?, SYSUTCDATETIME(), SYSUTCDATETIME())
-                """, (job_id, pipeline_name, json.dumps(result_data, ensure_ascii=False)))
-            conn.commit()
-            logger.info(f"Trazabilidad de pipelines persistida en analysis_pipeline_result para job {job_id}")
-    except Exception as e:
-        logger.warning(f"Aviso al guardar analysis_pipeline_result: {e}")
-
-
-def update_analysis_job_status(db_svc: DatabaseService, job_id: str, status: str, failure_reason: Optional[str] = None):
-    """Actualiza el estado de analysis_job a 'completed' o 'failed'."""
-    try:
-        with db_svc._get_connection() as conn:
-            cur = conn.cursor()
-            if status == "completed":
-                cur.execute("""
-                    UPDATE analysis_job
-                    SET status = 'completed', completed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, job_id)
-            else:
-                cur.execute("""
-                    UPDATE analysis_job
-                    SET status = 'failed', failure_reason = ?, updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, (str(failure_reason)[:500] if failure_reason else None, job_id))
-            conn.commit()
-    except Exception as e:
-        logger.warning(f"Aviso al actualizar analysis_job ({job_id}): {e}")
-
-
 def process_session_pipeline(
     session_id: str,
     job_id: str,
@@ -330,6 +330,7 @@ def process_session_pipeline(
 
     db_svc = None
     session_verified = False
+    report_persisted = False
     try:
         if not SQL_CONN_STR:
             raise RuntimeError("Azure SQL es obligatorio para resolver la sesion del analisis.")
@@ -342,10 +343,28 @@ def process_session_pipeline(
             raise ValueError("La grabacion solicitada no corresponde a la sesion.")
         session_verified = True
 
+        # Obtener configuración de rúbrica activa (16 métricas publicadas)
+        rubric_cfg = db_svc.get_active_rubric_config() if db_svc else DynamicRubricConfig()
+        logger.info(f"Rúbrica activa cargada: versión {rubric_cfg.version_code} ({rubric_cfg.rubric_version_id})")
+
         # 1. Descargar video
         download_blob(blob_path, local_video_path)
         if not os.path.exists(local_video_path) or os.path.getsize(local_video_path) == 0:
             raise ValueError(f"El archivo de grabación descargado está vacío o no es válido: '{blob_path}'")
+
+        # 1.1 Sellar evidencia inmutable de grabación para gobernanza y cola de etiquetado
+        recording_evidence = seal_recording_evidence(
+            storage_connection_string=STORAGE_CONN,
+            container_name=CONTAINER_NAME or "recordings",
+            source_blob_path=blob_path,
+            local_path=local_video_path,
+            session_id=session_id,
+            job_id=job_id,
+        )
+        logger.info(
+            f"Evidencia de grabación sellada exitosamente: {recording_evidence['sealedPath']} "
+            f"(SHA-256: {recording_evidence['sha256'][:8]}...)"
+        )
 
         # 2. Extraer audio y fotogramas
         audio_path, frame_files = split_media(local_video_path, session_tmp_dir)
@@ -362,16 +381,17 @@ def process_session_pipeline(
 
         # 4. Análisis de Audio y Transcripción ASR (NVIDIA Riva + VAD RMS)
         logger.info("Ejecutando análisis acústico y transcripción de voz con NVIDIA Riva ASR...")
-        if not NVIDIA_API_KEY:
-            raise ValueError("NVIDIA_API_KEY no está configurada en el entorno.")
+        riva_key = NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY") or get_secret("NVIDIA_API_KEY") or get_secret("nvidia-api-key") or ""
+        if not riva_key:
+            raise ValueError("NVIDIA_API_KEY no está configurada en el entorno o Key Vault.")
 
         audio_analyzer = AudioAnalyzer(
-            api_key=NVIDIA_API_KEY,
+            api_key=riva_key,
             server=os.getenv("NVIDIA_RIVA_SERVER", "grpc.nvcf.nvidia.com:443"),
             function_id=os.getenv("NVIDIA_FUNCTION_ID", "71203149-d3b7-4460-8231-1be2543a1fca"),
             language_code=os.getenv("NVIDIA_LANGUAGE_CODE", "es-US")
         )
-        audio_res = audio_analyzer.process_audio(audio_path)
+        audio_res = audio_analyzer.process_audio(audio_path, rubric_cfg=rubric_cfg)
 
         acustica = audio_res.get("acoustic_analysis", {})
         total_duration = acustica.get("total_duration_sec", 0.0)
@@ -393,6 +413,10 @@ def process_session_pipeline(
             raise ValueError("El servicio de transcripción (NVIDIA Riva ASR) no detectó palabras inteligibles en el audio.")
 
         audio_metrics = audio_res.get("metrics", {})
+        if words:
+            audio_metrics["words"] = words
+        if total_duration > 0:
+            recording_evidence["durationSeconds"] = round(float(total_duration), 3)
         score_wpm = float(audio_metrics.get("score_wpm", 80.0))
         score_fluidez = float(audio_metrics.get("score_fluidez") if audio_metrics.get("score_fluidez") is not None else 0.0)
         score_diccion = float(audio_metrics.get("score_diccion") if audio_metrics.get("score_diccion") is not None else DICTION_FALLBACK_SCORE)
@@ -460,7 +484,6 @@ def process_session_pipeline(
                 logger.warning(f"Aviso actualizando respuesta para sesión sin turnos explícitos: {e_turns}")
 
         # 5. Evaluación de Contenido con LLM Juez
-        logger.info("Evaluando adherencia y control de crisis con LLM Juez (NVIDIA NIM)...")
         active_scen = db_metadata.get("scenario", {}) if isinstance(db_metadata, dict) else {}
         pregunta = "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
         mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el esclarecimiento de los hechos."]
@@ -468,10 +491,15 @@ def process_session_pipeline(
         red_lines = active_scen.get("red_lines") or []
 
         judge_svc = LLMJudgeService(
-            api_key=NVIDIA_API_KEY,
-            base_url=NVIDIA_BASE_URL,
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
             model=LLM_MODEL,
-            timeout=120.0
+            fast_model=LLM_FAST_MODEL,
+            timeout=30.0
+        )
+        logger.info(
+            f"Evaluando adherencia y control de crisis con LLM Juez "
+            f"[API Endpoint: {judge_svc.base_url}, Modelo: {judge_svc.model}, Respaldo: {judge_svc.fast_model}, Timeout: {judge_svc.timeout}s]..."
         )
         reporte_juez = judge_svc.evaluate_response(
             pregunta_periodista=pregunta,
@@ -499,11 +527,11 @@ def process_session_pipeline(
         llm_metrics["executive_summary"] = reporte_juez.feedback.recomendacion_accionable
         
         score_estrategico = float(reporte_juez.puntaje_global_100)
-        # Salvaguarda determinista: Línea roja trunca Coherencia al techo máximo permitido
+        # Salvaguarda determinista: Línea roja trunca Coherencia al techo dinámico
         if reporte_juez.infraccion_linea_roja:
-            score_estrategico = min(score_estrategico, RED_LINE_SCORE_CAP)
+            score_estrategico = min(score_estrategico, rubric_cfg.red_line_cap)
 
-        # 6. Fusión Multivariable y Puntuaciones por Área (Rúbrica Ponderada v0.4)
+        # 6. Fusión Multivariable y Puntuaciones por Área (Rúbrica Ponderada)
         vision_summary = vision_metrics.get("summary") or vision_metrics
         if any(k in vision_summary for k in ["hands_visible_pct", "body_sway_std", "shoulder_stability_score"]):
             expression_eval = calculate_expression_area_score(vision_summary)
@@ -518,12 +546,17 @@ def process_session_pipeline(
         victim_level = rec_afectados.get("nivel", 3) if isinstance(rec_afectados, dict) else 3
         score_empatia = compute_empathy_score(score_visual, victim_level)
 
-        # Ponderación general: Expresión 25%, Voz 25%, Coherencia/Contenido 35%, Empatía 15%
+        # Ponderación general usando pesos dinámicos de rúbrica
+        w_expr = rubric_cfg.area_weights.get("expression", WEIGHT_EXPRESSION)
+        w_voice = rubric_cfg.area_weights.get("voice", WEIGHT_VOICE)
+        w_coherence = rubric_cfg.area_weights.get("coherence", WEIGHT_COHERENCE)
+        w_empathy = rubric_cfg.area_weights.get("empathy", WEIGHT_EMPATHY)
+
         score_global = round(
-            (score_visual * WEIGHT_EXPRESSION) +
-            (score_verbal * WEIGHT_VOICE) +
-            (score_estrategico * WEIGHT_COHERENCE) +
-            (score_empatia * WEIGHT_EMPATHY),
+            (score_visual * w_expr) +
+            (score_verbal * w_voice) +
+            (score_estrategico * w_coherence) +
+            (score_empatia * w_empathy),
             1
         )
 
@@ -534,13 +567,24 @@ def process_session_pipeline(
             "empathy": int(round(score_empatia)),
         }
 
+        # Cálculo de Gobernanza Nivel 2 y Auditoría Humana
+        governance_metrics = compute_governance_metrics(
+            session_id=session_id,
+            overall_score=score_global,
+            area_scores=area_scores_map,
+            vision_metrics=vision_summary,
+            audio_metrics=audio_metrics,
+            rubric_cfg=rubric_cfg
+        )
+
         # 7. Generación Narrativa Ejecutiva VISUM (Llamada 2 a LLM)
-        logger.info("Generando Síntesis Ejecutiva VISUM con NVIDIA NIM...")
-        http_client = httpx.Client(verify=False, timeout=120.0)
+        logger.info(f"Generando Síntesis Ejecutiva VISUM [API Endpoint: {LLM_BASE_URL}, Modelo: {LLM_MODEL}]...")
+        http_client = httpx.Client(verify=False, timeout=30.0)
         client_visum = OpenAI(
-            base_url=NVIDIA_BASE_URL.rstrip("/").rstrip("/chat/completions"),
-            api_key=NVIDIA_API_KEY,
-            timeout=120.0,
+            base_url=LLM_BASE_URL,
+            api_key=LLM_API_KEY,
+            timeout=30.0,
+            max_retries=0,
             http_client=http_client
         )
         scenario_meta = {
@@ -587,7 +631,7 @@ def process_session_pipeline(
 
         # 8. Persistencia Atómica en Azure SQL
         report_id = None
-        resolved_rubric_id = db_metadata["rubric_version_id"]
+        resolved_rubric_id = rubric_cfg.rubric_version_id or db_metadata.get("rubric_version_id")
 
         processed_at_iso = datetime.now(timezone.utc).isoformat()
         video_blob_url = f"https://stavoxreadyst.blob.core.windows.net/recordings/recordings/{session_id}.webm"
@@ -606,8 +650,10 @@ def process_session_pipeline(
             audio_metrics=audio_metrics,
             judge_metrics=llm_metrics,
             transcript=transcript,
-            segmented_turns=segmented_turns
+            segmented_turns=segmented_turns,
+            governance=governance_metrics
         )
+        cleaned_report["recordingEvidence"] = recording_evidence
 
         if db_svc and resolved_rubric_id:
             try:
@@ -620,18 +666,28 @@ def process_session_pipeline(
                     rubric_areas=db_metadata.get("rubric_areas", {}),
                     job_id=job_id
                 )
+                report_persisted = True
                 logger.info(f"Reporte y puntajes persistidos en Azure SQL con ID: {report_id}")
                 cleaned_report["reportId"] = report_id
                 cleaned_report["report_id"] = report_id
 
-                # Trazabilidad integral en analysis_pipeline_result (incluyendo fusion consolidado)
+                # Trazabilidad integral en analysis_pipeline_result (incluyendo fusion consolidado y governance)
                 pipeline_map = {
                     "vision": vision_metrics,
                     "voice": audio_metrics,
                     "content_judge": llm_metrics,
+                    "governance": governance_metrics,
                     "fusion": cleaned_report
                 }
                 persist_pipeline_results(db_svc, job_id, pipeline_map)
+
+                # Persistir caso canónico; no completar el job si falla la materialización.
+                case_id = db_svc.create_labeling_case_if_needed(report_id)
+                logger.info(
+                    f"Sesión {session_id} enrutada a dbo.labeling_case "
+                    f"(ID: {case_id}, motivo: {governance_metrics.get('labeling_reason') or 'routine'})"
+                )
+
                 update_analysis_job_status(db_svc, job_id, "completed")
             except Exception as dbe:
                 logger.error(f"Fallo en persistencia Azure SQL: {dbe}")
@@ -644,13 +700,41 @@ def process_session_pipeline(
         logger.info(f"=== Pipeline Multimodal completado con éxito para sesión {session_id} ===")
 
     except Exception as ex:
-        logger.error(f"Fallo crítico en pipeline de sesión {session_id}: {ex}", exc_info=True)
+        err_msg = str(ex)
+        if hasattr(ex, "response") and getattr(ex.response, "text", None):
+            err_msg += f" - API Details: {ex.response.text}"
+        elif hasattr(ex, "body"):
+            err_msg += f" - API Details: {ex.body}"
+        logger.error(f"Fallo crítico en pipeline de sesión {session_id}: {err_msg}", exc_info=True)
         if db_svc and session_verified:
-            update_analysis_job_status(db_svc, job_id, "failed", failure_reason=str(ex))
-            try:
-                db_svc.update_session_status(session_id, "failed")
-            except Exception as dbe:
-                logger.warning(f"Aviso actualizando estado de sesión a 'failed': {dbe}")
+            update_analysis_job_status(
+                db_svc,
+                job_id,
+                "failed",
+                failure_reason=err_msg,
+                best_effort=True,
+            )
+            report_state_known = report_persisted
+            if not report_persisted:
+                try:
+                    report_persisted = db_svc.has_persisted_report(job_id, session_id)
+                    report_state_known = True
+                except Exception as report_check_error:
+                    logger.warning(
+                        "No se pudo confirmar si el job ya tiene informe; "
+                        "se preserva el estado de la sesión: %s",
+                        report_check_error,
+                    )
+            if report_state_known and not report_persisted:
+                try:
+                    db_svc.update_session_status(session_id, "failed")
+                except Exception as dbe:
+                    logger.warning(f"Aviso actualizando estado de sesión a 'failed': {dbe}")
+            elif report_persisted:
+                logger.error(
+                    "El análisis quedó persistido; la sesión permanece completed "
+                    "para permitir reconciliar la cola de etiquetado."
+                )
         raise ex
     finally:
         shutil.rmtree(session_tmp_dir, ignore_errors=True)

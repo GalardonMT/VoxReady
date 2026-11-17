@@ -8,11 +8,17 @@ from typing import Optional, Dict, Any, Tuple, List
 try:
     from utils.logger import get_logger
     from services.keyvault_service import get_secret
+    from config.scoring_rules import DynamicRubricConfig, DEFAULT_METRIC_THRESHOLDS
 except (ImportError, ValueError):
-    from worker.utils.logger import get_logger
-    from worker.services.keyvault_service import get_secret
+    try:
+        from worker.utils.logger import get_logger
+        from worker.services.keyvault_service import get_secret
+        from worker.config.scoring_rules import DynamicRubricConfig, DEFAULT_METRIC_THRESHOLDS
+    except (ImportError, ValueError):
+        from core.scoring_rules import DynamicRubricConfig, DEFAULT_METRIC_THRESHOLDS
 
 logger = get_logger("services.db_service")
+
 
 
 USER_AREA_PROGRESS_REFRESH_DML = """
@@ -219,6 +225,10 @@ class DatabaseService:
         )
         raise last_error
 
+    def get_connection(self):
+        """Alias público de _get_connection compatible con gestor de contexto with."""
+        return self._get_connection()
+
     def get_session_context(self, session_id: str, job_id: str) -> Dict[str, Any]:
         """Carga solo la sesion y el job persistidos, con su escenario y rubrica."""
         if not session_id or not job_id:
@@ -319,6 +329,40 @@ class DatabaseService:
             return str(row[0])
         raise LookupError("Sesion no encontrada.")
 
+    def has_persisted_report(self, job_id: str, session_id: str) -> bool:
+        """Comprueba si el job ya confirmó un informe para esta sesión."""
+        try:
+            valid_job_uuid = str(uuid.UUID(str(job_id)))
+        except (TypeError, ValueError, AttributeError):
+            valid_job_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(job_id)))
+        with self._get_connection() as conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """IF @@TRANCOUNT=0 BEGIN TRANSACTION;
+                       DECLARE @lock_result int;
+                       EXEC @lock_result=sys.sp_getapplock
+                           @Resource=?, @LockMode='Exclusive',
+                           @LockOwner='Transaction', @LockTimeout=30000;
+                       IF @lock_result < 0
+                           THROW 51000, 'No fue posible confirmar el estado del job.', 1;""",
+                    f"voxready:analysis-job:{valid_job_uuid}",
+                )
+                valid_session_uuid = self._resolve_session_id(cur, session_id)
+                cur.execute(
+                    """SELECT TOP (1) 1
+                         FROM dbo.report
+                        WHERE analysis_job_id=? AND session_id=?""",
+                    valid_job_uuid,
+                    valid_session_uuid,
+                )
+                exists = cur.fetchone() is not None
+                conn.commit()
+                return exists
+            except Exception:
+                conn.rollback()
+                raise
+
     def finalize_session_analysis(
         self,
         session_id: str,
@@ -352,6 +396,56 @@ class DatabaseService:
         try:
             cur = conn.cursor()
             valid_session_uuid = self._resolve_session_id(cur, session_id)
+
+            # Un redelivery del mismo job puede ocurrir despues de confirmar el
+            # informe, pero antes de materializar los pipelines o el caso de
+            # etiquetado. Reutilizar ese informe permite reanudar el flujo sin
+            # crear otra version ni degradar una sesion ya completada.
+            if valid_job_uuid:
+                lock_resource = f"voxready:analysis-job:{valid_job_uuid}"
+                cur.execute("""
+                    IF @@TRANCOUNT=0 BEGIN TRANSACTION;
+                    DECLARE @lock_result int;
+                    EXEC @lock_result=sys.sp_getapplock
+                        @Resource=?, @LockMode='Exclusive',
+                        @LockOwner='Transaction', @LockTimeout=15000;
+                    IF @lock_result < 0
+                        THROW 51000, 'No fue posible serializar la persistencia del job.', 1;
+                """, lock_resource)
+                cur.execute("""
+                    SELECT TOP (2) id,session_id,rubric_version_id
+                    FROM dbo.report WITH (UPDLOCK,HOLDLOCK)
+                    WHERE analysis_job_id=?
+                    ORDER BY generated_at,id
+                """, valid_job_uuid)
+                existing_reports = list(cur.fetchall())
+                if len(existing_reports) > 1:
+                    raise ValueError("El job tiene mas de un informe persistido.")
+                if existing_reports:
+                    existing = existing_reports[0]
+                    same_identity = (
+                        str(existing[1]).lower() == str(valid_session_uuid).lower()
+                        and str(existing[2]).lower() == str(rubric_version_id).lower()
+                    )
+                    if not same_identity:
+                        raise ValueError(
+                            "El informe persistido para el job no coincide con la sesion o rubrica."
+                        )
+
+                    cur.execute("""
+                        UPDATE dbo.session
+                           SET status='completed',
+                               finished_at=COALESCE(finished_at,SYSUTCDATETIME()),
+                               updated_at=SYSUTCDATETIME()
+                         WHERE id=? AND status<>'completed'
+                    """, valid_session_uuid)
+                    conn.commit()
+                    logger.info(
+                        "Reutilizando Report ID %s ya persistido para el job %s.",
+                        existing[0],
+                        valid_job_uuid,
+                    )
+                    return str(existing[0])
 
             # 1. Insertar en report con analysis_job_id
             cur.execute("""
@@ -405,16 +499,11 @@ class DatabaseService:
         except Exception as e:
             conn.rollback()
             logger.error(f"Error persistiendo informe en SQL para {session_id} ({valid_session_uuid}): {e}")
-            try:
-                cur.execute("""
-                    UPDATE session
-                    SET status = 'failed', updated_at = SYSUTCDATETIME()
-                    WHERE id = ?
-                """, valid_session_uuid)
-                conn.commit()
-            except Exception:
-                pass
-            raise e
+            # El estado operacional lo decide el orquestador despues del
+            # rollback. Mantenerlo fuera de esta transaccion evita que un
+            # redelivery concurrente degrade una sesion que otro worker ya
+            # completo correctamente.
+            raise
         finally:
             conn.close()
 
@@ -510,10 +599,127 @@ class DatabaseService:
         with self._get_connection() as conn:
             cur = conn.cursor()
             valid_session_uuid = self._resolve_session_id(cur, session_id)
-            cur.execute("""
-                UPDATE session
-                SET status = ?, updated_at = SYSUTCDATETIME()
-                WHERE id = ?
-            """, (status, valid_session_uuid))
+            if status == "failed":
+                cur.execute("""
+                    UPDATE session
+                    SET status = 'failed', updated_at = SYSUTCDATETIME()
+                    WHERE id = ? AND status <> 'completed'
+                """, valid_session_uuid)
+            else:
+                cur.execute("""
+                    UPDATE session
+                    SET status = ?, updated_at = SYSUTCDATETIME()
+                    WHERE id = ?
+                """, (status, valid_session_uuid))
             conn.commit()
             return True
+
+    def get_active_rubric_config(self) -> DynamicRubricConfig:
+        """
+        Lee la última versión publicada en dbo.rubric_version y sus 16 límites desde dbo.rubric_metric_value.
+        Si falla o es una versión histórica sin filas (ej. v0.4), opera con el fallback estático.
+        """
+        cfg = DynamicRubricConfig()
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # 1. Obtener la última versión publicada (priorizando la que tenga métricas cargadas)
+                try:
+                    cursor.execute("""
+                        SELECT TOP 1 rv.id, rv.version_label
+                        FROM dbo.rubric_version rv
+                        WHERE rv.status = 'published'
+                        ORDER BY 
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM dbo.rubric_metric_value rmv WHERE rmv.rubric_version_id = rv.id
+                            ) THEN 0 ELSE 1 END,
+                            rv.created_at DESC
+                    """)
+                    row = cursor.fetchone()
+                except Exception:
+                    cursor.execute("""
+                        SELECT TOP 1 rv.id, rv.version_code
+                        FROM dbo.rubric_version rv
+                        WHERE rv.status = 'published'
+                        ORDER BY 
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM dbo.rubric_metric_value rmv WHERE rmv.rubric_version_id = rv.id
+                            ) THEN 0 ELSE 1 END,
+                            rv.created_at DESC
+                    """)
+                    row = cursor.fetchone()
+
+                if not row:
+                    return cfg
+
+                cfg.rubric_version_id = str(row[0])
+                cfg.version_code = str(row[1]) if row[1] else "published"
+
+                # 2. Cargar pesos de dbo.rubric_area para esta versión
+                try:
+                    cursor.execute("""
+                        SELECT area_key, weight
+                        FROM dbo.rubric_area
+                        WHERE rubric_version_id = ?
+                    """, (cfg.rubric_version_id,))
+                    area_rows = cursor.fetchall()
+                except Exception:
+                    cursor.execute("""
+                        SELECT code, weight
+                        FROM dbo.rubric_area
+                        WHERE rubric_version_id = ?
+                    """, (cfg.rubric_version_id,))
+                    area_rows = cursor.fetchall()
+
+                for area_code, weight_val in area_rows:
+                    key = str(area_code).lower().strip()
+                    if key in cfg.area_weights and weight_val is not None:
+                        w = float(weight_val)
+                        cfg.area_weights[key] = w / 100.0 if w > 1.0 else w
+
+                # 3. Cargar los 16 límites desde dbo.rubric_metric_value
+                cursor.execute("""
+                    SELECT metric_key, thresholds_json
+                    FROM dbo.rubric_metric_value
+                    WHERE rubric_version_id = ?
+                """, (cfg.rubric_version_id,))
+                for metric_key, thresholds_raw in cursor.fetchall():
+                    if metric_key and thresholds_raw:
+                        parsed = json.loads(thresholds_raw) if isinstance(thresholds_raw, str) else thresholds_raw
+                        if isinstance(parsed, dict):
+                            base = cfg.thresholds.get(metric_key, {}).copy()
+                            base.update({k: float(v) for k, v in parsed.items() if v is not None})
+                            cfg.thresholds[metric_key] = base
+        except Exception as exc:
+            logger.warning(f"Usando DynamicRubricConfig por defecto tras excepción SQL: {exc}")
+        return cfg
+
+    def create_labeling_case_if_needed(self, report_id: str) -> str:
+        """Create or return the canonical labeling case for an exact report."""
+        if not str(report_id or "").strip():
+            raise ValueError("report_id es obligatorio para crear el caso de etiquetado.")
+        try:
+            from worker.services.labeling_runtime import (
+                ensure_labeling_case_for_report,
+                runtime_enabled,
+            )
+        except ImportError:
+            from services.labeling_runtime import (
+                ensure_labeling_case_for_report,
+                runtime_enabled,
+            )
+
+        if not runtime_enabled():
+            raise RuntimeError("El runtime de etiquetado está deshabilitado.")
+
+        with self.get_connection() as conn:
+            result = ensure_labeling_case_for_report(
+                conn.cursor(), str(report_id), materialize=True
+            )
+            case_id = result.get("caseId") if result else None
+            if not case_id:
+                raise RuntimeError("La creación canónica no devolvió un caso.")
+            conn.commit()
+        logger.info(f"Caso de etiquetado canónico creado/asegurado: {case_id}")
+        return str(case_id)
+

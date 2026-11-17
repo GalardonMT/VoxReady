@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 from typing import Dict, Any, Optional
 
 try:
@@ -14,6 +15,7 @@ try:
         EMPATHY_WEIGHT_VERBAL,
         EMPATHY_WEIGHT_NONVERBAL,
         DICTION_FALLBACK_SCORE,
+        DynamicRubricConfig,
     )
 except (ImportError, ValueError):
     try:
@@ -29,6 +31,7 @@ except (ImportError, ValueError):
             EMPATHY_WEIGHT_VERBAL,
             EMPATHY_WEIGHT_NONVERBAL,
             DICTION_FALLBACK_SCORE,
+            DynamicRubricConfig,
         )
     except (ImportError, ValueError):
         from worker.config.scoring_rules import (
@@ -43,7 +46,9 @@ except (ImportError, ValueError):
             EMPATHY_WEIGHT_VERBAL,
             EMPATHY_WEIGHT_NONVERBAL,
             DICTION_FALLBACK_SCORE,
+            DynamicRubricConfig,
         )
+
 
 
 def compute_empathy_score(non_verbal_score: float, victim_level: int) -> float:
@@ -54,6 +59,233 @@ def compute_empathy_score(non_verbal_score: float, victim_level: int) -> float:
     verbal_score = ((safe_level - 1) / 4.0) * 100.0
     final_empathy = (non_verbal_score * EMPATHY_WEIGHT_NONVERBAL) + (verbal_score * EMPATHY_WEIGHT_VERBAL)
     return round(final_empathy, 1)
+
+
+def evaluate_metric_bands(
+    metrics_summary: Dict[str, Any],
+    rubric_cfg: Optional[DynamicRubricConfig] = None
+) -> Dict[str, str]:
+    """
+    Clasifica las métricas clave en 'optimal', 'warning' o 'critical'
+    según los umbrales configurados en DynamicRubricConfig.
+    """
+    cfg = rubric_cfg or DynamicRubricConfig()
+    bands = {}
+
+    # voice.wpm
+    wpm = metrics_summary.get("wpm") or metrics_summary.get("wpm_global") or metrics_summary.get("wpmGlobal")
+    if wpm is not None:
+        th = cfg.get_metric("voice.wpm")
+        w_val = float(wpm)
+        if float(th.get("optimalLow", 120)) <= w_val <= float(th.get("optimalHigh", 150)):
+            bands["voice.wpm"] = "optimal"
+        elif float(th.get("warningLow", 100)) <= w_val <= float(th.get("warningHigh", 170)):
+            bands["voice.wpm"] = "warning"
+        else:
+            bands["voice.wpm"] = "critical"
+
+    # voice.filler_density
+    filler = metrics_summary.get("densidad_muletillas_pct") or metrics_summary.get("densidadMuletillasPct") or metrics_summary.get("fillerWordsDensityPct")
+    if filler is not None:
+        th = cfg.get_metric("voice.filler_density")
+        f_val = float(filler)
+        if f_val <= float(th.get("optimalMax", 1.5)):
+            bands["voice.filler_density"] = "optimal"
+        elif f_val <= float(th.get("warningMax", 3.0)):
+            bands["voice.filler_density"] = "warning"
+        else:
+            bands["voice.filler_density"] = "critical"
+
+    # voice.phonation_ratio
+    pr = metrics_summary.get("ratio_fonacion") or metrics_summary.get("ratioFonacion")
+    if pr is not None:
+        th = cfg.get_metric("voice.phonation_ratio")
+        pr_val = float(pr)
+        if pr_val <= 1.0:
+            pr_val *= 100.0
+        if float(th.get("optimalLow", 60)) <= pr_val <= float(th.get("optimalHigh", 85)):
+            bands["voice.phonation_ratio"] = "optimal"
+        elif pr_val >= float(th.get("criticalBelow", 45)):
+            bands["voice.phonation_ratio"] = "warning"
+        else:
+            bands["voice.phonation_ratio"] = "critical"
+
+    # voice.asr_confidence
+    asr = metrics_summary.get("score_diccion") or metrics_summary.get("scoreDiccion")
+    if asr is not None:
+        th = cfg.get_metric("voice.asr_confidence")
+        a_val = float(asr)
+        if a_val >= float(th.get("optimalLow", 85)):
+            bands["voice.asr_confidence"] = "optimal"
+        elif a_val >= float(th.get("warningLow", 70)):
+            bands["voice.asr_confidence"] = "warning"
+        else:
+            bands["voice.asr_confidence"] = "critical"
+
+    # vision.eye_contact
+    eye = metrics_summary.get("eye_contact_pct") or metrics_summary.get("eyeContactPct") or metrics_summary.get("contacto_visual_pct")
+    if eye is not None:
+        th = cfg.get_metric("vision.eye_contact")
+        e_val = float(eye)
+        if e_val >= float(th.get("optimalLow", 75)):
+            bands["vision.eye_contact"] = "optimal"
+        elif e_val >= float(th.get("warningLow", 50)):
+            bands["vision.eye_contact"] = "warning"
+        else:
+            bands["vision.eye_contact"] = "critical"
+
+    # vision.posture
+    posture = metrics_summary.get("shoulder_stability_score") or metrics_summary.get("shoulderStabilityScore")
+    if posture is not None:
+        th = cfg.get_metric("vision.posture")
+        p_val = float(posture)
+        if p_val >= float(th.get("optimalLow", 75)):
+            bands["vision.posture"] = "optimal"
+        elif p_val >= float(th.get("warningLow", 50)):
+            bands["vision.posture"] = "warning"
+        else:
+            bands["vision.posture"] = "critical"
+
+    # vision.sway_tolerance
+    sway = metrics_summary.get("body_sway_std") or metrics_summary.get("bodySwayStd")
+    if sway is not None:
+        th = cfg.get_metric("vision.sway_tolerance")
+        s_val = float(sway)
+        if s_val <= float(th.get("optimalMax", 0.015)):
+            bands["vision.sway_tolerance"] = "optimal"
+        elif s_val <= float(th.get("warningMax", 0.035)):
+            bands["vision.sway_tolerance"] = "warning"
+        else:
+            bands["vision.sway_tolerance"] = "critical"
+
+    # empathy.victim_recog
+    rec = metrics_summary.get("victim_level") or metrics_summary.get("victimLevel")
+    if rec is not None:
+        th = cfg.get_metric("empathy.victim_recog")
+        r_val = float(rec)
+        if r_val >= float(th.get("optimalLevel", 4.0)):
+            bands["empathy.victim_recog"] = "optimal"
+        elif r_val >= float(th.get("warningLevel", 3.0)):
+            bands["empathy.victim_recog"] = "warning"
+        else:
+            bands["empathy.victim_recog"] = "critical"
+
+    return bands
+
+
+def compute_governance_metrics(
+    session_id: str,
+    overall_score: float,
+    area_scores: Dict[str, float],
+    vision_metrics: Dict[str, Any],
+    audio_metrics: Dict[str, Any],
+    rubric_cfg: Optional[DynamicRubricConfig] = None
+) -> Dict[str, Any]:
+    """
+    Calcula las métricas de Gobernanza de Nivel 2 y evalúa enrutamiento a auditoría humana (dbo.labeling_case).
+    """
+    cfg = rubric_cfg or DynamicRubricConfig()
+
+    # 1. Tasa de fotogramas válidos de visión (0 - 100%)
+    total_frames = int(
+        vision_metrics.get("total_frames_analyzed")
+        or vision_metrics.get("totalFramesAnalyzed")
+        or vision_metrics.get("frames_analyzed")
+        or vision_metrics.get("total_frames_analizados")
+        or 0
+    )
+    valid_frames = int(
+        vision_metrics.get("frames_validos")
+        if vision_metrics.get("frames_validos") is not None
+        else total_frames
+    )
+    vision_validity_pct = (valid_frames / max(1, total_frames)) * 100.0 if total_frames > 0 else 70.0
+
+    # 2. Certeza fonética ASR Parakeet (0 - 100%)
+    asr_confidence_pct = float(
+        audio_metrics.get("score_diccion")
+        if audio_metrics.get("score_diccion") is not None
+        else (audio_metrics.get("scoreDiccion") if audio_metrics.get("scoreDiccion") is not None else 70.0)
+    )
+
+    # 3. Confianza técnica del pipeline (Promedio directo Vision Validity + Score Dicción)
+    pipeline_confidence = round((vision_validity_pct + asr_confidence_pct) / 2.0, 1)
+
+    # 4. Disparidad inter-canal (máximo menos mínimo de las 4 áreas)
+    vals = [float(v) for v in area_scores.values()] if area_scores else [0.0]
+    disparity_delta = round(max(vals) - min(vals), 1)
+
+    # 5. Lectura de umbrales de Gobernanza desde DynamicRubricConfig
+    conf_limits = cfg.get_metric("gov.confidence_min")
+    conf_warning_low = float(conf_limits.get("warningLow", 70.0))
+    conf_optimal_low = float(conf_limits.get("optimalLow", 85.0))
+
+    half_width = float(cfg.get_metric("gov.borderline_delta").get("halfWidth", 2.0))
+    borderline_min = 50.0 - half_width
+    borderline_max = 50.0 + half_width
+
+    disp_limits = cfg.get_metric("gov.disparity_delta")
+    disparity_normal_below = float(disp_limits.get("normalBelow", 35.0))
+    disparity_audit_at = float(disp_limits.get("auditAt", 50.0))
+
+    random_rate_pct = float(cfg.get_metric("gov.random_sample").get("rate", 10.0))
+
+    # 6. Evaluación de triggers hacia dbo.labeling_case
+    detailed_triggers = []
+    if pipeline_confidence < conf_warning_low:
+        detailed_triggers.append("low_confidence")
+    if borderline_min <= overall_score <= borderline_max:
+        detailed_triggers.append("borderline_score")
+    if disparity_delta >= disparity_audit_at:
+        detailed_triggers.append("inter_channel_disparity")
+
+    # Mapeo al motivo SQL oficial ('low_confidence', 'borderline', 'random')
+    labeling_reason = None
+    if "low_confidence" in detailed_triggers:
+        labeling_reason = "low_confidence"
+    elif "borderline_score" in detailed_triggers or "inter_channel_disparity" in detailed_triggers:
+        labeling_reason = "borderline"
+    elif random_rate_pct > 0:
+        digest = int(hashlib.md5(str(session_id).encode("utf-8")).hexdigest()[:8], 16)
+        if (digest % 1000) / 10.0 < random_rate_pct:
+            detailed_triggers.append("random_sample")
+            labeling_reason = "random"
+
+    confidence_band = (
+        "optimal" if pipeline_confidence >= conf_optimal_low
+        else ("warning" if pipeline_confidence >= conf_warning_low else "critical")
+    )
+    disparity_band = (
+        "optimal" if disparity_delta < disparity_normal_below
+        else ("warning" if disparity_delta < disparity_audit_at else "critical")
+    )
+
+    return {
+        "pipeline_confidence_score": pipeline_confidence,
+        "vision_validity_pct": round(vision_validity_pct, 1),
+        "asr_confidence_pct": round(asr_confidence_pct, 1),
+        "inter_channel_disparity_delta": disparity_delta,
+        "confidence_band": confidence_band,
+        "disparity_band": disparity_band,
+        "requires_human_review": labeling_reason is not None,
+        "labeling_reason": labeling_reason,
+        "detailed_triggers": detailed_triggers,
+        "rubric_version_id": cfg.rubric_version_id,
+        "rubric_version_code": cfg.version_code,
+        # Claves camelCase para consumo directo en Frontend
+        "pipelineConfidenceScore": pipeline_confidence,
+        "visionValidityPct": round(vision_validity_pct, 1),
+        "asrConfidencePct": round(asr_confidence_pct, 1),
+        "interChannelDisparityDelta": disparity_delta,
+        "confidenceBand": confidence_band,
+        "disparityBand": disparity_band,
+        "requiresHumanReview": labeling_reason is not None,
+        "labelingReason": labeling_reason,
+        "detailedTriggers": detailed_triggers,
+        "rubricVersionId": cfg.rubric_version_id,
+        "rubricVersionCode": cfg.version_code,
+    }
+
 
 
 def calculate_expression_area_score(vision_summary: dict) -> dict:
@@ -111,7 +343,9 @@ class ReportBuilder:
         audio_result: Dict[str, Any],
         llm_result: Dict[str, Any],
         metadata: Optional[Dict[str, Any]] = None,
+        rubric_cfg: Optional[DynamicRubricConfig] = None,
     ) -> Dict[str, Any]:
+        cfg = rubric_cfg or DynamicRubricConfig()
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # 1. Extracción de scores parciales
@@ -150,9 +384,9 @@ class ReportBuilder:
             score_control = float(llm_result.get("crisis_control_score", 70.0))
             score_estrategico = round(max(0.0, min(100.0, (score_adherencia * 0.50) + (score_control * 0.50))), 1)
 
-        # Salvaguarda determinista: Si se vulneró una línea roja, Coherencia no puede superar RED_LINE_SCORE_CAP (20 pts)
+        # Salvaguarda determinista: Si se vulneró una línea roja, Coherencia no puede superar cfg.red_line_cap
         if infraccion_linea_roja:
-            score_estrategico = min(score_estrategico, RED_LINE_SCORE_CAP)
+            score_estrategico = min(score_estrategico, cfg.red_line_cap)
 
         # Empatía balanceada: 60% verbal (reconocimiento del afectado) + 40% no verbal (contacto visual y postura)
         rec_afectados = llm_result.get("reconocimiento_afectados") or {}
@@ -160,12 +394,16 @@ class ReportBuilder:
         score_empatia = compute_empathy_score(score_visual, victim_level)
 
         # 2. Score Global Compuesto de la Sesión (4 Ejes Oficiales)
-        # Expresión 25% | Voz 25% | Coherencia (Estrategia) 35% | Empatía 15%
+        w_expr = cfg.area_weights.get("expression", WEIGHT_EXPRESSION)
+        w_voice = cfg.area_weights.get("voice", WEIGHT_VOICE)
+        w_coherence = cfg.area_weights.get("coherence", WEIGHT_COHERENCE)
+        w_empathy = cfg.area_weights.get("empathy", WEIGHT_EMPATHY)
+
         score_global = round(
-            (score_visual * WEIGHT_EXPRESSION) +
-            (score_verbal * WEIGHT_VOICE) +
-            (score_estrategico * WEIGHT_COHERENCE) +
-            (score_empatia * WEIGHT_EMPATHY),
+            (score_visual * w_expr) +
+            (score_verbal * w_voice) +
+            (score_estrategico * w_coherence) +
+            (score_empatia * w_empathy),
             1,
         )
 
@@ -175,6 +413,16 @@ class ReportBuilder:
             "coherence": score_estrategico,
             "empathy": score_empatia,
         }
+
+        # 3. Gobernanza Nivel 2 y Auditoría
+        gov_metrics = compute_governance_metrics(
+            session_id=session_id,
+            overall_score=score_global,
+            area_scores=areas_evaluacion,
+            vision_metrics=vision_summary,
+            audio_metrics=audio_metrics,
+            rubric_cfg=cfg,
+        )
 
         report = {
             "session_id": session_id,
@@ -238,6 +486,7 @@ class ReportBuilder:
                 "texto_completo": audio_result.get("transcription", ""),
                 "palabras_con_marcas_tiempo": audio_result.get("words", []),
             },
+            "governance": gov_metrics,
         }
 
         return report
@@ -245,18 +494,21 @@ class ReportBuilder:
 
 def sanitize_report_json(
     session_id: str,
-    job_id: Optional[str],
-    report_id: Optional[str],
-    processed_at: str,
-    recording_url: str,
-    overall_score: int,
-    area_scores: Dict[str, int],
-    visum_narrative: Dict[str, Any],
-    vision_metrics: Dict[str, Any],
-    audio_metrics: Dict[str, Any],
-    judge_metrics: Dict[str, Any],
-    transcript: str,
+    job_id: Optional[str] = None,
+    report_id: Optional[str] = None,
+    processed_at: Optional[str] = None,
+    recording_url: Optional[str] = None,
+    overall_score: Optional[Any] = None,
+    area_scores: Optional[Dict[str, Any]] = None,
+    visum_narrative: Optional[Dict[str, Any]] = None,
+    vision_metrics: Optional[Dict[str, Any]] = None,
+    audio_metrics: Optional[Dict[str, Any]] = None,
+    judge_metrics: Optional[Dict[str, Any]] = None,
+    transcript: Optional[str] = None,
     segmented_turns: Optional[list] = None,
+    governance: Optional[Dict[str, Any]] = None,
+    consolidated_report: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """
     Sanea y normaliza el reporte consolidado de acuerdo con la Especificación Técnica (Sección 1):
@@ -264,7 +516,35 @@ def sanitize_report_json(
     2. Unifica las métricas de visión a estándar técnico en camelCase sin duplicidades en español.
     3. Normaliza métricas acústicas y dimensiones pedagógicas del LLM Juez.
     """
+    cr = consolidated_report or {}
+    p_global = cr.get("puntuacion_global", {})
+    if area_scores is None:
+        area_scores = p_global.get("areas", {})
+    if overall_score is None:
+        overall_score = p_global.get("score_general", 0)
+    if recording_url is None:
+        recording_url = cr.get("recording_url", "")
+    if processed_at is None:
+        processed_at = cr.get("processed_at", cr.get("completed_at", ""))
+    if vision_metrics is None:
+        vision_metrics = cr.get("metricas_vision", {})
+    if audio_metrics is None:
+        audio_metrics = cr.get("metricas_audio_voz", {})
+    if judge_metrics is None:
+        judge_metrics = cr.get("evaluacion_llm_crisis", {})
+    if visum_narrative is None:
+        visum_narrative = (
+            cr.get("evaluacion_llm_crisis", {}).get("feedback_pedagogico")
+            or cr.get("narrative", {}).get("visum")
+            or {}
+        )
+    if transcript is None:
+        transcript = cr.get("transcripcion", {}).get("texto_completo", "")
+    if governance is None:
+        governance = cr.get("governance", kwargs.get("governance", {}))
+
     # 1. Normalizar Visum
+    visum_narrative = visum_narrative or {}
     sintesis_ej = visum_narrative.get("sintesis_ejecutiva") or {}
     desempeno = visum_narrative.get("desempeno_observado") or {}
     
@@ -382,6 +662,12 @@ def sanitize_report_json(
         if alerta_lr not in improvements:
             improvements.insert(0, alerta_lr)
 
+    score_exp = float(area_scores.get("expression", area_scores.get("expresion", 0.0)))
+    score_v = float(area_scores.get("voice", area_scores.get("voz", 0.0)))
+    score_c = float(area_scores.get("coherence", area_scores.get("coherencia", area_scores.get("contenido", 0.0))))
+    score_e = float(area_scores.get("empathy", area_scores.get("empatia", 0.0)))
+    score_glob = float(overall_score if overall_score is not None else 0.0)
+
     return {
         "sessionId": session_id,
         "session_id": session_id,
@@ -392,15 +678,34 @@ def sanitize_report_json(
         "processedAt": processed_at,
         "processed_at": processed_at,
         "recordingUrl": recording_url,
-        "overallScore": overall_score,
+        "overallScore": score_glob,
+        "scoreGlobal": score_glob,
+        "score_global": score_glob,
+        "scoreExpresion": score_exp,
+        "score_expresion": score_exp,
+        "scoreVoz": score_v,
+        "score_voz": score_v,
+        "scoreCoherencia": score_c,
+        "score_coherencia": score_c,
+        "scoreContenido": score_c,
+        "score_contenido": score_c,
+        "scoreEmpatia": score_e,
+        "score_empatia": score_e,
+        "areas": {
+            "expresion": score_exp,
+            "voz": score_v,
+            "coherencia": score_c,
+            "contenido": score_c,
+            "empatia": score_e,
+        },
         "areaScores": [
-            {"area": "expression", "value": area_scores.get("expression", 0)},
-            {"area": "voice", "value": area_scores.get("voice", 0)},
-            {"area": "coherence", "value": area_scores.get("coherence", 0)},
-            {"area": "empathy", "value": area_scores.get("empathy", 0)}
+            {"area": "expression", "value": area_scores.get("expression", score_exp)},
+            {"area": "voice", "value": area_scores.get("voice", score_v)},
+            {"area": "coherence", "value": area_scores.get("coherence", score_c)},
+            {"area": "empathy", "value": area_scores.get("empathy", score_e)}
         ],
         "puntuacion_global": {
-            "score_general": overall_score,
+            "score_general": score_glob,
             "areas": area_scores
         },
         "narrative": {
@@ -415,6 +720,7 @@ def sanitize_report_json(
             "judge": clean_judge,
             "turns_evaluated": len(segmented_turns or [])
         },
-        "transcript": transcript
+        "transcript": transcript,
+        "governance": governance or {}
     }
 
