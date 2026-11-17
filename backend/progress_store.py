@@ -114,86 +114,95 @@ def get_progress(connection_string, claims, last_n=5):
     ``last_n`` controls both the trend window and recent-session list. Sessions
     are selected newest-first in SQL, then reversed only for the chart series.
     """
-    if isinstance(last_n, bool) or not isinstance(last_n, int) or not 1 <= last_n <= 20:
-        raise HTTPException(422, "lastN debe estar entre 1 y 20.")
-
+    _validate_last_n(last_n)
     with store.database(connection_string) as cursor:
         profile = store.resolve_user(cursor, claims)
         if profile.get("role") != "spokesperson":
             raise HTTPException(403, "Esta vista está disponible solo para el vocero.")
         if not profile.get("id") or not profile.get("client_id"):
             raise HTTPException(403, "El vocero no tiene una empresa asignada.")
+        return progress_for_spokesperson(cursor, profile["id"], profile["client_id"], last_n)
 
-        cursor.execute(_COUNT_SQL, profile["id"], profile["client_id"])
-        count_row = cursor.fetchone()
-        sessions_count = int(count_row[0]) if count_row else 0
 
-        # Aunque el gráfico solicite un solo punto, el delta sigue necesitando
-        # la sesión inmediatamente anterior.
-        query_limit = max(last_n, 2)
-        cursor.execute(_SESSIONS_SQL, query_limit, profile["id"], profile["client_id"])
-        rows_desc = list(cursor.fetchall())
-        if not rows_desc:
-            return {
-                "lastN": last_n,
-                "sessionsCount": sessions_count,
-                "trendSessions": [],
-                "areas": [],
-                "recentSessions": [],
-            }
+def _validate_last_n(last_n):
+    if isinstance(last_n, bool) or not isinstance(last_n, int) or not 1 <= last_n <= 20:
+        raise HTTPException(422, "lastN debe estar entre 1 y 20.")
 
-        report_ids = [str(row[5]) for row in rows_desc]
-        scores = _load_area_scores(cursor, report_ids)
-        comparison_internal = [_session_data(row, scores) for row in rows_desc]
-        recent_internal = comparison_internal[:last_n]
-        trend_internal = list(reversed(recent_internal))
 
-        area_keys = sorted(
-            {
-                area_key
-                for session in trend_internal
-                for area_key in scores.get(session["_reportId"], {})
-            }
-        )
-        areas = []
-        for area_key in area_keys:
-            values = [scores.get(session["_reportId"], {}).get(area_key) for session in trend_internal]
-            current = scores.get(comparison_internal[0]["_reportId"], {}).get(area_key)
-            previous = (
-                scores.get(comparison_internal[1]["_reportId"], {}).get(area_key)
-                if len(comparison_internal) > 1
-                else None
-            )
-            change = current - previous if current is not None and previous is not None else None
-            areas.append(
-                {
-                    "areaKey": area_key,
-                    "current": current,
-                    "change": change,
-                    "values": values,
-                }
-            )
+def progress_for_spokesperson(cursor, spokesperson_id, client_id, last_n=5):
+    """Read one spokesperson's progress after the caller has authorized the actor."""
+    _validate_last_n(last_n)
 
-        trend_sessions = []
-        for index, session in enumerate(trend_internal, start=1):
-            trend_sessions.append(
-                {
-                    "sessionId": session["sessionId"],
-                    "label": f"S{index}",
-                    "scenarioTitle": session["scenarioTitle"],
-                    "completedAt": session["completedAt"],
-                    "overallScore": session["overallScore"],
-                }
-            )
+    cursor.execute(_COUNT_SQL, spokesperson_id, client_id)
+    count_row = cursor.fetchone()
+    sessions_count = int(count_row[0]) if count_row else 0
 
-        recent_sessions = []
-        for session in recent_internal:
-            recent_sessions.append({key: value for key, value in session.items() if key != "_reportId"})
-
+    # Aunque el gráfico solicite un solo punto, el delta sigue necesitando
+    # la sesión inmediatamente anterior.
+    query_limit = max(last_n, 2)
+    cursor.execute(_SESSIONS_SQL, query_limit, spokesperson_id, client_id)
+    rows_desc = list(cursor.fetchall())
+    if not rows_desc:
         return {
             "lastN": last_n,
             "sessionsCount": sessions_count,
-            "trendSessions": trend_sessions,
-            "areas": areas,
-            "recentSessions": recent_sessions,
+            "trendSessions": [],
+            "areas": [],
+            "recentSessions": [],
         }
+
+    report_ids = [str(row[5]) for row in rows_desc]
+    scores = _load_area_scores(cursor, report_ids)
+    comparison_internal = [_session_data(row, scores) for row in rows_desc]
+    recent_internal = comparison_internal[:last_n]
+    trend_internal = list(reversed(recent_internal))
+
+    area_keys = sorted(
+        {
+            area_key
+            for session in trend_internal
+            for area_key in scores.get(session["_reportId"], {})
+        }
+    )
+    areas = []
+    for area_key in area_keys:
+        values = [scores.get(session["_reportId"], {}).get(area_key) for session in trend_internal]
+        current = scores.get(comparison_internal[0]["_reportId"], {}).get(area_key)
+        previous = (
+            scores.get(comparison_internal[1]["_reportId"], {}).get(area_key)
+            if len(comparison_internal) > 1
+            else None
+        )
+        change = current - previous if current is not None and previous is not None else None
+        areas.append(
+            {
+                "areaKey": area_key,
+                "current": current,
+                "change": change,
+                "values": values,
+            }
+        )
+
+    trend_sessions = []
+    for index, session in enumerate(trend_internal, start=1):
+        trend_sessions.append(
+            {
+                "sessionId": session["sessionId"],
+                "label": f"S{index}",
+                "scenarioTitle": session["scenarioTitle"],
+                "completedAt": session["completedAt"],
+                "overallScore": session["overallScore"],
+            }
+        )
+
+    recent_sessions = []
+    for session in recent_internal:
+        recent_sessions.append({key: value for key, value in session.items() if key != "_reportId"})
+
+    return {
+        "lastN": last_n,
+        "sessionsCount": sessions_count,
+        "trendSessions": trend_sessions,
+        "areas": areas,
+        "recentSessions": recent_sessions,
+    }

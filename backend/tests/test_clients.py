@@ -114,6 +114,14 @@ class MembershipCursor(ClientCursor):
         normalized = " ".join(sql.split()).lower()
         self.executed_sql.append(normalized)
         self.rowcount = -1
+        if normalized.startswith("select id from dbo.app_user where id=? and client_id=?"):
+            user = self.users.get(str(params[0]))
+            self.selected_member = (user["id"],) if (
+                user and user["role"] == "spokesperson"
+                and str(user["client_id"]).lower() == str(params[1]).lower()
+            ) else None
+            self.mode = "member"
+            return self
         if normalized.startswith("select u.id,u.display_name as displayname"):
             if "u.preferred_language" in normalized:
                 client_id = str(params[0])
@@ -161,6 +169,8 @@ class MembershipCursor(ClientCursor):
         return super().execute(sql, *params)
 
     def fetchone(self):
+        if self.mode == "member":
+            return self.selected_member
         if self.mode == "locked_user":
             user = self.users.get(self.selected_user_id)
             if not user:
@@ -432,6 +442,68 @@ def test_non_master_roles_cannot_list_candidates_or_link(monkeypatch):
                     "spokespersonIds": [candidate],
                 }).status_code == 403
         assert cursor.users[candidate]["client_id"] is None
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_master_client_spokespersons_lists_only_members_even_when_suspended(monkeypatch):
+    cursor = MembershipCursor()
+    target_id = _add_client(cursor, "Empresa suspendida")
+    other_id = _add_client(cursor, "Otra empresa")
+    cursor.clients[target_id] = (target_id, "Empresa suspendida", "suspended", *cursor.clients[target_id][3:])
+    member = cursor.add_user(client_id=target_id, name="Ana")
+    cursor.add_user(client_id=other_id, name="Ajeno")
+    cursor.add_user(role="client_admin", client_id=target_id, name="Administrador")
+    cursor.add_user(name="Disponible")
+    try:
+        with _api(monkeypatch, cursor) as api:
+            response = api.get(f"/api/master/clients/{target_id}/spokespersons")
+            assert response.status_code == 200
+            assert response.json() == {
+                "items": [{
+                    "id": member,
+                    "displayName": "Ana",
+                    "email": cursor.users[member]["email"],
+                    "preferredLanguage": "es",
+                }],
+                "total": 1,
+            }
+            assert api.get(f"/v1/api/master/clients/{uuid.uuid4()}/spokespersons").status_code == 404
+        assert any("u.client_id=?" in sql and "u.role='spokesperson'" in sql for sql in cursor.executed_sql)
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_master_client_spokesperson_progress_requires_membership_and_master_role(monkeypatch):
+    cursor = MembershipCursor()
+    target_id = _add_client(cursor, "Destino")
+    other_id = _add_client(cursor, "Origen")
+    member = cursor.add_user(client_id=target_id)
+    foreign = cursor.add_user(client_id=other_id)
+    admin = cursor.add_user(role="client_admin", client_id=target_id)
+    calls = []
+
+    def progress(_cursor, spokesperson_id, client_id, last_n):
+        calls.append((spokesperson_id, client_id, last_n))
+        return {"lastN": last_n, "sessionsCount": 0, "trendSessions": [], "areas": [], "recentSessions": []}
+
+    monkeypatch.setattr(main.progress_store, "progress_for_spokesperson", progress)
+    route = f"/v1/api/master/clients/{target_id}/spokespersons"
+    try:
+        with _api(monkeypatch, cursor) as api:
+            response = api.get(f"{route}/{member}/progress")
+            assert response.status_code == 200
+            assert response.json()["sessionsCount"] == 0
+            assert calls == [(member, target_id, 5)]
+            for invalid in (foreign, admin, str(uuid.uuid4())):
+                assert api.get(f"{route}/{invalid}/progress").status_code == 404
+            assert api.get(f"/api/master/clients/{uuid.uuid4()}/spokespersons/{member}/progress").status_code == 404
+            cursor.actor_client_id = target_id
+            for role in ("spokesperson", "client_admin"):
+                cursor.role = role
+                assert api.get(f"/api/master/clients/{target_id}/spokespersons").status_code == 403
+                assert api.get(f"{route}/{member}/progress").status_code == 403
+            assert calls == [(member, target_id, 5)]
     finally:
         main.app.dependency_overrides.clear()
 

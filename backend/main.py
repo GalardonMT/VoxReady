@@ -1358,6 +1358,31 @@ def master_spokespersons(
         return {"items": items, "total": len(items)}
 
 
+@app.get('/api/master/clients/{client_id}/spokespersons')
+@app.get('/v1/api/master/clients/{client_id}/spokespersons')
+def master_client_spokespersons(client_id: uuid.UUID, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        items = client_store.list_client_spokespersons(cursor, client_id)
+        return {"items": items, "total": len(items)}
+
+
+@app.get('/api/master/clients/{client_id}/spokespersons/{spokesperson_id}/progress')
+@app.get('/v1/api/master/clients/{client_id}/spokespersons/{spokesperson_id}/progress')
+def master_client_spokesperson_progress(
+    client_id: uuid.UUID,
+    spokesperson_id: uuid.UUID,
+    lastN: int = 5,
+    user: dict = Depends(verify_token),
+):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        member_id, target_client_id = client_store.require_client_spokesperson(
+            cursor, client_id, spokesperson_id
+        )
+        return progress_store.progress_for_spokesperson(cursor, member_id, target_client_id, lastN)
+
+
 @app.post('/api/master/clients/{client_id}/spokespersons')
 @app.post('/v1/api/master/clients/{client_id}/spokespersons')
 def master_link_spokespersons(

@@ -170,7 +170,8 @@ def list_spokespersons(cursor, *, client_id=None, query=""):
 
 
 def list_client_spokespersons(cursor, client_id):
-    """Lista solamente los voceros activos del cliente autenticado."""
+    """Lista solamente los voceros activos de un cliente existente."""
+    target_id, _ = require_client(cursor, client_id)
     cursor.execute(
         """SELECT u.id,u.display_name AS displayName,u.email,
                   COALESCE(u.preferred_language,'es') AS preferredLanguage
@@ -179,7 +180,7 @@ def list_client_spokespersons(cursor, client_id):
              AND u.client_id=?
              AND (u.is_deleted IS NULL OR u.is_deleted=0)
            ORDER BY u.display_name,u.email,u.id""",
-        str(client_id),
+        target_id,
     )
     columns = [column[0] for column in cursor.description]
     items = []
@@ -188,6 +189,22 @@ def list_client_spokespersons(cursor, client_id):
         item["id"] = str(item["id"])
         items.append(item)
     return items
+
+
+def require_client_spokesperson(cursor, client_id, spokesperson_id):
+    """Reject a missing or foreign spokesperson without exposing another tenant."""
+    target_id, _ = require_client(cursor, client_id)
+    cursor.execute(
+        """SELECT id FROM dbo.app_user
+           WHERE id=? AND client_id=? AND role='spokesperson'
+             AND (is_deleted IS NULL OR is_deleted=0)""",
+        str(spokesperson_id),
+        target_id,
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(404, "Vocero no encontrado para este cliente.")
+    return str(row[0]), target_id
 
 
 def link_spokespersons(cursor, client_id, spokesperson_ids):
