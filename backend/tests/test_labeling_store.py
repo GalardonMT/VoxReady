@@ -208,6 +208,7 @@ def test_detail_normalizes_snapshot_and_exposes_no_personal_identity_or_blob_pat
         "expression", "voice", "coherence", "empathy"
     ]
     assert detail["metricGroups"][0]["categoryKey"] == "voice"
+    assert detail["metricGroups"][0]["metrics"][0]["observation"]["valueType"] == "decimal"
     rendered = json.dumps(detail, default=str)
     assert "@" not in rendered
     assert "labeling-evidence/" not in rendered

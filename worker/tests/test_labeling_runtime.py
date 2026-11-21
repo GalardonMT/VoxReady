@@ -108,6 +108,7 @@ def test_snapshot_uses_original_sources_and_explicit_conversion():
     metrics = {item["metricKey"]: item for item in result["snapshot"]["metrics"]}
     assert result["sourceStatus"] == "complete"
     assert result["queueReason"] == "routine"
+    assert metrics["voice.wpm"]["observation"]["valueType"] == "decimal"
     assert metrics["voice.phonation_ratio"]["aiValue"] == 68
     assert metrics["voice.asr_confidence"]["aiValue"] == 91
     assert metrics["content.red_line_cap"]["availability"] == "not_emitted"

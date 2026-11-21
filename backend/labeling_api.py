@@ -7,6 +7,7 @@ module remains contract-testable without Azure credentials.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -30,11 +31,14 @@ except ImportError:
     )
 
 
+logger = logging.getLogger("uvicorn.error")
+
 PROBLEM_BASE = "https://voxready.example/problems/"
 ERROR_TITLES = {
     403: "Acceso denegado", 404: "Recurso no encontrado",
     409: "Conflicto de estado", 410: "Grabación no disponible",
-    422: "Solicitud inválida", 503: "Servicio no disponible",
+    422: "Solicitud inválida", 500: "Error interno del servidor",
+    503: "Servicio no disponible",
 }
 ERROR_RESPONSES = {
     status: {"model": ProblemDetails, "content": {"application/problem+json": {}}}
@@ -89,6 +93,9 @@ class LabelingRoute(APIRoute):
             except HTTPException as error:
                 code = {403: "MASTER_ROLE_REQUIRED", 404: "NOT_FOUND", 409: "CONFLICT", 410: "GONE", 422: "VALIDATION_ERROR", 503: "DEPENDENCY_UNAVAILABLE"}.get(error.status_code, "REQUEST_FAILED")
                 return _problem_response(request, error.status_code, code, str(error.detail))
+            except Exception as error:
+                logger.exception("Error no controlado en ruta de etiquetado: %s", error)
+                return _problem_response(request, 500, "INTERNAL_ERROR", "Error interno al procesar la solicitud.")
 
         return handler
 
