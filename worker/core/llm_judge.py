@@ -110,6 +110,28 @@ PESOS_DIMENSIONES = {
 }
 
 
+def format_interview_dialogue(interview_turns: List[Dict[str, Any]]) -> str:
+    """Formatea los turnos estructurados (base y contrapregunta) para el Juez LLM y VISUM."""
+    ordered = sorted(
+        interview_turns,
+        key=lambda t: int(t.get("turnIndex") or t.get("turn_index") or 0),
+    )
+    blocks: List[str] = []
+    for idx, turn in enumerate(ordered, start=1):
+        t_idx = int(turn.get("turnIndex") or turn.get("turn_index") or idx)
+        base_seq = int(turn.get("baseSequenceNo") or turn.get("base_sequence_no") or idx)
+        kind = str(turn.get("turnKind") or turn.get("turn_kind") or "base")
+        q_text = str(turn.get("questionText") or turn.get("question_text") or "").strip()
+        ans_text = str(turn.get("transcript") or "").strip() or "(Sin respuesta inteligible)"
+        header = (
+            f"[Turno {t_idx} · Contrapregunta IA sobre Pregunta Base #{base_seq}]"
+            if kind == "follow_up"
+            else f"[Turno {t_idx} · Pregunta Base #{base_seq}]"
+        )
+        blocks.append(f"{header}\nPeriodista: \"{q_text}\"\nVocero: \"{ans_text}\"")
+    return "\n\n".join(blocks)
+
+
 class LLMJudgeService:
     def __init__(
         self,
@@ -207,6 +229,7 @@ class LLMJudgeService:
         contexto_crisis: str,
         transcripcion_vocero: str,
         lineas_rojas: Optional[List[str]] = None,
+        interview_turns: Optional[List[Dict[str, Any]]] = None,
     ) -> ReporteJuezConsolidado:
 
         lineas_rojas_list = lineas_rojas or []
@@ -215,12 +238,23 @@ class LLMJudgeService:
         else:
             lineas_rojas_text = "- (No hay líneas rojas definidas para este escenario)"
 
+        if interview_turns:
+            dialogue_block = format_interview_dialogue(interview_turns)
+            interaction_section = f"""DIÁLOGO COMPLETO DE LA ENTREVISTA POR TURNOS (PREGUNTAS BASE Y CONTRAPREGUNTAS EN VIVO):
+{dialogue_block}
+
+INSTRUCCIÓN ESPECÍFICA PARA ENTREVISTA MULTI-TURNO:
+Evalúa integralmente todas las intervenciones del vocero considerando la relación pregunta-respuesta en cada turno, incluyendo cómo reaccionó ante las contrapreguntas del periodista (si rectificó evasiones, sostuvo la disciplina de mensajes clave o cedió ante la presión hacia líneas rojas)."""
+        else:
+            interaction_section = f"""PREGUNTA FORMULADA POR EL PERIODISTA:
+"{pregunta_periodista}"
+
+TRANSCRIPCIÓN DE LA RESPUESTA REAL DEL VOCERO:
+"{transcripcion_vocero}" """
+
         user_prompt = f"""
 CONTEXTO DEL ESCENARIO:
 {contexto_crisis}
-
-PREGUNTA FORMULADA POR EL PERIODISTA:
-"{pregunta_periodista}"
 
 MENSAJES CLAVE OBLIGATORIOS QUE EL VOCERO DEBÍA TRANSMITIR:
 {json.dumps(mensajes_clave, ensure_ascii=False, indent=2)}
@@ -228,8 +262,7 @@ MENSAJES CLAVE OBLIGATORIOS QUE EL VOCERO DEBÍA TRANSMITIR:
 LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS PARA EL VOCERO):
 {lineas_rojas_text}
 
-TRANSCRIPCIÓN DE LA RESPUESTA REAL DEL VOCERO:
-"{transcripcion_vocero}"
+{interaction_section}
 
 REGLAS CRÍTICAS DE AUDITORÍA:
 1. 'pertinencia_respuesta':
@@ -317,7 +350,7 @@ Genera el análisis en formato JSON estricto con las claves:
                             model=target_model,
                             messages=messages,
                             temperature=0.2,
-                            max_tokens=2048,
+                            max_tokens=3072,
                             timeout=self.timeout,
                             response_format={"type": "json_object"},
                             extra_body={"reasoning_effort": effort},

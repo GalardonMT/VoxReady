@@ -2,6 +2,7 @@ import os
 import re
 import json
 import glob
+import time
 import uuid
 import shutil
 import logging
@@ -15,8 +16,8 @@ from openai import OpenAI
 from azure.storage.blob import BlobServiceClient
 
 try:
-    from core.audio_analyzer import AudioAnalyzer
-    from core.llm_judge import LLMJudgeService
+    from core.audio_analyzer import AudioAnalyzer, aggregate_turn_audio_results
+    from core.llm_judge import LLMJudgeService, format_interview_dialogue
     from core.narrative_generator import generate_visum_report
     from core.vision_client import VisionClient
     from core.report_builder import (
@@ -43,8 +44,8 @@ try:
     from services.pipeline_results import persist_pipeline_results
     from services.recording_evidence import seal_recording_evidence
 except (ImportError, ValueError):
-    from worker.core.audio_analyzer import AudioAnalyzer
-    from worker.core.llm_judge import LLMJudgeService
+    from worker.core.audio_analyzer import AudioAnalyzer, aggregate_turn_audio_results
+    from worker.core.llm_judge import LLMJudgeService, format_interview_dialogue
     from worker.core.narrative_generator import generate_visum_report
     from worker.core.vision_client import VisionClient
     from worker.core.report_builder import (
@@ -170,35 +171,82 @@ def download_blob(blob_path: str, local_path: str):
     raise last_error or RuntimeError(f"No se pudo descargar el blob: {blob_path}")
 
 
-def split_media(video_path: str, session_tmp_dir: str):
-    """Extrae audio PCM 16kHz y fotogramas muestreados a 2 FPS."""
+def probe_media_duration(video_path: str) -> Optional[float]:
+    """Obtiene la duración real en segundos del video maestro usando ffprobe."""
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ]
+        res = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+        )
+        raw = (res.stdout or "").strip()
+        if res.returncode == 0 and raw and raw.lower() != "n/a":
+            val = float(raw)
+            if val > 0:
+                return round(val, 3)
+    except Exception as exc:
+        logger.warning(f"Aviso obteniendo duración con ffprobe: {exc}")
+    return None
+
+
+def split_media(
+    video_path: str,
+    session_tmp_dir: str,
+    *,
+    extract_audio: bool = True,
+    video_duration_sec: Optional[float] = None,
+):
+    """
+    Extrae audio PCM 16kHz (si extract_audio=True) y fotogramas con FPS adaptativo:
+    - <= 5 minutos (300s): 2 FPS (máxima fidelidad en contacto visual).
+    - > 5 minutos: 1 FPS para balancear precisión y tiempo de inferencia.
+    - Tope configurable VISION_MAX_FRAMES (default 600, procesados en lotes de 60).
+    """
     audio_path = os.path.join(session_tmp_dir, "audio.wav")
     frames_dir = os.path.join(session_tmp_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
 
-    # Extraer audio PCM 16kHz Mono
-    cmd_audio = [
-        "ffmpeg", "-nostdin", "-y", "-i", video_path,
-        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path
-    ]
-    res_audio = subprocess.run(
-        cmd_audio,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    if res_audio.returncode != 0:
-        logger.error(f"Error en extracción de audio con FFmpeg: {res_audio.stderr[:400]}")
-        raise RuntimeError(f"FFmpeg no pudo extraer la pista de audio: {res_audio.stderr[:200]}")
+    if extract_audio:
+        cmd_audio = [
+            "ffmpeg", "-nostdin", "-y", "-i", video_path,
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path
+        ]
+        res_audio = subprocess.run(
+            cmd_audio,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if res_audio.returncode != 0:
+            logger.error(f"Error en extracción de audio con FFmpeg: {res_audio.stderr[:400]}")
+            raise RuntimeError(f"FFmpeg no pudo extraer la pista de audio: {res_audio.stderr[:200]}")
 
-    if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
-        raise ValueError("El archivo de audio generado está vacío o no contiene datos válidos.")
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+            raise ValueError("El archivo de audio generado está vacío o no contiene datos válidos.")
+    else:
+        audio_path = ""
 
-    # Extraer frames a 2 FPS (1 fotograma cada 500 ms según especificación técnica)
+    # FPS adaptativo: 2 FPS hasta 5 min (300s), 1 FPS en sesiones más largas
+    adaptive_fps = 1 if (video_duration_sec is not None and video_duration_sec > 300.0) else 2
+    max_frames = max(60, int(os.getenv("VISION_MAX_FRAMES", "600")))
+
     cmd_frames = [
         "ffmpeg", "-nostdin", "-y", "-i", video_path,
-        "-vf", "fps=2", "-q:v", "2", os.path.join(frames_dir, "frame_%04d.jpg")
+        "-vf", f"fps={adaptive_fps}", "-q:v", "2", os.path.join(frames_dir, "frame_%05d.jpg")
     ]
     res_frames = subprocess.run(
         cmd_frames,
@@ -212,16 +260,15 @@ def split_media(video_path: str, session_tmp_dir: str):
         raise RuntimeError(f"FFmpeg no pudo extraer fotogramas del video: {res_frames.stderr[:200]}")
 
     frame_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
-    logger.info(f"Fotogramas extraídos a 2 FPS: {len(frame_files)}")
+    logger.info(f"Fotogramas extraídos a {adaptive_fps} FPS: {len(frame_files)}")
 
     if not frame_files:
         raise ValueError("No se pudieron generar fotogramas a partir de la grabación.")
 
-    # Muestrear si la grabación es excesivamente larga para proteger tiempo de inferencia (< 60s)
-    if len(frame_files) > 120:
-        step = len(frame_files) // 120
-        frame_files = frame_files[::step][:120]
-        logger.info(f"Muestreados {len(frame_files)} fotogramas representativos para MediaPipe.")
+    if len(frame_files) > max_frames:
+        indices = [int(i * (len(frame_files) - 1) / (max_frames - 1)) for i in range(max_frames)]
+        frame_files = [frame_files[idx] for idx in indices]
+        logger.info(f"Muestreados uniformemente {len(frame_files)} fotogramas representativos para MediaPipe.")
 
     return audio_path, frame_files
 
@@ -366,32 +413,130 @@ def process_session_pipeline(
             f"(SHA-256: {recording_evidence['sha256'][:8]}...)"
         )
 
-        # 2. Extraer audio y fotogramas
-        audio_path, frame_files = split_media(local_video_path, session_tmp_dir)
+        # 2. Consultar turnos en vivo (dbo.session_turn) con polling acotado y extraer media
+        master_video_duration = probe_media_duration(local_video_path)
+        db_turns = db_svc.get_session_turns(internal_session_id) if db_svc else []
+        if db_turns:
+            wait_timeout = float(os.getenv("TURN_ASR_WAIT_TIMEOUT_SEC", "30.0"))
+            poll_interval = float(os.getenv("TURN_ASR_POLL_INTERVAL_SEC", "2.0"))
+            wait_started = time.monotonic()
+            while any(t.get("asr_status") in ("pending", "processing") for t in db_turns):
+                if (time.monotonic() - wait_started) >= wait_timeout:
+                    logger.warning(
+                        f"Timeout ({wait_timeout}s) esperando transcripción background en dbo.session_turn "
+                        f"para sesión {session_id}; turnos pendientes usarán fallback en worker."
+                    )
+                    break
+                time.sleep(poll_interval)
+                db_turns = db_svc.get_session_turns(internal_session_id)
 
-        # 2.1 Segmentar audio por preguntas (turns) si fueron provistos
+        needs_fallback_turns = [
+            t for t in db_turns
+            if t.get("asr_status") not in ("completed", "fallback_worker")
+        ]
+        need_master_audio = (not db_turns) or bool(needs_fallback_turns)
+
+        audio_path, frame_files = split_media(
+            local_video_path,
+            session_tmp_dir,
+            extract_audio=need_master_audio,
+            video_duration_sec=master_video_duration,
+        )
+
+        # 2.1 Segmentar audio por preguntas (turns legacy) solo si no hay dbo.session_turn
         segmented_turns = []
-        if turns:
+        if not db_turns and turns and audio_path:
             turns_audio_dir = os.path.join(session_tmp_dir, "turns")
             segmented_turns = segment_audio_by_turns(audio_path, turns, turns_audio_dir)
 
-        # 3. Análisis de Imagen (MediaPipe en ca-vision-service)
-        logger.info("Enviando fotogramas a ca-vision-service...")
+        # 3. Análisis de Imagen (MediaPipe en ca-vision-service por lotes de 60)
+        logger.info(f"Enviando {len(frame_files)} fotogramas a ca-vision-service en lotes...")
         vision_metrics = analyze_vision(frame_files)
 
-        # 4. Análisis de Audio y Transcripción ASR (NVIDIA Riva + VAD RMS)
-        logger.info("Ejecutando análisis acústico y transcripción de voz con NVIDIA Riva ASR...")
+        # 4. Análisis de Audio y Transcripción ASR (consolidación por turnos o modo legacy)
         riva_key = NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY") or get_secret("NVIDIA_API_KEY") or get_secret("nvidia-api-key") or ""
-        if not riva_key:
-            raise ValueError("NVIDIA_API_KEY no está configurada en el entorno o Key Vault.")
-
         audio_analyzer = AudioAnalyzer(
             api_key=riva_key,
             server=os.getenv("NVIDIA_RIVA_SERVER", "grpc.nvcf.nvidia.com:443"),
             function_id=os.getenv("NVIDIA_FUNCTION_ID", "71203149-d3b7-4460-8231-1be2543a1fca"),
             language_code=os.getenv("NVIDIA_LANGUAGE_CODE", "es-US")
         )
-        audio_res = audio_analyzer.process_audio(audio_path, rubric_cfg=rubric_cfg)
+
+        dialogue_turns_payload: List[Dict[str, Any]] = []
+        if db_turns:
+            # Ejecutar fallback determinista en worker solo para turnos pendientes/fallidos
+            if needs_fallback_turns:
+                if not riva_key:
+                    raise ValueError("NVIDIA_API_KEY no está configurada para fallback ASR en worker.")
+                fallback_dir = os.path.join(session_tmp_dir, "fallback_turns")
+                os.makedirs(fallback_dir, exist_ok=True)
+                for ft in needs_fallback_turns:
+                    start_ms = ft.get("start_offset_ms")
+                    end_ms = ft.get("end_offset_ms")
+                    if start_ms is None or end_ms is None or int(end_ms) <= int(start_ms):
+                        logger.warning(f"Turno {ft['turn_id']} sin offsets válidos para fallback FFmpeg.")
+                        continue
+                    seg_wav = os.path.join(fallback_dir, f"fallback_turn_{ft['turn_index']}.wav")
+                    start_s = max(0.0, int(start_ms) / 1000.0)
+                    dur_s = max(0.2, (int(end_ms) - int(start_ms)) / 1000.0)
+                    cmd_seg = [
+                        "ffmpeg", "-nostdin", "-y", "-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}",
+                        "-i", audio_path, "-acodec", "copy", seg_wav
+                    ]
+                    res_seg = subprocess.run(cmd_seg, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if res_seg.returncode == 0 and os.path.exists(seg_wav) and os.path.getsize(seg_wav) > 0:
+                        fb_res = audio_analyzer.process_audio(seg_wav, rubric_cfg=rubric_cfg)
+                        fb_ac = fb_res.get("acoustic_analysis", {})
+                        fb_tr = (fb_res.get("transcription") or "").strip()
+                        fb_words = fb_res.get("words", [])
+                        ft["transcript"] = fb_tr
+                        ft["words"] = fb_words
+                        ft["audio_duration_sec"] = fb_ac.get("total_duration_sec", 0.0)
+                        ft["speech_time_sec"] = fb_ac.get("speech_time_sec", 0.0)
+                        ft["silence_time_sec"] = fb_ac.get("silence_time_sec", 0.0)
+                        ft["phonation_ratio"] = fb_ac.get("phonation_ratio", 0.0)
+                        ft["acoustic_pauses"] = fb_ac.get("pausas_prolongadas_acusticas", [])
+                        ft["asr_status"] = "fallback_worker"
+                        if db_svc:
+                            try:
+                                db_svc.update_turn_worker_fallback(
+                                    turn_id=ft["turn_id"],
+                                    session_id=internal_session_id,
+                                    session_question_id=ft.get("session_question_id"),
+                                    base_sequence_no=ft["base_sequence_no"],
+                                    turn_kind=ft["turn_kind"],
+                                    transcript=fb_tr,
+                                    words=fb_words,
+                                    acoustics=fb_ac,
+                                )
+                            except Exception as fb_db_err:
+                                logger.warning(f"No se pudo persistir fallback del turno {ft['turn_id']}: {fb_db_err}")
+
+            logger.info(f"Consolidando acústica y transcripción desde {len(db_turns)} turnos persistidos...")
+            audio_res = aggregate_turn_audio_results(db_turns, rubric_cfg=rubric_cfg)
+            turn_eff_durs = audio_res.get("turn_effective_durations", {})
+            for t in db_turns:
+                dialogue_turns_payload.append(
+                    {
+                        "turnId": t["turn_id"],
+                        "turnIndex": t["turn_index"],
+                        "baseSequenceNo": t["base_sequence_no"],
+                        "turnKind": t["turn_kind"],
+                        "parentTurnId": t.get("parent_turn_id"),
+                        "questionText": t["question_text"],
+                        "transcript": (t.get("transcript") or "").strip(),
+                        "triggerReason": t.get("followup_trigger_reason"),
+                        "startOffsetMs": t.get("start_offset_ms"),
+                        "endOffsetMs": t.get("end_offset_ms"),
+                        "durationSeconds": turn_eff_durs.get(t["turn_index"], t.get("audio_duration_sec", 0.0)),
+                        "asrStatus": t.get("asr_status", "completed"),
+                    }
+                )
+        else:
+            logger.info("Ejecutando análisis acústico y transcripción monolítica con NVIDIA Riva ASR (modo legacy)...")
+            if not riva_key:
+                raise ValueError("NVIDIA_API_KEY no está configurada en el entorno o Key Vault.")
+            audio_res = audio_analyzer.process_audio(audio_path, rubric_cfg=rubric_cfg)
 
         acustica = audio_res.get("acoustic_analysis", {})
         total_duration = acustica.get("total_duration_sec", 0.0)
@@ -406,17 +551,24 @@ def process_session_pipeline(
                 "Grabación en silencio o micrófono inactivo."
             )
 
-        transcript = (audio_res.get("transcription") or "").strip()
+        raw_transcript = (audio_res.get("transcription") or "").strip()
         words = audio_res.get("words", [])
 
-        if not transcript or len(words) == 0:
+        if not raw_transcript or len(words) == 0:
             raise ValueError("El servicio de transcripción (NVIDIA Riva ASR) no detectó palabras inteligibles en el audio.")
+
+        transcript = (
+            format_interview_dialogue(dialogue_turns_payload)
+            if dialogue_turns_payload
+            else raw_transcript
+        )
 
         audio_metrics = audio_res.get("metrics", {})
         if words:
             audio_metrics["words"] = words
-        if total_duration > 0:
-            recording_evidence["durationSeconds"] = round(float(total_duration), 3)
+        evidence_duration = master_video_duration if (master_video_duration and master_video_duration > 0) else total_duration
+        if evidence_duration > 0:
+            recording_evidence["durationSeconds"] = round(float(evidence_duration), 3)
         score_wpm = float(audio_metrics.get("score_wpm", 80.0))
         score_fluidez = float(audio_metrics.get("score_fluidez") if audio_metrics.get("score_fluidez") is not None else 0.0)
         score_diccion = float(audio_metrics.get("score_diccion") if audio_metrics.get("score_diccion") is not None else DICTION_FALLBACK_SCORE)
@@ -427,9 +579,9 @@ def process_session_pipeline(
             1
         )
 
-        # 4.1 Mapear transcripción a cada turno/pregunta y persistir respuesta en session_question
+        # 4.1 Mapear transcripción legacy a session_question solo cuando no hubo dbo.session_turn
         turn_responses = []
-        if turns:
+        if not db_turns and turns:
             for t in turns:
                 q_id = t.get("questionId") or t.get("question_id") or ""
                 seq = t.get("sequenceNo") or t.get("sequence_no") or 1
@@ -452,17 +604,16 @@ def process_session_pipeline(
                     "transcript": turn_text,
                 })
 
-            # Si ningún turno capturó texto individual (o sólo hay 1 turno) pero hay transcripción global:
             non_empty_turns = [tr for tr in turn_responses if tr.get("transcript")]
-            if not non_empty_turns and transcript and turn_responses:
-                turn_responses[0]["transcript"] = transcript
+            if not non_empty_turns and raw_transcript and turn_responses:
+                turn_responses[0]["transcript"] = raw_transcript
 
             if db_svc and turn_responses:
                 try:
                     db_svc.update_question_responses(internal_session_id, turn_responses)
                 except Exception as t_err:
                     logger.error(f"Error actualizando respuestas en session_question: {t_err}", exc_info=True)
-        elif db_svc and transcript:
+        elif not db_turns and db_svc and raw_transcript:
             try:
                 with db_svc._get_connection() as conn:
                     cur = conn.cursor()
@@ -477,7 +628,7 @@ def process_session_pipeline(
                         turn_responses = [{
                             "questionId": str(sq_rows[0][0]),
                             "sequenceNo": sq_rows[0][1],
-                            "transcript": transcript
+                            "transcript": raw_transcript
                         }]
                         db_svc.update_question_responses(internal_session_id, turn_responses)
             except Exception as e_turns:
@@ -485,7 +636,11 @@ def process_session_pipeline(
 
         # 5. Evaluación de Contenido con LLM Juez
         active_scen = db_metadata.get("scenario", {}) if isinstance(db_metadata, dict) else {}
-        pregunta = "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
+        pregunta = (
+            dialogue_turns_payload[0]["questionText"]
+            if dialogue_turns_payload
+            else "¿Cuál es la postura oficial y qué medidas urgentes se están adoptando?"
+        )
         mensajes = active_scen.get("key_messages") or ["Nuestra prioridad es la seguridad y el esclarecimiento de los hechos."]
         contexto = active_scen.get("context") or "Incidente corporativo y vocería institucional ante medios de comunicación."
         red_lines = active_scen.get("red_lines") or []
@@ -495,18 +650,20 @@ def process_session_pipeline(
             base_url=LLM_BASE_URL,
             model=LLM_MODEL,
             fast_model=LLM_FAST_MODEL,
-            timeout=30.0
+            timeout=60.0
         )
         logger.info(
             f"Evaluando adherencia y control de crisis con LLM Juez "
-            f"[API Endpoint: {judge_svc.base_url}, Modelo: {judge_svc.model}, Respaldo: {judge_svc.fast_model}, Timeout: {judge_svc.timeout}s]..."
+            f"[API Endpoint: {judge_svc.base_url}, Modelo: {judge_svc.model}, Respaldo: {judge_svc.fast_model}, "
+            f"Turnos: {len(dialogue_turns_payload)}, Timeout: {judge_svc.timeout}s]..."
         )
         reporte_juez = judge_svc.evaluate_response(
             pregunta_periodista=pregunta,
             mensajes_clave=mensajes,
             contexto_crisis=contexto,
             transcripcion_vocero=transcript,
-            lineas_rojas=red_lines
+            lineas_rojas=red_lines,
+            interview_turns=dialogue_turns_payload or None,
         )
 
         llm_metrics = reporte_juez.model_dump()
@@ -579,11 +736,11 @@ def process_session_pipeline(
 
         # 7. Generación Narrativa Ejecutiva VISUM (Llamada 2 a LLM)
         logger.info(f"Generando Síntesis Ejecutiva VISUM [API Endpoint: {LLM_BASE_URL}, Modelo: {LLM_MODEL}]...")
-        http_client = httpx.Client(verify=False, timeout=30.0)
+        http_client = httpx.Client(verify=False, timeout=60.0)
         client_visum = OpenAI(
             base_url=LLM_BASE_URL,
             api_key=LLM_API_KEY,
-            timeout=30.0,
+            timeout=60.0,
             max_retries=0,
             http_client=http_client
         )
@@ -597,6 +754,7 @@ def process_session_pipeline(
         consolidated_intermediate = {
             "score_global": score_global,
             "transcript": transcript,
+            "dialogue_turns": dialogue_turns_payload,
             "evaluacion_areas": {
                 "expresion": {
                     "score": score_visual,
@@ -651,7 +809,9 @@ def process_session_pipeline(
             judge_metrics=llm_metrics,
             transcript=transcript,
             segmented_turns=segmented_turns,
-            governance=governance_metrics
+            governance=governance_metrics,
+            dialogue_turns=dialogue_turns_payload,
+            master_duration_seconds=evidence_duration,
         )
         cleaned_report["recordingEvidence"] = recording_evidence
 

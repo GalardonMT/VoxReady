@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import logging
 from typing import Dict, Any, Optional
 from openai import OpenAI
@@ -164,6 +165,8 @@ def generate_visum_report(
         or "Declaración institucional del vocero en ejercicio de crisis."
     )
 
+    dialogue_turns = consolidated_json.get("dialogue_turns") or []
+
     prompt_payload = {
         "escenario": {
             "titulo": scenario_info.get("title") or scenario_info.get("name") or "Simulación de Vocería en Crisis",
@@ -179,7 +182,23 @@ def generate_visum_report(
             "contenido_estrategico": evaluacion_areas.get("contenido", {}),
             "empatia_congruencia": evaluacion_areas.get("empatia", {})
         },
-        "transcripcion": transcript
+        "transcripcion": transcript,
+        **(
+            {
+                "dialogo_por_turnos": [
+                    {
+                        "turno": t.get("turnIndex"),
+                        "tipo": "contrapregunta" if t.get("turnKind") == "follow_up" else "pregunta_base",
+                        "pregunta_base_num": t.get("baseSequenceNo"),
+                        "periodista": t.get("questionText"),
+                        "vocero": t.get("transcript"),
+                    }
+                    for t in dialogue_turns
+                ]
+            }
+            if dialogue_turns
+            else {}
+        ),
     }
 
     user_message = f"Genera el informe ejecutivo VISUM para el siguiente desempeño evaluado:\n\n{json.dumps(prompt_payload, ensure_ascii=False, indent=2)}"

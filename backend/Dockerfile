@@ -5,8 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencias para compilar pyodbc y repo oficial de Microsoft ODBC Driver 18
+# Dependencias para FFmpeg (transcodificación por turno), pyodbc y Microsoft ODBC Driver 18
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
     curl \
     gnupg \
     unixodbc-dev \
@@ -27,6 +28,7 @@ COPY main.py client_scenarios.py master_topics.py spokesperson_store.py progress
 COPY schemas ./schemas
 COPY services ./services
 COPY scripts ./scripts
+COPY interview_live ./interview_live
 
 FROM application AS test
 COPY tests ./tests

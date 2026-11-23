@@ -19,10 +19,19 @@ export interface ScenarioPage {
   total: number;
 }
 
+export interface FollowUpPolicy {
+  difficulty: 'basic' | 'intermediate' | 'hard';
+  enabled: boolean;
+  maxPerBaseQuestion: number;
+  pressureLevel: string;
+}
+
 export interface SessionSetup {
   sessionId: string;
   scenarioId: string;
   status: string;
+  difficulty?: 'basic' | 'intermediate' | 'hard';
+  followUpPolicy?: FollowUpPolicy;
   questions: { id: string; sequenceNo: number; text: string }[];
   retentionPolicy: { version: string; keep: 'full_recording' | 'metrics_only'; termDays: number | null };
 }

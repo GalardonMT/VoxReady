@@ -545,6 +545,13 @@ def get_session(session_id: str, user: dict = Depends(verify_token)):
         "sessionId": session_id,
         "scenarioId": "crisis-voceria-01",
         "status": "created",
+        "difficulty": "intermediate",
+        "followUpPolicy": {
+            "difficulty": "intermediate",
+            "enabled": True,
+            "maxPerBaseQuestion": 1,
+            "pressureLevel": "moderate",
+        },
         "questions": [
             {"id": "q1", "sequenceNo": 1, "text": "¿Cuál es la gravedad real de la falla detectada en el lote de producción?"},
             {"id": "q2", "sequenceNo": 2, "text": "¿Cómo garantizan que otros productos en el mercado no estén afectados por el mismo problema?"},
@@ -857,18 +864,17 @@ async def finish_session(session_id: str, payload: FinishSessionRequest, user: d
     }
 
 
-@app.post("/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
-@app.post("/v1/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
-@app.post("/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
-@app.post("/v1/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse)
+@app.post("/sessions/{session_id}/follow-up", response_model=FollowUpResponse, deprecated=True)
+@app.post("/v1/sessions/{session_id}/follow-up", response_model=FollowUpResponse, deprecated=True)
+@app.post("/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse, deprecated=True)
+@app.post("/v1/api/sessions/{session_id}/follow-up", response_model=FollowUpResponse, deprecated=True)
 async def generate_session_follow_up(
     session_id: str,
     payload: FollowUpInput,
     user: dict = Depends(verify_token)
 ):
     """
-    Genera una contrapregunta periodística dinámica de baja latencia con Gemini 3.5 Flash Lite
-    cuando el usuario avanza de pregunta durante la entrevista (Tarea 2 de Indicaciones.md).
+    [DEPRECATED] Usar POST /v1/interview-live/sessions/{session_id}/turns con audio nativo.
     """
     ai_svc = get_ai_inference_service()
 
@@ -879,11 +885,11 @@ async def generate_session_follow_up(
             with pyodbc.connect(conn_str, timeout=5) as conn:
                 cur = conn.cursor()
                 cur.execute("""
-                    SELECT r.rule_text 
+                    SELECT r.text 
                     FROM dbo.topic_red_line r
                     JOIN dbo.scenario s ON s.topic_id = r.topic_id
                     JOIN dbo.session sess ON sess.scenario_id = s.id
-                    WHERE sess.id = ?
+                    WHERE sess.id = ? AND (r.status IS NULL OR r.status = 'active')
                 """, _safe_uuid(session_id))
                 rows = cur.fetchall()
                 if rows:
@@ -894,13 +900,13 @@ async def generate_session_follow_up(
     return ai_svc.generate_dynamic_follow_up(payload)
 
 
-@app.post("/api/ai/follow-up", response_model=FollowUpResponse)
-@app.post("/v1/api/ai/follow-up", response_model=FollowUpResponse)
+@app.post("/api/ai/follow-up", response_model=FollowUpResponse, deprecated=True)
+@app.post("/v1/api/ai/follow-up", response_model=FollowUpResponse, deprecated=True)
 async def generate_direct_follow_up(
     payload: FollowUpInput,
     user: dict = Depends(verify_token)
 ):
-    """Generación directa de contrapregunta periodística sin vincular a sesión específica."""
+    """[DEPRECATED] Usar POST /v1/interview-live/sessions/{session_id}/turns."""
     ai_svc = get_ai_inference_service()
     return ai_svc.generate_dynamic_follow_up(payload)
 
@@ -1102,6 +1108,13 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     audio_m = metrics_obj.get("audio") or {}
 
     dur_secs = float(audio_m.get("duracionSegundos", audio_m.get("duracion_segundos", 0.0)) or 0.0)
+    evidence_dur = (final_report.get("recordingEvidence") or {}).get("durationSeconds")
+    playback_dur_secs = float(
+        evidence_dur
+        or final_report.get("durationSeconds")
+        or dur_secs
+        or 0.0
+    )
     metrics_summary = {
         "eyeContactPct": vision_m.get("eyeContactPct", vision_m.get("contacto_visual_porcentaje", 0.0)),
         "shoulderStabilityScore": vision_m.get("shoulderStabilityScore", vision_m.get("average_posture_score", 0.0)),
@@ -1124,7 +1137,7 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
         "scenarioTitle": final_report.get("scenarioTitle") or scenario_title,
         "generatedAt": final_report.get("processedAt") or final_report.get("processed_at") or final_report.get("generatedAt") or datetime.now(timezone.utc).isoformat(),
         "recordingUrl": playback_sas_url,
-        "durationSeconds": dur_secs,
+        "durationSeconds": playback_dur_secs,
         "narrative": {
             "strengths": narrative_obj.get("strengths", []),
             "improvements": narrative_obj.get("improvements", []),
@@ -1142,7 +1155,8 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
             "rubricVersionCode": "published"
         },
         "puntuacion_global": final_report.get("puntuacion_global", {}),
-        "transcript": final_report.get("transcript") or ""
+        "transcript": final_report.get("transcript") or "",
+        "dialogueTurns": final_report.get("dialogueTurns") or []
     }
 
 
@@ -1982,6 +1996,19 @@ app.include_router(
         resolve_master=_resolve_labeling_master,
         issue_recording_url=_issue_labeling_recording_url,
         api_enabled=lambda: LABELING_QUEUE_API_ENABLED,
+    )
+)
+
+try:
+    from interview_live.router import create_interview_live_router
+except ImportError:
+    from backend.interview_live.router import create_interview_live_router
+
+app.include_router(
+    create_interview_live_router(
+        sql_conn_str_getter=lambda: SQL_CONN_STR,
+        verify_token_dep=verify_token,
+        require_session_access_fn=spokesperson_store.require_session_access,
     )
 )
 

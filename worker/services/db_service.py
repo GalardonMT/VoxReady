@@ -586,6 +586,135 @@ class DatabaseService:
             conn.commit()
             logger.info(f"Respuestas transcritas de {len(turn_responses)} preguntas actualizadas en session_question para sesión {valid_session_uuid}")
 
+    def get_session_turns(self, session_id: str) -> List[Dict[str, Any]]:
+        """Lee los turnos persistidos en dbo.session_turn para la sesión (vacío si es legacy)."""
+        try:
+            with self._get_connection() as conn:
+                cur = conn.cursor()
+                valid_session_uuid = self._resolve_session_id(cur, session_id)
+                cur.execute(
+                    """
+                    SELECT id, session_id, session_question_id, parent_turn_id,
+                           base_sequence_no, turn_index, followup_depth, turn_kind,
+                           question_text, followup_generated, followup_question_text,
+                           followup_trigger_reason, start_offset_ms, end_offset_ms,
+                           audio_duration_sec, speech_time_sec, silence_time_sec,
+                           phonation_ratio, acoustic_pauses_json, transcript,
+                           words_json, asr_status, asr_error
+                    FROM dbo.session_turn
+                    WHERE session_id = ?
+                    ORDER BY turn_index ASC
+                    """,
+                    valid_session_uuid,
+                )
+                turns: List[Dict[str, Any]] = []
+                for row in cur.fetchall():
+                    try:
+                        words = json.loads(row[20]) if row[20] else []
+                    except Exception:
+                        words = []
+                    try:
+                        acoustic_pauses = json.loads(row[18]) if row[18] else []
+                    except Exception:
+                        acoustic_pauses = []
+                    turns.append(
+                        {
+                            "turn_id": str(row[0]),
+                            "session_id": str(row[1]),
+                            "session_question_id": str(row[2]) if row[2] else None,
+                            "parent_turn_id": str(row[3]) if row[3] else None,
+                            "base_sequence_no": int(row[4]),
+                            "turn_index": int(row[5]),
+                            "followup_depth": int(row[6]),
+                            "turn_kind": str(row[7]),
+                            "question_text": str(row[8] or ""),
+                            "followup_generated": bool(row[9]),
+                            "followup_question_text": row[10],
+                            "followup_trigger_reason": row[11],
+                            "start_offset_ms": row[12],
+                            "end_offset_ms": row[13],
+                            "audio_duration_sec": float(row[14]) if row[14] is not None else 0.0,
+                            "speech_time_sec": float(row[15]) if row[15] is not None else 0.0,
+                            "silence_time_sec": float(row[16]) if row[16] is not None else 0.0,
+                            "phonation_ratio": float(row[17]) if row[17] is not None else 0.0,
+                            "acoustic_pauses": acoustic_pauses,
+                            "transcript": str(row[19] or ""),
+                            "words": words,
+                            "asr_status": str(row[21] or "pending"),
+                            "asr_error": row[22],
+                        }
+                    )
+                return turns
+        except Exception as exc:
+            if "Invalid object name" in str(exc) or "session_turn" in str(exc):
+                logger.info("Tabla dbo.session_turn no disponible aún; operando en modo legacy.")
+                return []
+            logger.warning(f"Aviso consultando dbo.session_turn para {session_id}: {exc}")
+            return []
+
+    def update_turn_worker_fallback(
+        self,
+        *,
+        turn_id: str,
+        session_id: str,
+        session_question_id: Optional[str],
+        base_sequence_no: int,
+        turn_kind: str,
+        transcript: str,
+        words: List[Dict[str, Any]],
+        acoustics: Dict[str, Any],
+    ) -> None:
+        """Persiste la transcripción y acústica de fallback calculadas por el worker en dbo.session_turn."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            valid_session_uuid = self._resolve_session_id(cur, session_id)
+            cur.execute(
+                """
+                UPDATE dbo.session_turn
+                SET transcript = ?,
+                    words_json = ?,
+                    audio_duration_sec = ?,
+                    speech_time_sec = ?,
+                    silence_time_sec = ?,
+                    phonation_ratio = ?,
+                    acoustic_pauses_json = ?,
+                    asr_status = 'fallback_worker',
+                    asr_error = NULL,
+                    updated_at = SYSUTCDATETIME()
+                WHERE id = ?
+                """,
+                (
+                    transcript,
+                    json.dumps(words, ensure_ascii=False),
+                    acoustics.get("total_duration_sec"),
+                    acoustics.get("speech_time_sec"),
+                    acoustics.get("silence_time_sec"),
+                    acoustics.get("phonation_ratio"),
+                    json.dumps(acoustics.get("pausas_prolongadas_acusticas", []), ensure_ascii=False),
+                    turn_id,
+                ),
+            )
+            if turn_kind == "base" and transcript:
+                if session_question_id:
+                    cur.execute(
+                        """
+                        UPDATE dbo.session_question
+                        SET response_text = ?, updated_at = SYSUTCDATETIME()
+                        WHERE id = ? AND session_id = ?
+                        """,
+                        (transcript, session_question_id, valid_session_uuid),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE dbo.session_question
+                        SET response_text = ?, updated_at = SYSUTCDATETIME()
+                        WHERE session_id = ? AND sequence_no = ?
+                        """,
+                        (transcript, valid_session_uuid, base_sequence_no),
+                    )
+            conn.commit()
+
     save_analysis_report = finalize_session_analysis
 
     def update_session_status(

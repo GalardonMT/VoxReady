@@ -8,6 +8,9 @@ export const API_BASE_URL =
   process.env.NEXT_PUBLIC_BACKEND_API_URL ||
   'http://localhost:8000/v1';
 
+export const INTERVIEW_API_BASE_URL =
+  process.env.NEXT_PUBLIC_INTERVIEW_API_URL || API_BASE_URL;
+
 const TOKEN_KEY = 'voxready_access_token';
 let tokenProvider: (() => Promise<string | null>) | null = null;
 
@@ -76,7 +79,7 @@ export function clearAccessToken(): void {
   localStorage.removeItem('voxready_token');
 }
 
-async function getAuthToken(): Promise<string | null> {
+export async function getAuthToken(): Promise<string | null> {
   if (typeof window === 'undefined') return null;
 
   if (tokenProvider) {

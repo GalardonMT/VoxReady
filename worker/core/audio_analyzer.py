@@ -419,3 +419,225 @@ class AudioAnalyzer:
             "acoustic_analysis": acustica,
             "metrics": metricas_voz,
         }
+
+
+def aggregate_turn_audio_results(
+    turn_records: List[Dict[str, Any]],
+    rubric_cfg: Optional[DynamicRubricConfig] = None,
+) -> Dict[str, Any]:
+    """
+    Agrega los resultados acústicos y ASR de todos los turnos de una sesión:
+    - Calcula pausas estrictamente INTRA-TURNO (nunca entre turnos distintos).
+    - Acota el final efectivo de cada turno a last_word.end cuando hay palabras,
+      evitando que los segundos entre terminar de hablar y pulsar el botón degraden
+      wpm_global, ratio_fonacion o generen falsas pausas prolongadas finales.
+    - Preserva el contrato exacto de 'voice' exigido por DynamicRubricConfig y labeling_runtime.py.
+    """
+    ordered = sorted(turn_records, key=lambda t: int(t.get("turn_index") or t.get("turnIndex") or 0))
+
+    all_words: List[Dict[str, Any]] = []
+    pausas_naturales_count = 0
+    pausas_vacilacion_count = 0
+    pausas_prolongadas_all: List[Dict[str, Any]] = []
+    total_duration = 0.0
+    total_speech_time = 0.0
+    cumulative_offset_sec = 0.0
+    turn_effective_durations: Dict[int, float] = {}
+    dialogue_transcript_parts: List[str] = []
+
+    for idx, turn in enumerate(ordered):
+        turn_idx = int(turn.get("turn_index") or turn.get("turnIndex") or (idx + 1))
+        raw_duration = max(0.0, float(turn.get("audio_duration_sec") or turn.get("audioDurationSec") or 0.0))
+        raw_speech = max(0.0, float(turn.get("speech_time_sec") or turn.get("speechTimeSec") or 0.0))
+        raw_words = turn.get("words") or []
+        raw_acoustic_pauses = turn.get("acoustic_pauses") or turn.get("pausas_prolongadas_acusticas") or []
+
+        # Normalizar palabras del turno y ordenar por inicio
+        cleaned_turn_words: List[Dict[str, Any]] = []
+        for w in raw_words:
+            if not isinstance(w, dict):
+                continue
+            word_txt = str(w.get("word") or "").strip().lower()
+            if not word_txt:
+                continue
+            w_start = max(0.0, float(w.get("start", w.get("start_time", 0.0)) or 0.0))
+            w_end = max(w_start, float(w.get("end", w.get("end_time", w_start)) or w_start))
+            conf_raw = w.get("confidence")
+            conf = float(conf_raw) if conf_raw is not None else 1.0
+            conf = max(0.0, min(1.0, conf))
+            cleaned_turn_words.append(
+                {"word": word_txt, "start": w_start, "end": w_end, "confidence": conf}
+            )
+        cleaned_turn_words.sort(key=lambda item: item["start"])
+
+        # Acotar duración efectiva al timestamp de la última palabra (last_word.end)
+        last_word_end = 0.0
+        if cleaned_turn_words:
+            last_word_end = max(w["end"] for w in cleaned_turn_words)
+            if raw_duration > 0.0 and last_word_end > 0.0:
+                eff_duration = min(raw_duration, last_word_end)
+            else:
+                eff_duration = max(raw_duration, last_word_end)
+            eff_duration = max(eff_duration, 0.1) if last_word_end > 0 else raw_duration
+            if raw_speech > 0.0:
+                eff_speech = min(raw_speech, eff_duration)
+            else:
+                # Respaldo si solo existieran timestamps ASR sin RMS
+                word_span_sum = sum(max(0.05, w["end"] - w["start"]) for w in cleaned_turn_words)
+                eff_speech = min(eff_duration, word_span_sum)
+        else:
+            eff_duration = raw_duration
+            eff_speech = min(raw_speech, eff_duration)
+
+        turn_effective_durations[turn_idx] = round(eff_duration, 3)
+        total_duration += eff_duration
+        total_speech_time += eff_speech
+
+        start_offset_ms = turn.get("start_offset_ms")
+        if start_offset_ms is None:
+            start_offset_ms = turn.get("startOffsetMs")
+        turn_offset_sec = (
+            max(0.0, float(start_offset_ms) / 1000.0)
+            if start_offset_ms is not None
+            else cumulative_offset_sec
+        )
+
+        # Pausas estrictamente INTRA-TURNO
+        turn_prolonged_asr: List[Dict[str, Any]] = []
+        for i in range(len(cleaned_turn_words) - 1):
+            gap = max(0.0, cleaned_turn_words[i + 1]["start"] - cleaned_turn_words[i]["end"])
+            if gap >= 1.50:
+                turn_prolonged_asr.append(
+                    {
+                        "inicio_segundo": round(turn_offset_sec + cleaned_turn_words[i]["end"], 2),
+                        "duracion_segundos": round(gap, 2),
+                        "entre_palabras": f"{cleaned_turn_words[i]['word']} -> {cleaned_turn_words[i + 1]['word']}",
+                        "turn_index": turn_idx,
+                    }
+                )
+            elif gap >= 0.70:
+                pausas_vacilacion_count += 1
+            elif gap >= 0.25:
+                pausas_naturales_count += 1
+
+        if turn_prolonged_asr:
+            pausas_prolongadas_all.extend(turn_prolonged_asr)
+        elif raw_acoustic_pauses:
+            for ap in raw_acoustic_pauses:
+                if not isinstance(ap, dict):
+                    continue
+                ap_start = float(ap.get("inicio_segundo", 0.0) or 0.0)
+                # Excluir silencios residuales posteriores al fin de la última palabra del turno
+                if cleaned_turn_words and last_word_end > 0.0 and ap_start >= last_word_end:
+                    continue
+                pausas_prolongadas_all.append(
+                    {
+                        "inicio_segundo": round(turn_offset_sec + ap_start, 2),
+                        "duracion_segundos": round(float(ap.get("duracion_segundos", 0.0) or 0.0), 2),
+                        "turn_index": turn_idx,
+                    }
+                )
+
+        # Aplanar palabras con timeline consistente y confidence preservado para labeling_runtime
+        for w in cleaned_turn_words:
+            all_words.append(
+                {
+                    "word": w["word"],
+                    "start": round(turn_offset_sec + w["start"], 3),
+                    "end": round(turn_offset_sec + w["end"], 3),
+                    "confidence": w["confidence"],
+                }
+            )
+
+        t_transcript = str(turn.get("transcript") or "").strip()
+        if t_transcript:
+            dialogue_transcript_parts.append(t_transcript)
+
+        cumulative_offset_sec += eff_duration
+
+    total_words = len(all_words)
+    total_duration_r = round(total_duration, 2)
+    total_speech_r = round(total_speech_time, 2)
+    total_silence_r = round(max(0.0, total_duration - total_speech_time), 2)
+    phonation_ratio = (
+        round(min(1.0, total_speech_time / total_duration), 4)
+        if total_duration > 0.0
+        else 0.0
+    )
+
+    acustica = {
+        "total_duration_sec": total_duration_r,
+        "speech_time_sec": total_speech_r,
+        "silence_time_sec": total_silence_r,
+        "phonation_ratio": phonation_ratio,
+        "pausas_prolongadas_acusticas": pausas_prolongadas_all,
+    }
+
+    if total_words == 0:
+        metrics = {
+            "palabras_totales": 0,
+            "duracion_segundos": total_duration_r,
+            "tiempo_voz_activa_segundos": total_speech_r,
+            "wpm_global": 0.0,
+            "wpm_articulacion_neta": 0.0,
+            "ratio_fonacion": phonation_ratio,
+            "pausas_naturales": 0,
+            "pausas_vacilacion": 0,
+            "pausas_prolongadas": len(pausas_prolongadas_all),
+            "detalle_pausas_prolongadas": pausas_prolongadas_all[:15],
+            "densidad_muletillas_pct": 0.0,
+            "muletillas_detectadas": [],
+            "conteo_muletillas": {},
+            "score_wpm": 0.0,
+            "score_fluidez": 0.0,
+            "score_diccion": DICTION_FALLBACK_SCORE,
+        }
+    else:
+        dur_min_global = max(0.01, total_duration / 60.0)
+        dur_min_audible = max(0.01, total_speech_time / 60.0)
+        wpm_global = total_words / dur_min_global
+        wpm_articulacion = total_words / dur_min_audible
+
+        muletillas_encontradas: List[str] = []
+        conteo_muletillas: Dict[str, int] = {}
+        for w in all_words:
+            ws = w["word"].lower()
+            if ws in MULETILLAS_TARGET:
+                muletillas_encontradas.append(ws)
+                conteo_muletillas[ws] = conteo_muletillas.get(ws, 0) + 1
+
+        densidad_muletillas = (len(muletillas_encontradas) / total_words) * 100.0
+        voice_subscores = calculate_voice_subscores(
+            wpm_global=wpm_global,
+            densidad_muletillas_pct=densidad_muletillas,
+            pausas_vacilacion=pausas_vacilacion_count,
+            pausas_prolongadas=len(pausas_prolongadas_all),
+            parakeet_words=all_words,
+            rubric_cfg=rubric_cfg,
+        )
+        metrics = {
+            "palabras_totales": total_words,
+            "duracion_segundos": total_duration_r,
+            "tiempo_voz_activa_segundos": total_speech_r,
+            "wpm_global": round(wpm_global, 1),
+            "wpm_articulacion_neta": round(wpm_articulacion, 1),
+            "ratio_fonacion": phonation_ratio,
+            "pausas_naturales": pausas_naturales_count,
+            "pausas_vacilacion": pausas_vacilacion_count,
+            "pausas_prolongadas": len(pausas_prolongadas_all),
+            "detalle_pausas_prolongadas": pausas_prolongadas_all[:15],
+            "densidad_muletillas_pct": round(densidad_muletillas, 2),
+            "muletillas_detectadas": muletillas_encontradas[:20],
+            "conteo_muletillas": conteo_muletillas,
+            "score_wpm": voice_subscores["score_wpm"],
+            "score_fluidez": voice_subscores["score_fluidez"],
+            "score_diccion": voice_subscores["score_diccion"],
+        }
+
+    return {
+        "transcription": " ".join(dialogue_transcript_parts).strip(),
+        "words": all_words,
+        "acoustic_analysis": acustica,
+        "metrics": metrics,
+        "turn_effective_durations": turn_effective_durations,
+    }

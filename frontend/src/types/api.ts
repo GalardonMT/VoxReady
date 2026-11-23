@@ -446,6 +446,21 @@ export interface MetricsSummary {
   durationSeconds?: number;
 }
 
+export interface DialogueTurnReportItem {
+  turnId?: string;
+  turnIndex: number;
+  baseSequenceNo: number;
+  turnKind: 'base' | 'follow_up';
+  parentTurnId?: string | null;
+  questionText: string;
+  transcript: string;
+  triggerReason?: string | null;
+  startOffsetMs?: number | null;
+  endOffsetMs?: number | null;
+  durationSeconds?: number | null;
+  asrStatus?: string;
+}
+
 export interface FullVisumReport {
   sessionId: string;
   status: string;
@@ -492,6 +507,7 @@ export interface FullVisumReport {
     };
   };
   transcript?: string;
+  dialogueTurns?: DialogueTurnReportItem[];
 }
 
 export interface ProgressTrend {

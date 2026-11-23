@@ -201,7 +201,18 @@ def get_session(connection_string, claims, session_id):
             questions = store.rows(cursor)
         for question in questions:
             question['id'] = str(question['id'])
+        cursor.execute('SELECT difficulty FROM dbo.scenario WHERE id=?', session[1])
+        scen_row = cursor.fetchone()
+        raw_difficulty = scen_row[0] if scen_row and scen_row[0] else 'intermediate'
+        try:
+            from interview_live.config import get_follow_up_policy
+        except ImportError:
+            from backend.interview_live.config import get_follow_up_policy
+        followup_policy = get_follow_up_policy(raw_difficulty)
         cursor.execute('SELECT TOP 1 version_label,keep,term_days FROM dbo.retention_policy WHERE client_id=? AND is_current=1 ORDER BY effective_from DESC', profile['client_id'])
         policy = cursor.fetchone()
-        return {'sessionId': session[3] or str(session[0]), 'scenarioId': str(session[1]), 'status': session[2], 'questions': questions,
+        return {'sessionId': session[3] or str(session[0]), 'scenarioId': str(session[1]), 'status': session[2],
+                'difficulty': followup_policy.difficulty,
+                'followUpPolicy': followup_policy.to_payload(),
+                'questions': questions,
                 'retentionPolicy': {'version': policy[0] if policy else '1.0', 'keep': policy[1] if policy else 'full_recording', 'termDays': policy[2] if policy else 30}}
