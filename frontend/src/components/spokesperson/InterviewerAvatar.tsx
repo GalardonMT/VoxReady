@@ -5,7 +5,11 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 interface InterviewerAvatarProps {
   questionText: string;
   questionIndex: number;
+  turnKey?: string | number;
+  isFollowUp?: boolean;
+  allowRepeat?: boolean;
   isPaused: boolean;
+  onSpeechStart?: () => void;
   onSpeechEnd?: () => void;
   className?: string;
   style?: React.CSSProperties;
@@ -14,7 +18,11 @@ interface InterviewerAvatarProps {
 export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
   questionText,
   questionIndex,
+  turnKey,
+  isFollowUp = false,
+  allowRepeat = true,
   isPaused,
+  onSpeechStart,
   onSpeechEnd,
   className,
   style
@@ -25,8 +33,14 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
 
+  const onSpeechStartRef = useRef(onSpeechStart);
+  onSpeechStartRef.current = onSpeechStart;
   const onSpeechEndRef = useRef(onSpeechEnd);
   onSpeechEndRef.current = onSpeechEnd;
+
+  const speechWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechFinishedForKeyRef = useRef<string>('');
+  const effectiveTurnKey = String(turnKey ?? `${questionIndex}:${questionText}`);
 
   // Referencias para el loop de animación
   const isSpeakingRef = useRef(false);
@@ -57,9 +71,29 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
     initialPositions: new Map()
   });
 
+  const clearSpeechWatchdog = useCallback(() => {
+    if (speechWatchdogRef.current) {
+      clearTimeout(speechWatchdogRef.current);
+      speechWatchdogRef.current = null;
+    }
+  }, []);
+
+  const notifySpeechEndedOnce = useCallback((key: string) => {
+    clearSpeechWatchdog();
+    setIsSpeaking(false);
+    if (speechFinishedForKeyRef.current !== key) {
+      speechFinishedForKeyRef.current = key;
+      onSpeechEndRef.current?.();
+    }
+  }, [clearSpeechWatchdog]);
+
   // Sintetizador de voz
-  const speakQuestion = useCallback((text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  const speakQuestion = useCallback((text: string, keyForTurn: string) => {
+    clearSpeechWatchdog();
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      notifySpeechEndedOnce(keyForTurn);
+      return;
+    }
 
     window.speechSynthesis.cancel();
     if (isPausedRef.current || !text) {
@@ -69,7 +103,10 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
 
     // Limpiar texto para una locución fluida
     const cleanText = text.replace(/["“”«»]/g, '').trim();
-    if (!cleanText) return;
+    if (!cleanText) {
+      notifySpeechEndedOnce(keyForTurn);
+      return;
+    }
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
 
@@ -90,56 +127,80 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
 
     utterance.onstart = () => {
       setIsSpeaking(true);
+      onSpeechStartRef.current?.();
     };
 
     utterance.onend = () => {
-      setIsSpeaking(false);
-      onSpeechEndRef.current?.();
+      notifySpeechEndedOnce(keyForTurn);
     };
 
     utterance.onerror = (e) => {
-      // Ignorar cancelaciones intencionales
-      if (e.error !== 'canceled' && e.error !== 'interrupted') {
-        console.warn('SpeechSynthesis error:', e.error);
+      // Ignorar cancelaciones intencionales al cambiar de turno o pausar
+      if (e.error === 'canceled' || e.error === 'interrupted') {
+        clearSpeechWatchdog();
+        setIsSpeaking(false);
+        return;
       }
-      setIsSpeaking(false);
+      console.warn('SpeechSynthesis error:', e.error);
+      notifySpeechEndedOnce(keyForTurn);
     };
+
+    // Watchdog defensivo contra bug conocido de Chromium donde onend no dispara
+    const wordCount = Math.max(1, cleanText.split(/\s+/).length);
+    const watchdogMs = Math.max(12000, Math.round(wordCount * 650 * 1.8));
+    speechWatchdogRef.current = setTimeout(() => {
+      console.warn('[InterviewerAvatar] Watchdog TTS activado: habilitando turno del vocero.');
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+      notifySpeechEndedOnce(keyForTurn);
+    }, watchdogMs);
 
     try {
       window.speechSynthesis.speak(utterance);
     } catch (err) {
       console.warn('Error al ejecutar speak:', err);
-      setIsSpeaking(false);
+      notifySpeechEndedOnce(keyForTurn);
     }
-  }, []);
+  }, [clearSpeechWatchdog, notifySpeechEndedOnce]);
 
-  // Leer la pregunta cada vez que cambia questionIndex o questionText
+  // Leer la pregunta cada vez que cambia el turno o la pregunta
   useEffect(() => {
-    if (isLoading || isMuted || isPaused) return;
+    if (isLoading || isPaused) return;
+    if (speechFinishedForKeyRef.current === effectiveTurnKey) return;
 
-    // Pequeño retardo de cortesía de 350ms para que la transición sea fluida
+    if (isMuted) {
+      const muteTimer = setTimeout(() => {
+        notifySpeechEndedOnce(effectiveTurnKey);
+      }, 250);
+      return () => clearTimeout(muteTimer);
+    }
+
+    // Pequeño retardo de cortesía de 300ms para que la transición sea fluida
     const timer = setTimeout(() => {
-      speakQuestion(questionText);
-    }, 350);
+      speakQuestion(questionText, effectiveTurnKey);
+    }, 300);
 
     return () => {
       clearTimeout(timer);
+      clearSpeechWatchdog();
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
       setIsSpeaking(false);
     };
-  }, [questionIndex, questionText, isLoading, isMuted, isPaused, speakQuestion]);
+  }, [effectiveTurnKey, questionText, isLoading, isMuted, isPaused, speakQuestion, clearSpeechWatchdog, notifySpeechEndedOnce]);
 
   // Si se pausa la sesión, detener de inmediato la locución
   useEffect(() => {
     if (isPaused) {
+      clearSpeechWatchdog();
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
       setIsSpeaking(false);
     }
-  }, [isPaused]);
+  }, [isPaused, clearSpeechWatchdog]);
 
   // Inicialización de la escena Three.js
   useEffect(() => {
@@ -538,11 +599,11 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
                 width: '7px',
                 height: '7px',
                 borderRadius: '50%',
-                background: '#38bdf8',
-                boxShadow: '0 0 8px #38bdf8'
+                background: isFollowUp ? '#f59e0b' : '#38bdf8',
+                boxShadow: isFollowUp ? '0 0 8px #f59e0b' : '0 0 8px #38bdf8'
               }}
             />
-            <span>🗣️ Formulando pregunta...</span>
+            <span>{isFollowUp ? '⚡ Formulando contrapregunta...' : '🗣️ Formulando pregunta...'}</span>
           </>
         ) : (
           <>
@@ -565,9 +626,9 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
       >
         <button
           type="button"
-          onClick={() => speakQuestion(questionText)}
-          disabled={isPaused || isSpeaking}
-          title="Escuchar la pregunta de nuevo"
+          onClick={() => speakQuestion(questionText, effectiveTurnKey)}
+          disabled={isPaused || isSpeaking || !allowRepeat}
+          title={!allowRepeat ? 'Disponible solo antes de iniciar tu respuesta' : 'Escuchar la pregunta de nuevo'}
           style={{
             background: 'rgba(15, 23, 42, 0.75)',
             border: '1px solid rgba(255, 255, 255, 0.1)',
@@ -575,12 +636,12 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
             borderRadius: '6px',
             padding: '4px 8px',
             fontSize: '11px',
-            cursor: isPaused || isSpeaking ? 'not-allowed' : 'pointer',
+            cursor: isPaused || isSpeaking || !allowRepeat ? 'not-allowed' : 'pointer',
             display: 'flex',
             alignItems: 'center',
             gap: '4px',
             transition: 'all 0.2s ease',
-            opacity: isPaused ? 0.5 : 1
+            opacity: isPaused || !allowRepeat ? 0.45 : 1
           }}
         >
           <span>🔊</span>
@@ -594,7 +655,7 @@ export const InterviewerAvatar: React.FC<InterviewerAvatarProps> = ({
               if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
                 window.speechSynthesis.cancel();
               }
-              setIsSpeaking(false);
+              notifySpeechEndedOnce(effectiveTurnKey);
             }
             setIsMuted((prev) => !prev);
           }}

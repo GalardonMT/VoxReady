@@ -508,6 +508,8 @@ def sanitize_report_json(
     segmented_turns: Optional[list] = None,
     governance: Optional[Dict[str, Any]] = None,
     consolidated_report: Optional[Dict[str, Any]] = None,
+    dialogue_turns: Optional[list] = None,
+    master_duration_seconds: Optional[float] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
@@ -718,9 +720,15 @@ def sanitize_report_json(
             "vision": clean_vision,
             "audio": clean_audio,
             "judge": clean_judge,
-            "turns_evaluated": len(segmented_turns or [])
+            "turns_evaluated": len(dialogue_turns or segmented_turns or [])
         },
         "transcript": transcript,
+        "dialogueTurns": dialogue_turns or [],
+        **(
+            {"durationSeconds": round(float(master_duration_seconds), 3)}
+            if master_duration_seconds and master_duration_seconds > 0
+            else {}
+        ),
         "governance": governance or {}
     }
 

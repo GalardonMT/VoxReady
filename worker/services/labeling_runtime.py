@@ -121,7 +121,7 @@ def _observation(metric_key, pipeline_results):
         return None, "unknown", "SOURCE_VALUE_OUT_OF_RANGE", None
 
     observation = {
-        "valueType": "integer" if precision == 0 else "number",
+        "valueType": "integer" if precision == 0 else "decimal",
         "canonicalUnit": None,
         "conversion": conversion,
         "technicalMin": minimum,

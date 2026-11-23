@@ -246,6 +246,13 @@ def _normalize_metric_groups(snapshot):
         if not key or key in seen:
             raise LabelingStoreError("CORRUPT_CASE", "Las métricas del snapshot no son únicas.", status=503)
         seen.add(key)
+        observation = metric.get("observation")
+        if isinstance(observation, dict) and observation.get("valueType") == "number":
+            # Snapshots previos emitieron "number"; el contrato exige "decimal" o "integer".
+            metric = {
+                **metric,
+                "observation": {**observation, "valueType": "decimal"},
+            }
         category = str(metric.get("categoryKey") or "")
         groups.setdefault(
             category,

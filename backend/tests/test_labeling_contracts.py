@@ -124,3 +124,54 @@ def test_recording_sas_is_bound_to_sealed_evidence_and_https_only():
     assert 'permission=BlobSasPermissions(read=True)' in source
     assert 'protocol="https"' in source
     assert 'recording_evidence_path' not in source[source.index("def _issue_labeling_recording_url"):]
+
+
+def test_unhandled_error_and_response_validation_keep_cors_headers():
+    import asyncio
+    import json
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://vox-ready.vercel.app"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.include_router(create_labeling_router(
+        verify_token_dependency=lambda: {},
+        database_factory=lambda: nullcontext(object()),
+        resolve_master=lambda _cursor, _claims: {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "role": "master_config",
+        },
+        issue_recording_url=lambda _evidence, _expiry: "https://storage.invalid/x?sig=x",
+    ))
+
+    async def invoke(path):
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "https", "path": path,
+            "raw_path": path.encode(), "query_string": b"",
+            "headers": [(b"origin", b"https://vox-ready.vercel.app")],
+            "client": ("127.0.0.1", 1234), "server": ("test", 443),
+        }
+        messages = []
+        async def receive(): return {"type": "http.request", "body": b"", "more_body": False}
+        async def send(msg): messages.append(msg)
+        await app(scope, receive, send)
+        return messages[0], json.loads(b"".join(m.get("body", b"") for m in messages[1:]).decode())
+
+    orig_list = labeling_api.labeling_store.list_cases
+    try:
+        # Triggers ResponseValidationError inside FastAPI response serialization
+        labeling_api.labeling_store.list_cases = lambda *_args, **_kwargs: {"invalid": True}
+        start, body = asyncio.run(invoke("/v1/api/master/labeling-cases"))
+    finally:
+        labeling_api.labeling_store.list_cases = orig_list
+
+    headers = {k.decode().lower(): v.decode() for k, v in start["headers"]}
+    assert start["status"] == 500
+    assert headers.get("access-control-allow-origin") == "https://vox-ready.vercel.app"
+    assert body["code"] == "INTERNAL_ERROR"

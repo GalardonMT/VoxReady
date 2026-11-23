@@ -766,23 +766,103 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
           ========================================================================= */}
       {activeTab === 'transcript' && (
         <div className="card" style={{ padding: '22px' }}>
-          <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', color: 'var(--accent2)', marginBottom: '10px' }}>
+          <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', color: 'var(--accent2)', marginBottom: '12px' }}>
             📝 Transcripción Completa del Ejercicio de Vocería
           </div>
-          <div
-            style={{
-              background: 'var(--soft)',
-              borderRadius: '8px',
-              padding: '16px',
-              fontSize: '13.5px',
-              lineHeight: 1.7,
-              color: 'var(--ink)',
-              border: '1px solid var(--line)',
-              whiteSpace: 'pre-wrap'
-            }}
-          >
-            {report?.transcript || 'Transcripción no disponible para esta sesión.'}
-          </div>
+          {report?.dialogueTurns && report.dialogueTurns.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {report.dialogueTurns.map((turn, idx) => {
+                const isFu = turn.turnKind === 'follow_up';
+                return (
+                  <div
+                    key={turn.turnId || `${turn.turnIndex}-${idx}`}
+                    style={{
+                      background: 'var(--soft)',
+                      borderRadius: '10px',
+                      padding: '14px 16px',
+                      border: isFu
+                        ? '1px solid rgba(245, 158, 11, 0.35)'
+                        : '1px solid var(--line)',
+                      borderLeft: isFu
+                        ? '4px solid #f59e0b'
+                        : '4px solid var(--accent2)'
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '8px',
+                        marginBottom: '8px'
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.5px',
+                          padding: '2px 8px',
+                          borderRadius: '999px',
+                          background: isFu ? 'rgba(245, 158, 11, 0.14)' : 'rgba(99, 102, 241, 0.14)',
+                          color: isFu ? '#f59e0b' : '#818cf8'
+                        }}
+                      >
+                        {isFu
+                          ? `⚡ Contrapregunta IA · sobre Pregunta #${turn.baseSequenceNo}`
+                          : `Pregunta Base #${turn.baseSequenceNo}`}
+                      </span>
+                      {typeof turn.durationSeconds === 'number' && turn.durationSeconds > 0 && (
+                        <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                          Duración respuesta: {turn.durationSeconds.toFixed(1)}s
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)', marginBottom: '8px', lineHeight: 1.5 }}>
+                      <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Periodista: </span>
+                      “{turn.questionText}”
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: '13.5px',
+                        lineHeight: 1.65,
+                        color: 'var(--ink)',
+                        background: 'var(--panel)',
+                        borderRadius: '8px',
+                        padding: '10px 12px',
+                        border: '1px solid var(--line)',
+                        whiteSpace: 'pre-wrap'
+                      }}
+                    >
+                      <span style={{ color: '#10b981', fontWeight: 700, fontSize: '12px', display: 'block', marginBottom: '4px' }}>
+                        Vocero:
+                      </span>
+                      {turn.transcript?.trim() || '(Sin transcripción inteligible registrada en este turno)'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div
+              style={{
+                background: 'var(--soft)',
+                borderRadius: '8px',
+                padding: '16px',
+                fontSize: '13.5px',
+                lineHeight: 1.7,
+                color: 'var(--ink)',
+                border: '1px solid var(--line)',
+                whiteSpace: 'pre-wrap'
+              }}
+            >
+              {report?.transcript || 'Transcripción no disponible para esta sesión.'}
+            </div>
+          )}
         </div>
       )}
 

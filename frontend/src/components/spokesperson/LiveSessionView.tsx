@@ -5,10 +5,13 @@ import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
 import { VoceroScreen } from './HomePracticeView';
 import { sessionService, type QuestionMark } from '../../services/sessionService';
+import { interviewLiveService } from '../../services/interviewLiveService';
 import type { SessionSetup } from '../../services/sessionFlowService';
 import type { TurnInterval } from '../../types/api';
 import { InterviewerAvatar } from './InterviewerAvatar';
 import { CancelExerciseModal, type CancelModalReason } from './CancelExerciseModal';
+
+type TurnPhase = 'interviewer_speaking' | 'recording_answer' | 'evaluating_followup' | 'completed';
 
 // Subcomponente accesible para la subida
 interface UploadOverlayProps {
@@ -106,12 +109,22 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
   const [isPaused, setIsPaused] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(1);
+  const [turnIndex, setTurnIndex] = useState(1);
+  const [turnPhase, setTurnPhase] = useState<TurnPhase>('interviewer_speaking');
+  const [isAdvanceLocked, setIsAdvanceLocked] = useState(true);
+  const [activeFollowUp, setActiveFollowUp] = useState<{ text: string; parentTurnId: string } | null>(null);
   const [isUserTurn, setIsUserTurn] = useState(false);
   const totalQuestions = questions.length;
+  const sessionDifficulty = setup?.difficulty || setup?.followUpPolicy?.difficulty || 'intermediate';
 
-  // Estados de captura de video y subida
+  // Estados de captura de video maestro y audio por turno (doble MediaRecorder)
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const turnRecorderRef = useRef<MediaRecorder | null>(null);
+  const turnChunksRef = useRef<Blob[]>([]);
+  const turnStartOffsetMsRef = useRef<number>(0);
+  const advanceUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isFinishingTurnRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const pendingBlobRef = useRef<Blob | null>(null);
@@ -148,7 +161,10 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const [cancelModalReason, setCancelModalReason] = useState<CancelModalReason>('manual');
   const wasPausedRef = useRef(false);
 
-  const currentQuestion = questions[questionIndex - 1] || questions[0] || d.qEx;
+  const currentQuestion = activeFollowUp
+    ? activeFollowUp.text
+    : (questions[questionIndex - 1] || questions[0] || d.qEx);
+  const activeTurnKey = `${turnIndex}-${activeFollowUp ? 'fu' : 'base'}-${questionIndex}`;
 
   // Limpieza al desmontar
   useEffect(() => {
@@ -157,6 +173,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
       isMountedRef.current = false;
       if (navTimerRef.current) clearTimeout(navTimerRef.current);
       if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
+      if (advanceUnlockTimerRef.current) clearTimeout(advanceUnlockTimerRef.current);
     };
   }, []);
 
@@ -237,7 +254,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
         const recorderOptions: MediaRecorderOptions = {
           ...(mimeType ? { mimeType } : {}),
-          videoBitsPerSecond: 2500000, // 2.5 Mbps para 720p @ 30fps fluido
+          videoBitsPerSecond: 1200000, // 1.2 Mbps optimizado para entrevistas de hasta 15 min
           audioBitsPerSecond: 128000   // 128 kbps Opus alta fidelidad
         };
 
@@ -267,6 +284,11 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
     return () => {
       isCancelled = true;
+      if (turnRecorderRef.current && turnRecorderRef.current.state !== 'inactive') {
+        try {
+          turnRecorderRef.current.stop();
+        } catch { }
+      }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
           mediaRecorderRef.current.stop();
@@ -307,50 +329,128 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
     return () => clearInterval(timer);
   }, [streamActive, isPaused, getElapsedMs]);
 
-  // Sincronizar estado del MediaRecorder con pausa/reanudación
+  // Sincronizar estado de AMBOS MediaRecorder (video maestro + audio del turno) con pausa/reanudación
   useEffect(() => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder) return;
-
-    if (isPaused && recorder.state === 'recording') {
-      try {
-        recorder.pause();
-      } catch (e) {
-        console.warn('Advertencia al pausar MediaRecorder:', e);
+    const syncRecorder = (rec: MediaRecorder | null, label: string) => {
+      if (!rec) return;
+      if (isPaused && rec.state === 'recording') {
+        try {
+          rec.pause();
+        } catch (e) {
+          console.warn(`Advertencia al pausar ${label}:`, e);
+        }
+      } else if (!isPaused && rec.state === 'paused') {
+        try {
+          rec.resume();
+        } catch (e) {
+          console.warn(`Advertencia al reanudar ${label}:`, e);
+        }
       }
-    } else if (!isPaused && recorder.state === 'paused') {
-      try {
-        recorder.resume();
-      } catch (e) {
-        console.warn('Advertencia al reanudar MediaRecorder:', e);
-      }
-    }
+    };
+    syncRecorder(mediaRecorderRef.current, 'sessionRecorder');
+    syncRecorder(turnRecorderRef.current, 'turnAudioRecorder');
   }, [isPaused]);
 
-  // Gestión de marcas de tiempo por pregunta
-  const goToQuestion = (nextIndex: number) => {
-    const now = getElapsedMs();
-    const marks = marksRef.current;
-    const last = marks[marks.length - 1];
-    if (last && last.endMs === null) {
-      last.endMs = now;
-    }
-    marks.push({ questionIndex: nextIndex, startMs: now, endMs: null });
-    setQuestionIndex(nextIndex);
-    setIsUserTurn(false);
-  };
+  // Grabador dedicado de audio por turno (inicia inmediatamente en utterance.onend)
+  const startTurnAudioRecorder = useCallback(() => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks || audioTracks.length === 0) return;
 
-  const handlePrevQuestion = () => {
-    if (questionIndex > 1) {
-      goToQuestion(questionIndex - 1);
+    if (turnRecorderRef.current && turnRecorderRef.current.state !== 'inactive') {
+      try {
+        turnRecorderRef.current.ondataavailable = null;
+        turnRecorderRef.current.onstop = null;
+        turnRecorderRef.current.stop();
+      } catch {}
     }
-  };
 
-  const handleNextQuestion = () => {
-    if (questionIndex < totalQuestions) {
-      goToQuestion(questionIndex + 1);
+    const audioOnlyStream = new MediaStream(audioTracks);
+    let audioMime = 'audio/webm;codecs=opus';
+    if (!MediaRecorder.isTypeSupported(audioMime)) {
+      if (MediaRecorder.isTypeSupported('audio/webm')) {
+        audioMime = 'audio/webm';
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        audioMime = 'audio/mp4';
+      } else {
+        audioMime = '';
+      }
     }
-  };
+
+    try {
+      const turnRec = new MediaRecorder(audioOnlyStream, {
+        ...(audioMime ? { mimeType: audioMime } : {}),
+        audioBitsPerSecond: 64000
+      });
+      turnChunksRef.current = [];
+      turnRec.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          turnChunksRef.current.push(e.data);
+        }
+      };
+      turnStartOffsetMsRef.current = Math.round(getElapsedMs());
+      turnRec.start();
+      turnRecorderRef.current = turnRec;
+    } catch (err) {
+      console.warn('[LiveSessionView] No se pudo iniciar turnAudioRecorder:', err);
+      turnRecorderRef.current = null;
+    }
+  }, [getElapsedMs]);
+
+  const stopTurnAudioRecorder = useCallback(async (): Promise<Blob | null> => {
+    const turnRec = turnRecorderRef.current;
+    if (!turnRec || turnRec.state === 'inactive') {
+      turnRecorderRef.current = null;
+      return null;
+    }
+
+    await new Promise<void>((resolve) => {
+      const safety = setTimeout(() => resolve(), 2000);
+      turnRec.onstop = () => {
+        clearTimeout(safety);
+        resolve();
+      };
+      try {
+        if (typeof turnRec.requestData === 'function' && turnRec.state === 'recording') {
+          turnRec.requestData();
+        }
+      } catch {}
+      try {
+        turnRec.stop();
+      } catch {
+        clearTimeout(safety);
+        resolve();
+      }
+    });
+
+    turnRecorderRef.current = null;
+    if (turnChunksRef.current.length === 0) return null;
+    const type = turnRec.mimeType || 'audio/webm';
+    const blob = new Blob(turnChunksRef.current, { type });
+    turnChunksRef.current = [];
+    return blob;
+  }, []);
+
+  // Al terminar la locución del avatar (o en modo Mute/watchdog):
+  // 1) Inicia turnAudioRecorder INMEDIATAMENTE (sin retraso para no cortar las primeras palabras)
+  // 2) Bloquea solo el botón "Terminé de responder" por ~1 segundo para evitar doble clic accidental
+  const handleAvatarSpeechEnd = useCallback(() => {
+    if (!isMountedRef.current || isUploading) return;
+    setTurnPhase('recording_answer');
+    setIsUserTurn(true);
+    setIsAdvanceLocked(true);
+    startTurnAudioRecorder();
+
+    if (advanceUnlockTimerRef.current) {
+      clearTimeout(advanceUnlockTimerRef.current);
+    }
+    advanceUnlockTimerRef.current = setTimeout(() => {
+      if (isMountedRef.current) {
+        setIsAdvanceLocked(false);
+      }
+    }, 1000);
+  }, [isUploading, startTurnAudioRecorder]);
 
   const closeMarks = (): QuestionMark[] => {
     const marks = marksRef.current;
@@ -385,7 +485,18 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
   const handleConfirmCancel = () => {
     setShowCancelModal(false);
 
-    // 1. Detener MediaRecorder y anular callback
+    // 1. Detener ambos MediaRecorder y anular callbacks
+    if (turnRecorderRef.current) {
+      try {
+        turnRecorderRef.current.ondataavailable = null;
+        turnRecorderRef.current.onstop = null;
+        if (turnRecorderRef.current.state !== 'inactive') {
+          turnRecorderRef.current.stop();
+        }
+      } catch {}
+      turnRecorderRef.current = null;
+      turnChunksRef.current = [];
+    }
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.ondataavailable = null;
@@ -511,12 +622,35 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
     }
   };
 
-  // Finalizar sesión y detener grabadora
-  const handleFinishSession = async () => {
+  // Finalizar sesión y detener grabadora (despachando antes el turno activo si corresponde)
+  const handleFinishSession = async (turnAlreadySubmitted = false) => {
     setUploadError(null);
     setIsUploading(true);
     setUploadProgress(null);
     setUploadStatus(d.finalizingRecording || 'Finalizando grabación…');
+
+    if (!turnAlreadySubmitted && turnRecorderRef.current && turnRecorderRef.current.state !== 'inactive') {
+      try {
+        const partialEndMs = Math.round(getElapsedMs());
+        const partialBlob = await stopTurnAudioRecorder();
+        if (partialBlob && partialBlob.size > 0) {
+          await interviewLiveService.submitTurn({
+            sessionId: activeSessionId,
+            audioBlob: partialBlob,
+            baseSequenceNo: questionIndex,
+            turnIndex,
+            turnKind: activeFollowUp ? 'follow_up' : 'base',
+            questionText: currentQuestion,
+            parentTurnId: activeFollowUp?.parentTurnId || null,
+            startOffsetMs: turnStartOffsetMsRef.current,
+            endOffsetMs: partialEndMs,
+            timeoutMs: 6000
+          });
+        }
+      } catch (e) {
+        console.warn('[LiveSessionView] Aviso enviando último turno parcial al finalizar:', e);
+      }
+    }
 
     const recorder = mediaRecorderRef.current;
 
@@ -575,6 +709,78 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
     console.info(`[MediaRecorder] Grabación finalizada. Total chunks: ${chunksRef.current.length}, tamaño: ${videoBlob.size} bytes, tipo: ${type}`);
 
     await uploadPipeline(videoBlob);
+  };
+
+  // Completar turno actual: detiene turnAudioRecorder, consulta contrapregunta a Gemini y avanza
+  const handleCompleteTurn = async () => {
+    if (
+      isFinishingTurnRef.current ||
+      turnPhase !== 'recording_answer' ||
+      isAdvanceLocked ||
+      isPaused ||
+      isUploading
+    ) {
+      return;
+    }
+
+    isFinishingTurnRef.current = true;
+    setTurnPhase('evaluating_followup');
+    setIsUserTurn(false);
+    setIsAdvanceLocked(true);
+
+    try {
+      const endOffsetMs = Math.round(getElapsedMs());
+      const marks = marksRef.current;
+      const lastMark = marks[marks.length - 1];
+      if (lastMark && lastMark.endMs === null) {
+        lastMark.endMs = endOffsetMs;
+      }
+
+      const audioBlob = await stopTurnAudioRecorder();
+      let hasFollowUp = false;
+      let followUpText: string | null = null;
+      let turnId = '';
+
+      if (audioBlob && audioBlob.size > 0) {
+        const res = await interviewLiveService.submitTurn({
+          sessionId: activeSessionId,
+          audioBlob,
+          baseSequenceNo: questionIndex,
+          turnIndex,
+          turnKind: activeFollowUp ? 'follow_up' : 'base',
+          questionText: currentQuestion,
+          parentTurnId: activeFollowUp?.parentTurnId || null,
+          startOffsetMs: turnStartOffsetMsRef.current,
+          endOffsetMs,
+          timeoutMs: 15000
+        });
+        hasFollowUp = Boolean(res.hasFollowUp && res.followUpQuestion);
+        followUpText = res.followUpQuestion;
+        turnId = res.turnId;
+      }
+
+      if (!isMountedRef.current) return;
+
+      if (hasFollowUp && followUpText) {
+        setActiveFollowUp({ text: followUpText, parentTurnId: turnId });
+        setTurnIndex((prev) => prev + 1);
+        setTurnPhase('interviewer_speaking');
+        marks.push({ questionIndex, startMs: getElapsedMs(), endMs: null });
+      } else if (questionIndex < totalQuestions) {
+        const nextBaseIdx = questionIndex + 1;
+        setActiveFollowUp(null);
+        setQuestionIndex(nextBaseIdx);
+        setTurnIndex((prev) => prev + 1);
+        setTurnPhase('interviewer_speaking');
+        marks.push({ questionIndex: nextBaseIdx, startMs: getElapsedMs(), endMs: null });
+      } else {
+        setActiveFollowUp(null);
+        setTurnPhase('completed');
+        await handleFinishSession(true);
+      }
+    } finally {
+      isFinishingTurnRef.current = false;
+    }
   };
 
   const formatTimer = (sec: number) => {
@@ -648,8 +854,12 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           <InterviewerAvatar
             questionText={currentQuestion}
             questionIndex={questionIndex}
-            isPaused={isPaused}
-            onSpeechEnd={() => setIsUserTurn(true)}
+            turnKey={activeTurnKey}
+            isFollowUp={activeFollowUp !== null}
+            allowRepeat={turnPhase === 'interviewer_speaking'}
+            isPaused={isPaused || turnPhase === 'evaluating_followup' || turnPhase === 'completed'}
+            onSpeechStart={() => setTurnPhase('interviewer_speaking')}
+            onSpeechEnd={handleAvatarSpeechEnd}
           />
         </div>
 
@@ -775,14 +985,54 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
         className="card"
         style={{
           marginBottom: '16px',
-          borderLeft: '4px solid var(--accent2)',
+          borderLeft: activeFollowUp ? '4px solid #f59e0b' : '4px solid var(--accent2)',
           background: 'var(--panel)',
           position: 'relative'
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div className="label">{d.qL}</div>
-          {isUserTurn && !isPaused && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div className="label" style={{ margin: 0 }}>
+              {activeFollowUp ? '⚡ Contrapregunta en vivo' : d.qL}
+            </div>
+            <span
+              style={{
+                fontSize: '10.5px',
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                padding: '2px 7px',
+                borderRadius: '999px',
+                background: 'var(--soft)',
+                color: 'var(--muted)',
+                border: '1px solid var(--line)'
+              }}
+            >
+              {sessionDifficulty === 'basic'
+                ? 'Nivel Fácil'
+                : sessionDifficulty === 'hard'
+                ? 'Nivel Difícil'
+                : 'Nivel Intermedio'}
+            </span>
+          </div>
+
+          {turnPhase === 'evaluating_followup' ? (
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                color: '#818cf8',
+                background: 'rgba(99, 102, 241, 0.14)',
+                border: '1px solid rgba(99, 102, 241, 0.35)',
+                padding: '2px 10px',
+                borderRadius: '999px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+            >
+              ⏳ Analizando respuesta...
+            </span>
+          ) : turnPhase === 'recording_answer' && isUserTurn && !isPaused ? (
             <span
               style={{
                 fontSize: '11px',
@@ -798,7 +1048,21 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
                 animation: 'pulse-red 2s infinite'
               }}
             >
-              🎤 {d.yourTurn || 'Tu turno'}
+              🎤 {d.yourTurn || 'Tu turno · Grabando'}
+            </span>
+          ) : (
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 600,
+                color: '#38bdf8',
+                background: 'rgba(56, 189, 248, 0.1)',
+                border: '1px solid rgba(56, 189, 248, 0.25)',
+                padding: '2px 8px',
+                borderRadius: '999px'
+              }}
+            >
+              🗣️ Escucha al entrevistador...
             </span>
           )}
         </div>
@@ -808,7 +1072,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
             lineHeight: 1.5,
             color: 'var(--ink)',
             fontWeight: 500,
-            marginTop: '4px'
+            marginTop: '6px'
           }}
         >
           “{currentQuestion}”
@@ -821,6 +1085,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           type="button"
           className="btn"
           onClick={() => setIsPaused((prev) => !prev)}
+          disabled={turnPhase === 'evaluating_followup' || isUploading}
           aria-label={isPaused ? d.resume : d.pause}
         >
           {isPaused ? d.resume : d.pause}
@@ -828,29 +1093,33 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
         <button
           type="button"
-          className="btn ghost"
-          onClick={handlePrevQuestion}
-          disabled={questionIndex <= 1}
-          aria-label={questionIndex <= 1 ? 'Primera pregunta' : (d.prevQ || 'Pregunta anterior')}
-          title={questionIndex <= 1 ? 'Primera pregunta' : (d.prevQ || 'Pregunta anterior')}
+          className="btn pri"
+          onClick={handleCompleteTurn}
+          disabled={
+            turnPhase !== 'recording_answer' ||
+            isAdvanceLocked ||
+            isPaused ||
+            isUploading
+          }
+          aria-label="Terminé de responder"
+          title={
+            turnPhase === 'interviewer_speaking'
+              ? 'Espera a que el entrevistador termine la pregunta'
+              : turnPhase === 'evaluating_followup'
+              ? 'Evaluando respuesta...'
+              : 'Enviar respuesta de este turno y continuar'
+          }
         >
-          ⬅ {d.prevQ || 'Anterior'}
-        </button>
-
-        <button
-          type="button"
-          className="btn ghost"
-          onClick={handleNextQuestion}
-          disabled={questionIndex >= totalQuestions}
-          aria-label={questionIndex >= totalQuestions ? (d.lastQ || 'Última pregunta') : (d.nextQ || 'Siguiente pregunta')}
-          title={questionIndex >= totalQuestions ? (d.lastQ || 'Última pregunta alcanzada') : (d.nextQ || 'Siguiente pregunta')}
-        >
-          {questionIndex >= totalQuestions ? (d.lastQ || 'Última pregunta ✓') : `${d.nextQ || 'Siguiente'} ➔`}
+          {turnPhase === 'evaluating_followup'
+            ? '⏳ Evaluando respuesta...'
+            : questionIndex >= totalQuestions && activeFollowUp !== null
+            ? 'Terminé de responder · Finalizar 🚀'
+            : 'Terminé de responder ➔'}
         </button>
 
         <div
           className="meter col"
-          style={{ maxWidth: '240px' }}
+          style={{ maxWidth: '220px' }}
           role="progressbar"
           aria-valuenow={questionIndex}
           aria-valuemin={1}
@@ -860,7 +1129,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           <i
             style={{
               width: `${(questionIndex / totalQuestions) * 100}%`,
-              background: 'var(--accent)'
+              background: activeFollowUp ? '#f59e0b' : 'var(--accent)'
             }}
           />
         </div>
@@ -869,6 +1138,7 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
           {d.questionOf
             ? d.questionOf.replace('{i}', String(questionIndex)).replace('{n}', String(totalQuestions))
             : `Pregunta ${questionIndex} de ${totalQuestions}`}
+          {activeFollowUp ? ' · Contrapregunta' : ''}
         </span>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -885,12 +1155,13 @@ export const LiveSessionView: React.FC<LiveSessionViewProps> = ({
 
           <button
             type="button"
-            className="btn pri live-session-finish-btn"
-            onClick={handleFinishSession}
-            disabled={isUploading}
-            aria-label={d.finish || 'Finalizar entrevista'}
+            className="btn ghost live-session-finish-btn"
+            onClick={() => handleFinishSession(false)}
+            disabled={isUploading || turnPhase === 'evaluating_followup'}
+            aria-label={d.finish || 'Finalizar anticipadamente'}
+            title="Finalizar la entrevista ahora y enviar a evaluación"
           >
-            {isUploading ? (d.uploading || 'Subiendo grabación...') : `${d.finish} · Enviar a Evaluación 🚀`}
+            {isUploading ? (d.uploading || 'Subiendo grabación...') : 'Finalizar anticipadamente'}
           </button>
         </div>
       </div>

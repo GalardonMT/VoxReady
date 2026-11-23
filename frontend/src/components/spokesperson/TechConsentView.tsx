@@ -24,6 +24,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
 
   const [chk1, setChk1] = useState(false);
   const [chk2, setChk2] = useState(false);
+  const [chkHeadphones, setChkHeadphones] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [streamActive, setStreamActive] = useState(false);
@@ -125,25 +126,62 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
           ...(selectedAudioId ? { deviceId: { exact: selectedAudioId } } : {})
         };
 
-        // 1. Obtener stream de audio de forma desacoplada
+        // 1. Obtener stream de audio de forma desacoplada (con fallback seguro ante OverconstrainedError)
         try {
           audioStream = await navigator.mediaDevices.getUserMedia({
             audio: audioConstraints,
             video: false
           });
         } catch (err) {
-          console.warn('Error accediendo al micrófono:', err);
+          if (selectedAudioId) {
+            console.warn('Micrófono guardado no disponible (OverconstrainedError), usando micrófono por defecto:', err);
+            try {
+              localStorage.removeItem('voxready_selected_mic');
+            } catch {}
+            setSelectedAudioId('');
+            try {
+              audioStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                  echoCancellation: true,
+                  noiseSuppression: false,
+                  autoGainControl: false
+                },
+                video: false
+              });
+            } catch (fallbackErr) {
+              console.warn('Error accediendo al micrófono por defecto:', fallbackErr);
+            }
+          } else {
+            console.warn('Error accediendo al micrófono:', err);
+          }
         }
 
-        // 2. Obtener stream de video de forma desacoplada
+        // 2. Obtener stream de video de forma desacoplada (con fallback seguro ante OverconstrainedError)
         try {
           videoStream = await navigator.mediaDevices.getUserMedia({
             video: videoConstraints,
             audio: false
           });
         } catch (err) {
-          console.warn('Error accediendo a la cámara:', err);
-          setCameraError('Cámara no disponible o permiso no concedido');
+          if (selectedVideoId) {
+            console.warn('Cámara guardada no disponible, usando cámara por defecto:', err);
+            try {
+              localStorage.removeItem('voxready_selected_camera');
+            } catch {}
+            setSelectedVideoId('');
+            try {
+              videoStream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: false
+              });
+            } catch (fallbackErr) {
+              console.warn('Error accediendo a la cámara por defecto:', fallbackErr);
+              setCameraError('Cámara no disponible o permiso no concedido');
+            }
+          } else {
+            console.warn('Error accediendo a la cámara:', err);
+            setCameraError('Cámara no disponible o permiso no concedido');
+          }
         }
 
         if (isCancelled) {
@@ -368,7 +406,7 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
   }, [selectedVideoId, selectedAudioId]);
 
   const isTechnicalReady = cameraActive && micPassed && lightPassed;
-  const isEnabled = chk1 && chk2 && isTechnicalReady && !submitting;
+  const isEnabled = chk1 && chk2 && chkHeadphones && isTechnicalReady && !submitting;
 
   const handleBegin = async () => {
     if (!isEnabled) return;
@@ -775,7 +813,8 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
                 gap: '10px',
                 alignItems: 'flex-start',
                 fontSize: '12.5px',
-                cursor: 'pointer'
+                cursor: 'pointer',
+                marginBottom: '12px'
               }}
             >
               <input
@@ -792,6 +831,43 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
               />
               <span>Entiendo que puedo solicitar el borrado de mis grabaciones en cualquier momento.</span>
             </label>
+
+            <div
+              style={{
+                padding: '10px 12px',
+                borderRadius: '8px',
+                background: chkHeadphones ? 'rgba(16, 185, 129, 0.08)' : 'rgba(56, 189, 248, 0.08)',
+                border: chkHeadphones
+                  ? '1px solid rgba(16, 185, 129, 0.3)'
+                  : '1px solid rgba(56, 189, 248, 0.3)'
+              }}
+            >
+              <label
+                style={{
+                  display: 'flex',
+                  gap: '10px',
+                  alignItems: 'flex-start',
+                  fontSize: '12.5px',
+                  cursor: 'pointer'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={chkHeadphones}
+                  onChange={(e) => setChkHeadphones(e.target.checked)}
+                  style={{
+                    width: '16px',
+                    height: '16px',
+                    accentColor: '#10b981',
+                    marginTop: '2px',
+                    cursor: 'pointer'
+                  }}
+                />
+                <span>
+                  <strong>🎧 Requisito de audio (obligatorio):</strong> Confirmo que estoy usando audífonos o auriculares para evitar que la voz del entrevistador genere eco en mi micrófono.
+                </span>
+              </label>
+            </div>
           </div>
 
           {consentError && (
@@ -833,6 +909,8 @@ export const TechConsentView: React.FC<TechConsentViewProps> = ({
                 ? '⚠️ Habla al micrófono hasta superar el umbral de audio requerido.'
                 : !lightPassed
                 ? '⚠️ Ajusta la iluminación hasta que sea óptima (mínimo 30%).'
+                : !chkHeadphones
+                ? '🎧 Confirma el uso obligatorio de audífonos/auriculares para continuar.'
                 : (!chk1 || !chk2)
                 ? '⚠️ Marca ambas casillas de consentimiento para continuar.'
                 : 'Completa todas las validaciones técnicas y legales.'}
