@@ -12,9 +12,9 @@ test('client admin navigation contains only dashboard, spokespersons, scenarios 
   const clientHeader = source('src/components/client-admin/ClientAdminHeader.tsx');
 
   assert.match(clientHeader, /Panel del Cliente/);
-  assert.match(clientHeader, /Escenarios disponibles/);
+  assert.match(clientHeader, /label: 'Escenarios'/);
   assert.match(clientHeader, /Voceros/);
-  assert.match(clientHeader, /Actividad y uso/);
+  assert.match(clientHeader, /label: 'Actividad'/);
   assert.doesNotMatch(clientHeader, /Política de Retención|id: 'a3'/);
   assert.doesNotMatch(adminPage, /RetentionPolicyView|adminScreen === 'a3'/);
   assert.doesNotMatch(adminPage, /Editor de Tema|TopicEditorView/);

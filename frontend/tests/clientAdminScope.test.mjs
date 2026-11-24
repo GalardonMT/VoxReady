@@ -57,7 +57,7 @@ test('client admin can open the read-only spokesperson list', () => {
 
 test('client admin can inspect real activity and usage', () => {
   assert.match(adminPage, /ActivityUsageView/);
-  assert.match(clientHeader, /label: 'Actividad y uso'/);
+  assert.match(clientHeader, /label: 'Actividad'/);
   assert.match(dashboard, /clientAdminService\.usage\(\{ days: 30 \}\)/);
   assert.match(activityView, /isLoading \? \(/);
   assert.match(activityView, /Actualizando actividad y uso/);

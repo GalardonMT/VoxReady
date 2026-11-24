@@ -15,6 +15,9 @@ import { CancelExerciseModal } from '../../../components/spokesperson/CancelExer
 import { useAuth } from '../../../context/AuthContext';
 import { ProtectedRoute } from '../../../components/auth/ProtectedRoute';
 import type { SessionSetup } from '../../../services/sessionFlowService';
+import { BookOpen, ChartNoAxesCombined, ClipboardList, House } from 'lucide-react';
+import { PlatformHeader } from '../../../components/common/PlatformHeader';
+import { SectionNavigation, type SectionNavigationItem } from '../../../components/common/SectionNavigation';
 
 export default function SpokespersonPage() {
   return (
@@ -109,55 +112,23 @@ function SpokespersonContent() {
     }
   };
 
-  const voceroNavItems: { id: VoceroScreen; label: string; icon: string }[] = [
-    { id: 'u1', label: 'Inicio', icon: '🏠' },
-    { id: 'u2', label: 'Catálogo', icon: '📋' },
-    { id: 'u7', label: 'Mi Progreso', icon: '📈' },
-    { id: 'lesson', label: 'Microlección', icon: '📖' }
+  const voceroNavItems: SectionNavigationItem<VoceroScreen>[] = [
+    { id: 'u1', label: 'Inicio', icon: House },
+    { id: 'u2', label: 'Catálogo', icon: ClipboardList },
+    { id: 'u7', label: 'Mi Progreso', icon: ChartNoAxesCombined },
+    { id: 'lesson', label: 'Microlecciones', icon: BookOpen }
   ];
 
   return (
     <div className="platform-container">
-      <header className="vocero-header">
-        <div className="vocero-brand" onClick={() => handleHeaderNavigate('u1')} style={{ cursor: 'pointer' }}>
-          <img
-            src="/VoxReady_logo.png"
-            alt="VoxReady"
-            style={{ height: '32px', width: 'auto', display: 'block' }}
-          />
-        </div>
-
-        <nav className="vocero-nav-tabs">
-          {voceroNavItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`vtab ${voceroScreen === item.id ? 'active' : ''}`}
-              onClick={() => handleHeaderNavigate(item.id)}
-            >
-              <span>{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-
-        <div className="vocero-user">
-          <div className="uava">{user.initials}</div>
-          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-            <span className="uname">{user.displayName}</span>
-            <span style={{ fontSize: '10.5px', color: 'var(--muted)' }}>Vocero</span>
-          </div>
-          <button
-            type="button"
-            className="vocero-logout"
-            onClick={handleHeaderLogout}
-            title="Cerrar sesión"
-          >
-            <span>⎋</span>
-            <span>Salir</span>
-          </button>
-        </div>
-      </header>
+      <PlatformHeader
+        navigationLabel="Navegación del vocero"
+        navigation={<SectionNavigation items={voceroNavItems} activeScreen={voceroScreen} onNavigate={handleHeaderNavigate} />}
+        user={user}
+        roleLabel="Vocero"
+        onHome={() => handleHeaderNavigate('u1')}
+        onLogout={handleHeaderLogout}
+      />
 
       <main className="canvas">
         {voceroScreen === 'u1' && <HomePracticeView onNavigate={handleVoceroNavigate} />}
