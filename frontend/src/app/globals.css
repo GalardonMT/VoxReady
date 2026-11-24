@@ -1751,38 +1751,6 @@ table.wf th {
   margin: 0 0 22px;
 }
 
-.login-field {
-  margin-bottom: 14px;
-}
-
-.login-field label {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-
-.login-input {
-  width: 100%;
-  height: 42px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--ink);
-  font-size: 13.5px;
-  padding: 0 14px;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.login-input:focus {
-  border-color: var(--accent);
-}
-
 .login-btn {
   width: 100%;
   height: 42px;
@@ -1834,26 +1802,6 @@ table.wf th {
   min-height: 16px;
   text-align: center;
   font-weight: 500;
-}
-
-.login-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 22px 0 14px;
-  color: var(--muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  font-weight: 600;
-}
-
-.login-divider::before,
-.login-divider::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--line);
 }
 
 .vocero-logout {
