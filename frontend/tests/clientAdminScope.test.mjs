@@ -64,6 +64,9 @@ test('client admin can inspect real activity and usage', () => {
   assert.match(activityView, /itemLabel="actividades"/);
   assert.match(activityView, /itemLabel="voceros"/);
   assert.match(spokespersonView, /itemLabel="voceros"/);
+  assert.match(activityView, /spokespersonOptions\.map/);
+  assert.match(activityView, /setSpokespersonOptions\(result\.spokespersons\)/);
+  assert.doesNotMatch(activityView, /\{usage\.spokespersons\.map\(person => \(\s*<option/);
   assert.match(pagination, /paginationItems\(page, totalPages\)/);
   assert.match(pagination, /aria-current=\{item === page \? 'page'/);
   assert.match(activityView, /Vocero o actividad/);

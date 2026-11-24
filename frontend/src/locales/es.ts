@@ -38,20 +38,11 @@ export const es = {
   theme: "Modo claro / oscuro",
   login: {
     title: "Inicia sesión en VoxReady",
-    sub: "Selecciona un usuario de prueba o escribe tus credenciales.",
-    emailL: "Correo electrónico",
-    emailPh: "tu@empresa.com",
-    passL: "Contraseña",
-    passPh: "••••••••",
-    signIn: "Iniciar sesión",
-    err: "Correo no reconocido. Usa uno de los usuarios de prueba.",
-    testL: "Usuarios de prueba para demostración",
     logout: "Cerrar sesión",
     azureBtn: "Iniciar sesión con Microsoft",
     loading: "Autenticando…",
     azureErr: "Error al iniciar sesión. Intenta de nuevo.",
-    azureSub: "Inicia sesión con tu cuenta corporativa de Microsoft.",
-    dividerOr: "o"
+    azureSub: "Inicia sesión con tu cuenta corporativa de Microsoft."
   },
   roles: {
     spokesperson: "Usuario final (vocero)",

@@ -1,42 +1,8 @@
 import {
   DemoMicrolesson,
   MasterRubric,
-  CoachReport,
-  UserSession
+  CoachReport
 } from '../types/api';
-
-export const TEST_USERS: UserSession[] = [
-  {
-    userId: 'usr-spokesperson-01',
-    email: 'ana.torres@acme-corp.com',
-    displayName: 'Ana Torres (Vocero)',
-    role: 'spokesperson',
-    clientId: 'acme-corp',
-    clientName: 'Acme Corporation',
-    initials: 'AT',
-    preferredLanguage: 'es'
-  },
-  {
-    userId: 'usr-client-admin-01',
-    email: 'carlos.ruiz@acme-corp.com',
-    displayName: 'Carlos Ruiz (Admin Empresa)',
-    role: 'client_admin',
-    clientId: 'acme-corp',
-    clientName: 'Acme Corporation',
-    initials: 'CR',
-    preferredLanguage: 'es'
-  },
-  {
-    userId: 'usr-master-01',
-    email: 'elena.diaz@voxready.ai',
-    displayName: 'Elena Díaz (Master VoxReady)',
-    role: 'master_config',
-    clientId: null,
-    clientName: 'VoxReady Platform',
-    initials: 'ED',
-    preferredLanguage: 'es'
-  }
-];
 
 export const INITIAL_MICROLESSONS: Record<string, DemoMicrolesson> = {
   bridging: {

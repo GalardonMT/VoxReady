@@ -3,7 +3,6 @@
 import React, { useState } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
-import { UserSession } from '../../types/api';
 import { isAzureConfigured } from '../../services/authConfig';
 
 interface LoginViewProps {
@@ -12,23 +11,10 @@ interface LoginViewProps {
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const { t } = useI18n();
-  const { loginWithEmail, loginWithAzure, loading, authError, testUsers } = useAuth();
+  const { loginWithAzure, loading, authError } = useAuth();
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [azureLoading, setAzureLoading] = useState(false);
-
-  const handleSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setError('');
-    const success = await loginWithEmail(email);
-    if (success) {
-      if (onLoginSuccess) onLoginSuccess();
-    } else {
-      setError(t.login.err);
-    }
-  };
 
   const handleAzureLogin = async () => {
     setError('');
@@ -44,12 +30,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     } finally {
       setAzureLoading(false);
     }
-  };
-
-  const handleSelectTestUser = async (user: UserSession) => {
-    setError('');
-    const success = await loginWithEmail(user.email);
-    if (success && onLoginSuccess) onLoginSuccess();
   };
 
   if (loading || azureLoading) {
@@ -85,90 +65,33 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         </div>
 
         <h1 className="login-title">{t.login.title}</h1>
-        <p className="login-sub">{t.login.sub}</p>
+        <p className="login-sub">{t.login.azureSub}</p>
 
         {/* ---- Primary: Azure / Microsoft login ---- */}
         {isAzureConfigured && (
-          <>
-            <button
-              type="button"
-              className="login-btn login-btn-azure"
-              onClick={handleAzureLogin}
+          <button
+            type="button"
+            className="login-btn login-btn-azure"
+            onClick={handleAzureLogin}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 23 23"
+              style={{ marginRight: '8px', flexShrink: 0 }}
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="20"
-                height="20"
-                viewBox="0 0 23 23"
-                style={{ marginRight: '8px', flexShrink: 0 }}
-              >
-                <path fill="#f35325" d="M1 1h10v10H1z" />
-                <path fill="#81bc06" d="M12 1h10v10H12z" />
-                <path fill="#05a6f0" d="M1 12h10v10H1z" />
-                <path fill="#ffba08" d="M12 12h10v10H12z" />
-              </svg>
-              {t.login.azureBtn ?? 'Iniciar sesión con Microsoft'}
-            </button>
-
-            <div className="login-divider">{t.login.dividerOr ?? 'o'}</div>
-          </>
-        )}
-
-        {/* ---- Email / password credentials form ---- */}
-        <form onSubmit={(event) => void handleSubmit(event)}>
-          <div className="login-field">
-            <label>{t.login.emailL}</label>
-            <input
-              type="email"
-              className="login-input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t.login.emailPh}
-              autoComplete="username"
-            />
-          </div>
-
-          <div className="login-field">
-            <label>{t.login.passL}</label>
-            <input
-              type="password"
-              className="login-input"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t.login.passPh}
-              autoComplete="current-password"
-            />
-          </div>
-
-          <button type="submit" className="login-btn">
-            {t.login.signIn}
+              <path fill="#f35325" d="M1 1h10v10H1z" />
+              <path fill="#81bc06" d="M12 1h10v10H12z" />
+              <path fill="#05a6f0" d="M1 12h10v10H1z" />
+              <path fill="#ffba08" d="M12 12h10v10H12z" />
+            </svg>
+            {t.login.azureBtn ?? 'Iniciar sesión con Microsoft'}
           </button>
-        </form>
+        )}
 
         {(error || authError) && <p className="login-err">{error || authError}</p>}
 
-        <div className="login-divider">{t.login.testL}</div>
-
-        {/* ---- Demo test users list ---- */}
-        <div>
-          {testUsers.map((user) => (
-            <button
-              key={user.userId}
-              type="button"
-              className="tu"
-              onClick={() => void handleSelectTestUser(user)}
-            >
-              <span className="tuava">{user.initials}</span>
-              <span className="tumeta">
-                <span className="tuname">{user.displayName}</span>
-                <span className="turole">
-                  {t.roles[user.role]} · {user.email}
-                </span>
-              </span>
-              <span className="tugo">→</span>
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   );

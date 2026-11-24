@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { UserSession } from '../types/api';
-import { TEST_USERS } from '../mock/mockData';
 import {
   loginRequest,
   loginRedirectRequest,
@@ -16,10 +15,8 @@ interface AuthContextType {
   user: UserSession | null;
   loading: boolean;
   authError: string | null;
-  loginWithEmail: (email: string) => Promise<boolean>;
   loginWithAzure: () => Promise<void>;
   logout: () => void;
-  testUsers: UserSession[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -62,26 +59,6 @@ async function profileForToken(token: string): Promise<UserSession> {
     initials: displayName.split(/\s+/).slice(0, 2).map(part => part[0]?.toUpperCase()).join(''),
     preferredLanguage: profile.preferredLanguage || 'es',
   };
-}
-
-async function authenticateDevelopmentUser(email: string): Promise<UserSession> {
-  const tokenResponse = await fetch(`${API_BASE_URL}/dev/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: email.trim() }),
-  });
-  if (!tokenResponse.ok) {
-    throw new Error(await responseDetail(tokenResponse, `No se pudo iniciar sesión (${tokenResponse.status}).`));
-  }
-  const body = await tokenResponse.json() as { accessToken?: string };
-  if (!body.accessToken) throw new Error('La API no entregó un token de desarrollo.');
-  setAccessToken(body.accessToken);
-  try {
-    return await profileForToken(body.accessToken);
-  } catch (error) {
-    clearAccessToken();
-    throw error;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,25 +162,6 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const loginWithEmail = async (email: string): Promise<boolean> => {
-    setLoading(true);
-    setAuthError(null);
-    try {
-      const session = await authenticateDevelopmentUser(email);
-      setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
-      return true;
-    } catch (error) {
-      setUser(null);
-      clearAccessToken();
-      localStorage.removeItem('voxready_user');
-      setAuthError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const logout = () => {
     setUser(null);
     setAuthError(null);
@@ -221,10 +179,8 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
         user,
         loading,
         authError,
-        loginWithEmail,
         loginWithAzure,
         logout,
-        testUsers: TEST_USERS,
       }}
     >
       {children}
@@ -257,25 +213,6 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
     }).finally(() => setLoading(false));
   }, []);
 
-  const loginWithEmail = async (email: string): Promise<boolean> => {
-    setLoading(true);
-    setAuthError(null);
-    try {
-      const session = await authenticateDevelopmentUser(email);
-      setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
-      return true;
-    } catch (error) {
-      setUser(null);
-      clearAccessToken();
-      localStorage.removeItem('voxready_user');
-      setAuthError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const loginWithAzure = async () => {
     console.warn('[Auth] Azure not configured — loginWithAzure is a no-op');
   };
@@ -293,10 +230,8 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
         user,
         loading,
         authError,
-        loginWithEmail,
         loginWithAzure,
         logout,
-        testUsers: TEST_USERS,
       }}
     >
       {children}

@@ -38,20 +38,11 @@ export const en = {
   theme: "Light / dark mode",
   login: {
     title: "Sign in to VoxReady",
-    sub: "Select a test user or enter your credentials.",
-    emailL: "Email address",
-    emailPh: "you@company.com",
-    passL: "Password",
-    passPh: "••••••••",
-    signIn: "Sign in",
-    err: "Email not recognized. Use one of the demo test users.",
-    testL: "Demo test users",
     logout: "Sign out",
     azureBtn: "Sign in with Microsoft",
     loading: "Authenticating…",
     azureErr: "Sign in failed. Please try again.",
-    azureSub: "Sign in with your corporate Microsoft account.",
-    dividerOr: "or"
+    azureSub: "Sign in with your corporate Microsoft account."
   },
   roles: {
     spokesperson: "End user (spokesperson)",
