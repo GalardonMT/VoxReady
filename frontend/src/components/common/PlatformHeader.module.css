@@ -1,4 +1,6 @@
 .header {
+  --nav-accent: var(--accent);
+  --nav-muted: color-mix(in srgb, var(--ink) 75%, var(--panel));
   position: sticky;
   top: 0;
   z-index: 30;
@@ -51,6 +53,7 @@
 }
 .account {
   justify-self: end;
+  max-width: 100%;
   gap: 10px;
   padding-left: 18px;
   border-left: 1px solid var(--line);
@@ -69,6 +72,7 @@
 }
 .user {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
   line-height: 1.35;
@@ -85,7 +89,7 @@
 }
 .role {
   font-size: 10.5px;
-  color: var(--muted);
+  color: var(--nav-muted);
 }
 .logout {
   display: inline-flex;
@@ -105,10 +109,10 @@
 }
 .logout:hover {
   background: var(--soft);
-  border-color: var(--accent);
+  border-color: var(--nav-accent);
 }
 .brand:focus-visible, .logout:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--nav-accent);
   outline-offset: 3px;
 }
 
@@ -163,4 +167,8 @@
   .navigation {
     width: 100%;
   }
+}
+
+:global([data-theme="dark"]) .header {
+  --nav-accent: color-mix(in srgb, var(--accent) 35%, var(--ink));
 }

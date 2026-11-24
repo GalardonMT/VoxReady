@@ -30,13 +30,13 @@
   background: var(--soft);
 }
 .tab[aria-current="page"], .tab[data-active="true"] {
-  border-color: var(--accent);
+  border-color: var(--nav-accent);
   background: var(--accentsoft);
-  color: var(--accent);
+  color: var(--nav-accent);
   font-weight: 600;
 }
 .tab:focus-visible, .option:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--nav-accent);
   outline-offset: 3px;
 }
 .chevron {
@@ -88,7 +88,7 @@
 }
 .option[aria-current="page"] {
   background: var(--accentsoft);
-  box-shadow: inset 3px 0 var(--accent);
+  box-shadow: inset 3px 0 var(--nav-accent);
 }
 .icon {
   display: grid;
@@ -99,7 +99,7 @@
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--soft);
-  color: var(--accent);
+  color: var(--nav-accent);
 }
 .text {
   display: flex;
@@ -113,7 +113,7 @@
 }
 .description {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--nav-muted);
 }
 
 @media (max-width: 600px) {

@@ -48,8 +48,22 @@ export function MasterNavigation({ activeScreen, labelingEnabled, onNavigate }: 
     const closeOutside = (event: PointerEvent) => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpenGroup(null);
     };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      // Hover can open the panel while keyboard focus remains elsewhere.
+      // Only return focus when the user was interacting within this navigation.
+      if (rootRef.current?.contains(document.activeElement)) {
+        rootRef.current.querySelector<HTMLButtonElement>(`[data-trigger="${openGroup}"]`)?.focus();
+      }
+      setOpenGroup(null);
+    };
     document.addEventListener('pointerdown', closeOutside);
-    return () => document.removeEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
   }, [openGroup]);
 
   const navigate = (screen: MasterScreen) => {
@@ -58,13 +72,7 @@ export function MasterNavigation({ activeScreen, labelingEnabled, onNavigate }: 
   };
 
   return (
-    <div ref={rootRef} className={styles.navigation} onKeyDown={event => {
-      if (event.key === 'Escape' && openGroup) {
-        event.preventDefault();
-        rootRef.current?.querySelector<HTMLButtonElement>(`[data-trigger="${openGroup}"]`)?.focus();
-        setOpenGroup(null);
-      }
-    }}>
+    <div ref={rootRef} className={styles.navigation}>
       <button type="button" className={styles.tab} aria-current={activeScreen === 'm1' ? 'page' : undefined} onClick={() => navigate('m1')}>
         <LayoutDashboard size={18} aria-hidden="true" /><span>Panel Maestro</span>
       </button>

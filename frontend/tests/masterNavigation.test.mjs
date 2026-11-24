@@ -54,3 +54,45 @@ test('closed disclosures expose named native buttons and hide their options init
   assert.match(html, /Define criterios de evaluación/);
   assert.match(html, /Gestiona contenidos de aprendizaje/);
 });
+
+test('Escape dismisses a hovered menu without moving outside focus and cleans up listeners', () => {
+  for (const focusInside of [false, true]) {
+    const listeners = new Map();
+    const states = [];
+    let focusReturns = 0;
+    let cleanup;
+    const root = {
+      contains: () => focusInside,
+      querySelector: () => ({ focus: () => { focusReturns++; } }),
+    };
+    const hooks = {
+      ...React,
+      useState: () => ['evaluation', value => states.push(value)],
+      useRef: () => ({ current: root }),
+      useId: () => 'navigation',
+      useEffect: effect => { cleanup = effect(); },
+    };
+    const document = {
+      activeElement: {},
+      addEventListener: (name, handler) => listeners.set(name, handler),
+      removeEventListener: (name, handler) => {
+        assert.equal(listeners.get(name), handler);
+        listeners.delete(name);
+      },
+    };
+    const testModule = { exports: {} };
+    vm.runInNewContext(`(function(require,module,exports){${compiled}\n})`, { document })(
+      name => name === 'react' ? hooks : imports[name] ?? require(name), testModule, testModule.exports,
+    );
+    testModule.exports.MasterNavigation({ activeScreen: 'm1', labelingEnabled: true, onNavigate() {} });
+    listeners.get('keydown')({ key: 'Tab' });
+    assert.deepEqual(states, []);
+    let prevented = false;
+    listeners.get('keydown')({ key: 'Escape', preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.deepEqual(states, [null]);
+    assert.equal(focusReturns, focusInside ? 1 : 0);
+    cleanup();
+    assert.equal(listeners.size, 0);
+  }
+});

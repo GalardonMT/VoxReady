@@ -146,10 +146,52 @@ conectarse al backend. La grabación y la autenticación real no se validaron en
 Se siguió la composición de componentes de `ecc:frontend-patterns`, la documentación
 instalada de Next.js y la consulta de Context7 sobre componentes cliente y CSS Modules.
 
+## Fase 4: revisión final completada
+
+Se corrigieron tres problemas encontrados durante la revisión:
+
+- El menú abierto con hover ahora se cierra con Escape aunque el foco esté fuera de la navegación. Si el foco está dentro, vuelve al botón del grupo; si está fuera, conserva su ubicación. Una prueba de regresión comprueba ambos casos y la limpieza de los listeners.
+- El bloque de usuario respeta el ancho de su columna. Los nombres largos se abrevian visualmente con puntos suspensivos y conservan el texto completo en `title`, sin invadir la navegación ni ocultar «Cerrar sesión».
+- Los textos secundarios usan un color derivado de la paleta con mayor contraste. En tema oscuro, se aclaran los acentos de selección, iconos y foco dentro de la cabecera. Los ajustes están encapsulados y conservan las variables de color generales.
+
+| Comprobación final | Resultado |
+| --- | --- |
+| `npm run build` | Correcta, incluida la comprobación de TypeScript y la exportación estática. El primer intento encontró un error EPERM al crear una carpeta de `.next`; la repetición con permisos de ejecución ampliados terminó correctamente. |
+| `node --experimental-strip-types --test tests/*.test.mjs` | 75 pruebas aprobadas, sin fallos. |
+| ESLint sobre todos los archivos TSX/MJS modificados respecto de la base | 0 errores y 0 advertencias en 10 archivos. |
+| ESLint general, mediante su API sobre el frontend | 36 errores y 9 advertencias. Los errores permanecen en los archivos preexistentes enumerados en fase 1; se eliminaron las tres advertencias de imágenes de las cabeceras. |
+| Matriz local en Edge | 61 comprobaciones correctas, sin incidencias pendientes en esa matriz. |
+| Regresión de las comprobaciones de fases 2 y 3 | Correctas tras los ajustes: hover y paso al panel, selección, foco, cierre exterior, montaje persistente de métricas, navegación de cliente/vocero, cierre de sesión y retorno desde el detalle de vocero. |
+
+La matriz de Edge cubrió los tres roles con nombres de usuario largos, y un nombre de
+organización largo insertado como dato de prueba de presentación. Se comprobaron estos
+anchos: 320, 375, 600, 601, 768, 900, 1024, 1200, 1201, 1280, 1366, 1600 y 1920 px.
+En todos ellos los bloques de la cabecera quedaron sin solapamientos y los botones visibles
+dentro de la pantalla, con al menos 24 × 24 px. El ancho de 320 px también comprueba la
+redistribución necesaria al reducir un escritorio de 1280 px a una cuarta parte.
+
+Con la paleta VoxReady se midió contraste de al menos 4,5:1 para el texto de la sección
+activa y el subtítulo de usuario en los temas claro y oscuro. Se verificaron foco visible,
+movimiento reducido, Enter y Espacio para abrir, Tab para entrar y salir, Escape y su
+conservación/devolución de foco. La emulación táctil abrió Contenidos y seleccionó
+Microlecciones a 320 px. Las capturas finales de los tres roles a 1600 px y del menú táctil
+a 320 px se revisaron visualmente.
+
+La revisión utilizó una compilación local y un perfil temporal de Edge, con autenticación
+simulada y peticiones de datos de la API bloqueadas. La entrada táctil fue emulada; no se
+probó un dispositivo físico ni un lector de pantalla. La autenticación real, la captura de
+medios y los guardados contra la API no forman parte de estos resultados. Los datos del
+contenido de las capturas corresponden a estados vacíos, errores o valores ya existentes
+en la aplicación; no son evidencia de resultados de usuarios reales.
+
+Se aplicó `ecc:accessibility` para esta revisión y se consultaron Context7 y la documentación
+instalada de Next.js. Las cuatro fases acordadas quedan completadas en la rama local
+`feat/barra-navegacion-roles`.
+
 ## Seguimiento de fases y commits
 
 1. **Fase 2 — Maestro, completada:** estructura compartida y desplegables de Evaluación y Contenidos, iconos y descripciones y nuevo distintivo. Commit: `feat(nav): agrupar la navegacion del maestro`.
 2. **Fase 3 — Cliente y vocero, completada:** cabecera y navegación comunes, cuatro opciones centradas y textos aprobados. Verificados el detalle de voceros y la protección de prácticas activas. Commit: `feat(nav): unificar las barras de cliente y vocero`.
-3. **Fase 4 — Verificación:** revisar mouse, clic, teclado, pantallas táctiles, anchos pequeños, nombres largos y aspecto de los tres roles. Ejecutar build, pruebas pertinentes y lint de archivos modificados; comparar el lint general con esta base. Registrar lo observado y corregir los problemas encontrados. Commit propuesto: `fix(nav): completar ajustes de accesibilidad y adaptacion` si hay correcciones, o `docs(nav): registrar la validacion final` si solo se documentan resultados.
+3. **Fase 4 — Verificación, completada:** corregidos Escape para hover, solapamientos con nombres largos y contraste local. Compilación, pruebas, lint del cambio y matriz de navegador verificados. Commit: `fix(nav): completar ajustes de accesibilidad y adaptacion`.
 
-Una sola rama y un commit por fase. La fase 4 sigue pendiente.
+Una sola rama y un commit por fase. Las cuatro fases están completadas.
