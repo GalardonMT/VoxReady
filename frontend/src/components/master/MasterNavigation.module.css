@@ -1,0 +1,146 @@
+.navigation {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(8px, 1.4vw, 24px);
+  position: relative;
+}
+.group {
+  position: relative;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.tab:hover, .tab[aria-expanded="true"] {
+  background: var(--soft);
+}
+.tab[aria-current="page"], .tab[data-active="true"] {
+  border-color: var(--accent);
+  background: var(--accentsoft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.tab:focus-visible, .option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.chevron {
+  transition: transform 150ms ease;
+}
+.tab[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
+}
+/* Padding bridges the trigger and panel so pointer movement keeps the menu open. */
+.dropdown {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding-top: 12px;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  z-index: 1;
+}
+.panel {
+  list-style: none;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 12%);
+  max-height: min(440px, 60dvh);
+  overflow-y: auto;
+}
+.panel li + li {
+  border-top: 1px solid var(--soft);
+}
+.option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.option:hover {
+  background: var(--soft);
+}
+.option[aria-current="page"] {
+  background: var(--accentsoft);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+  color: var(--accent);
+}
+.text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+}
+.title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.description {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+@media (max-width: 600px) {
+  .navigation {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+  .group {
+    position: static;
+  }
+  .tab {
+    width: 100%;
+    font-size: 12px;
+    padding: 8px;
+  }
+  .dropdown {
+    left: 0;
+    width: 100%;
+    transform: none;
+    padding-top: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab, .chevron {
+    transition: none;
+  }
+}

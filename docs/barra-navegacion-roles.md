@@ -88,11 +88,40 @@ No se modificaron dependencias ni configuración para ocultar estos resultados.
 La inspección de esta fase fue de código y de las capturas aportadas; todavía no se ha
 realizado una comprobación visual de la aplicación en navegador.
 
-## Fases siguientes y commits
+## Fase 2: maestro completado
 
-1. **Fase 2 — Maestro:** crear la estructura compartida y los desplegables de Evaluación y Contenidos; incorporar iconos y descripciones; actualizar el distintivo. Verificar selección, navegación, condición de la cola y conservación de los editores. Commit propuesto: `feat(nav): agrupar la navegacion del maestro`.
+- `PlatformHeader` aporta la estructura común de marca, navegación centrada y usuario, con estilos encapsulados en CSS Modules y el logo real mediante `next/image`.
+- `MasterNavigation` organiza Evaluación y Contenidos con iconos de Lucide, títulos y descripciones; Panel Maestro y Clientes conservan sus accesos directos.
+- El distintivo muestra «Configurador maestro». El maestro ya usa «Cerrar sesión»; cliente y vocero adoptarán esta cabecera en fase 3.
+- Un solo desplegable puede estar abierto. Admite hover de mouse, clic, Tab y Escape, y se cierra al seleccionar, abandonar el foco o pulsar fuera. Escape y la selección devuelven el foco al botón del grupo.
+- La opción y el grupo activos se distinguen por separado. La cola sigue dependiendo de `NEXT_PUBLIC_LABELING_UI_ENABLED`.
+- La cabecera se distribuye en dos filas cuando falta espacio; a 600 px o menos las cuatro opciones se presentan en dos columnas. La navegación del maestro ya no desaparece por la regla global de 900 px.
+- El contenido de las pantallas y sus manejadores de navegación conservan su estructura, incluido el estado de selección del editor de temas.
+
+Comprobaciones realizadas:
+
+| Comprobación | Resultado |
+| --- | --- |
+| `npm run build` | Correcta: compilación, TypeScript y exportación estática. |
+| ESLint en la página del maestro, los dos componentes nuevos y `masterNavigation.test.mjs` | Correcto, sin errores ni advertencias. |
+| Pruebas de rutas, modelos y vista del panel maestro y los cuatro modelos de etiquetado | 24 pruebas correctas. |
+| `node --experimental-strip-types --test tests/masterNavigation.test.mjs` | 3 pruebas correctas: cola condicional, pantalla/grupo activos y semántica inicial de los desplegables. |
+| Edge local, compilación exportada, sesión simulada | Correctos: hover, paso del puntero al panel, centrado, Tab, Escape con devolución de foco, clic, selección y cierre exterior. |
+| Editor de métricas en Edge | La misma instancia DOM permanece montada al salir y se reutiliza al volver. |
+| Capturas en Edge a 1600 × 900 y 375 × 812 | Revisadas; navegación y desplegables visibles, sin desbordamiento horizontal a 375 px. |
+
+ECC no pudo iniciar Chrome porque no está instalado; la revisión visual se hizo con Edge
+en un perfil temporal. Las respuestas de autenticación se simularon en el navegador y las
+peticiones de datos de la API se bloquearon para esta comprobación. Esto verifica la interfaz
+y la conservación del montaje del editor, pero no valida cargas o guardados contra la API real.
+No se repitió el lint general: sus fallos base siguen documentados en fase 1.
+Se aplicó `ecc:frontend-patterns` y se volvió a consultar Context7 para componentes cliente,
+CSS Modules y dimensiones de `next/image`, junto a la documentación instalada de Next.js.
+
+## Seguimiento de fases y commits
+
+1. **Fase 2 — Maestro, completada:** estructura compartida y desplegables de Evaluación y Contenidos, iconos y descripciones y nuevo distintivo. Commit: `feat(nav): agrupar la navegacion del maestro`.
 2. **Fase 3 — Cliente y vocero:** adoptar la estructura común, centrar las cuatro opciones, cambiar los textos aprobados y «Cerrar sesión» en los tres roles. Actualizar las aserciones afectadas. Verificar el detalle de voceros y la confirmación durante una práctica activa. Commit propuesto: `feat(nav): unificar las barras de cliente y vocero`.
 3. **Fase 4 — Verificación:** revisar mouse, clic, teclado, pantallas táctiles, anchos pequeños, nombres largos y aspecto de los tres roles. Ejecutar build, pruebas pertinentes y lint de archivos modificados; comparar el lint general con esta base. Registrar lo observado y corregir los problemas encontrados. Commit propuesto: `fix(nav): completar ajustes de accesibilidad y adaptacion` si hay correcciones, o `docs(nav): registrar la validacion final` si solo se documentan resultados.
 
-Una sola rama y un commit por fase. Este documento se actualizará con los resultados
-reales de cada fase; las tareas siguientes aún están pendientes.
+Una sola rama y un commit por fase. Las fases 3 y 4 siguen pendientes.
