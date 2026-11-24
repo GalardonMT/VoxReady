@@ -162,7 +162,7 @@ def download_blob(blob_path: str, local_path: str):
             file_size = os.path.getsize(local_path)
             if file_size > 0:
                 logger.info(f"Video descargado exitosamente de {cont}/{b_name}: {local_path} ({file_size} bytes)")
-                return
+                return (cont, b_name)
         except Exception as e:
             last_error = e
             logger.warning(f"No se pudo descargar desde container='{cont}', blob='{b_name}': {e}")
@@ -171,8 +171,83 @@ def download_blob(blob_path: str, local_path: str):
     raise last_error or RuntimeError(f"No se pudo descargar el blob: {blob_path}")
 
 
+def remux_webm_for_seeking(input_path: str, output_path: str) -> bool:
+    """
+    Reconstruye sin recodificar (-c copy) las cabeceras EBML Duration e índice Cues
+    en grabaciones WebM generadas por Chromium MediaRecorder para que permitan
+    adelantar, retroceder y mostrar su duración real en cualquier navegador.
+    """
+    if not input_path or not os.path.exists(input_path):
+        return False
+    try:
+        cmd = [
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-i",
+            input_path,
+            "-c",
+            "copy",
+            "-f",
+            "webm",
+            output_path,
+        ]
+        res = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+        )
+        if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            logger.info(
+                f"Remux WebM sin recodificación completado ({os.path.getsize(output_path)} bytes): {output_path}"
+            )
+            return True
+        logger.warning(f"Aviso en remux WebM (rc={res.returncode}): {(res.stderr or '')[:240]}")
+    except Exception as exc:
+        logger.warning(f"Aviso ejecutando remux WebM: {exc}")
+    return False
+
+
+def upload_remuxed_recording(container_name: str, blob_name: str, local_path: str) -> bool:
+    """Sobrescribe el blob maestro con la versión remuxeada seekable (Duration + Cues)."""
+    if not STORAGE_CONN or not container_name or not blob_name:
+        return False
+    try:
+        from azure.storage.blob import ContentSettings
+
+        blob_service = BlobServiceClient.from_connection_string(STORAGE_CONN)
+        blob_client = blob_service.get_blob_client(container=container_name, blob=blob_name)
+        with open(local_path, "rb") as stream:
+            blob_client.upload_blob(
+                stream,
+                overwrite=True,
+                content_settings=ContentSettings(content_type="video/webm"),
+            )
+        logger.info(f"Grabación remuxeada actualizada en Azure Blob: {container_name}/{blob_name}")
+        return True
+    except Exception as exc:
+        logger.warning(f"Aviso actualizando grabación remuxeada en Blob Storage ({container_name}/{blob_name}): {exc}")
+        return False
+
+
+def _parse_ffmpeg_time_duration(stderr_text: str) -> Optional[float]:
+    matches = re.findall(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)", stderr_text or "")
+    if not matches:
+        return None
+    hrs, mins, secs = matches[-1]
+    total = (int(hrs) * 3600.0) + (int(mins) * 60.0) + float(secs)
+    return round(total, 3) if total >= 1.0 else None
+
+
 def probe_media_duration(video_path: str) -> Optional[float]:
-    """Obtiene la duración real en segundos del video maestro usando ffprobe."""
+    """
+    Obtiene la duración real en segundos del video maestro.
+    Rechaza valores inválidos (< 1.0s como 0.001 de WebM crudos de MediaRecorder)
+    y recurre a un escaneo rápido con FFmpeg null muxer si ffprobe no trae duración válida.
+    """
     try:
         cmd = [
             "ffprobe",
@@ -195,10 +270,26 @@ def probe_media_duration(video_path: str) -> Optional[float]:
         raw = (res.stdout or "").strip()
         if res.returncode == 0 and raw and raw.lower() != "n/a":
             val = float(raw)
-            if val > 0:
+            if val >= 1.0:
                 return round(val, 3)
     except Exception as exc:
         logger.warning(f"Aviso obteniendo duración con ffprobe: {exc}")
+
+    # Respaldo: leer timestamp final real del stream con ffmpeg -f null -
+    try:
+        res_ff = subprocess.run(
+            ["ffmpeg", "-nostdin", "-i", video_path, "-vn", "-f", "null", "-"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        parsed = _parse_ffmpeg_time_duration(res_ff.stderr)
+        if parsed and parsed >= 1.0:
+            return parsed
+    except Exception as exc:
+        logger.warning(f"Aviso obteniendo duración fallback con ffmpeg: {exc}")
     return None
 
 
@@ -395,11 +486,19 @@ def process_session_pipeline(
         logger.info(f"Rúbrica activa cargada: versión {rubric_cfg.version_code} ({rubric_cfg.rubric_version_id})")
 
         # 1. Descargar video
-        download_blob(blob_path, local_video_path)
+        downloaded_location = download_blob(blob_path, local_video_path)
         if not os.path.exists(local_video_path) or os.path.getsize(local_video_path) == 0:
             raise ValueError(f"El archivo de grabación descargado está vacío o no es válido: '{blob_path}'")
 
-        # 1.1 Sellar evidencia inmutable de grabación para gobernanza y cola de etiquetado
+        # 1.05 Remuxear WebM sin recodificar (-c copy) para inyectar Duration + Cues (seeking nativo)
+        if str(blob_path or "").lower().endswith(".webm"):
+            remuxed_video_path = os.path.join(session_tmp_dir, "input_seekable.webm")
+            if remux_webm_for_seeking(local_video_path, remuxed_video_path):
+                os.replace(remuxed_video_path, local_video_path)
+                if isinstance(downloaded_location, tuple) and len(downloaded_location) == 2:
+                    upload_remuxed_recording(downloaded_location[0], downloaded_location[1], local_video_path)
+
+        # 1.1 Sellar evidencia inmutable de grabación (ya remuxeada y seekable) para gobernanza y etiquetado
         recording_evidence = seal_recording_evidence(
             storage_connection_string=STORAGE_CONN,
             container_name=CONTAINER_NAME or "recordings",
@@ -566,7 +665,16 @@ def process_session_pipeline(
         audio_metrics = audio_res.get("metrics", {})
         if words:
             audio_metrics["words"] = words
-        evidence_duration = master_video_duration if (master_video_duration and master_video_duration > 0) else total_duration
+        max_turn_end_sec = max(
+            (float(t.get("end_offset_ms") or 0) / 1000.0 for t in db_turns),
+            default=0.0,
+        )
+        if master_video_duration and master_video_duration >= 1.0:
+            evidence_duration = master_video_duration
+        elif max_turn_end_sec >= 1.0:
+            evidence_duration = max(max_turn_end_sec, total_duration)
+        else:
+            evidence_duration = total_duration
         if evidence_duration > 0:
             recording_evidence["durationSeconds"] = round(float(evidence_duration), 3)
         score_wpm = float(audio_metrics.get("score_wpm", 80.0))
