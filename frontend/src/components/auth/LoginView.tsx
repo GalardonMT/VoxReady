@@ -3,7 +3,6 @@
 import React, { useState } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
-import { UserSession } from '../../types/api';
 import { isAzureConfigured } from '../../services/authConfig';
 
 interface LoginViewProps {
@@ -12,7 +11,7 @@ interface LoginViewProps {
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const { t } = useI18n();
-  const { loginWithEmail, loginWithAzure, loading, authError, testUsers } = useAuth();
+  const { loginWithEmail, loginWithAzure, loading, authError } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -44,12 +43,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     } finally {
       setAzureLoading(false);
     }
-  };
-
-  const handleSelectTestUser = async (user: UserSession) => {
-    setError('');
-    const success = await loginWithEmail(user.email);
-    if (success && onLoginSuccess) onLoginSuccess();
   };
 
   if (loading || azureLoading) {
@@ -147,28 +140,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
 
         {(error || authError) && <p className="login-err">{error || authError}</p>}
 
-        <div className="login-divider">{t.login.testL}</div>
-
-        {/* ---- Demo test users list ---- */}
-        <div>
-          {testUsers.map((user) => (
-            <button
-              key={user.userId}
-              type="button"
-              className="tu"
-              onClick={() => void handleSelectTestUser(user)}
-            >
-              <span className="tuava">{user.initials}</span>
-              <span className="tumeta">
-                <span className="tuname">{user.displayName}</span>
-                <span className="turole">
-                  {t.roles[user.role]} · {user.email}
-                </span>
-              </span>
-              <span className="tugo">→</span>
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   );

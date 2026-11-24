@@ -1856,63 +1856,6 @@ table.wf th {
   background: var(--line);
 }
 
-.tu {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-  padding: 11px 13px;
-  cursor: pointer;
-  font-family: inherit;
-  margin-bottom: 9px;
-  transition: all 0.15s ease;
-}
-
-.tu:hover {
-  border-color: var(--accent);
-  background: var(--accentsoft);
-  transform: translateX(2px);
-}
-
-.tu .tuava {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  font-size: 12.5px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.tu .tumeta {
-  flex: 1;
-  min-width: 0;
-}
-
-.tu .tuname {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.tu .turole {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.tu .tugo {
-  font-size: 16px;
-  color: var(--muted);
-}
-
 .vocero-logout {
   background: transparent;
   border: 1px solid var(--line2);

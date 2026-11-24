@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { clientAdminService } from '../../services/clientAdminService';
 import type { ClientRecentActivityPage, ClientUsageResponse } from '../../types/api';
 import { Pagination } from '../common/Pagination';
@@ -56,6 +56,8 @@ export const ActivityUsageView: React.FC = () => {
   const [userId, setUserId] = useState('');
   const [scenarioId, setScenarioId] = useState('');
   const [usage, setUsage] = useState<ClientUsageResponse>(emptyUsage);
+  const [spokespersonOptions, setSpokespersonOptions] = useState<ClientUsageResponse['spokespersons']>([]);
+  const [scenarioOptions, setScenarioOptions] = useState<Array<{ id: string; title: string }>>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recentQuery, setRecentQuery] = useState('');
@@ -74,7 +76,13 @@ export const ActivityUsageView: React.FC = () => {
       userId: userId || undefined,
       scenarioId: scenarioId || undefined,
     }).then(result => {
-      if (active) setUsage(result);
+      if (active) {
+        setUsage(result);
+        if (!userId && !scenarioId) {
+          setSpokespersonOptions(result.spokespersons);
+          setScenarioOptions(result.scenarios.map(item => ({ id: item.scenarioId, title: item.title })));
+        }
+      }
     }).catch(cause => {
       if (active) setError(cause instanceof Error ? cause.message : 'No se pudo cargar la actividad.');
     }).finally(() => {
@@ -133,10 +141,6 @@ export const ActivityUsageView: React.FC = () => {
     1,
     usage.statusBreakdown.completed + usage.statusBreakdown.inProgress + usage.statusBreakdown.abandoned,
   );
-  const scenarioOptions = useMemo(
-    () => usage.scenarios.map(item => ({ id: item.scenarioId, title: item.title })),
-    [usage.scenarios],
-  );
   const peoplePageSize = 5;
   const peopleTotalPages = Math.max(1, Math.ceil(usage.spokespersons.length / peoplePageSize));
   const safePeoplePage = Math.min(peoplePage, peopleTotalPages);
@@ -171,7 +175,7 @@ export const ActivityUsageView: React.FC = () => {
             <label>Vocero
               <select className="field" value={userId} onChange={event => changeFilter(() => setUserId(event.target.value))}>
                 <option value="">Todos</option>
-                {usage.spokespersons.map(person => (
+                {spokespersonOptions.map(person => (
                   <option key={person.id} value={person.id}>{person.displayName || person.email}</option>
                 ))}
               </select>

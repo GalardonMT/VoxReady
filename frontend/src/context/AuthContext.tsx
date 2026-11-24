@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { UserSession } from '../types/api';
-import { TEST_USERS } from '../mock/mockData';
 import {
   loginRequest,
   loginRedirectRequest,
@@ -19,7 +18,6 @@ interface AuthContextType {
   loginWithEmail: (email: string) => Promise<boolean>;
   loginWithAzure: () => Promise<void>;
   logout: () => void;
-  testUsers: UserSession[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -224,7 +222,6 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
         loginWithEmail,
         loginWithAzure,
         logout,
-        testUsers: TEST_USERS,
       }}
     >
       {children}
@@ -296,7 +293,6 @@ function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
         loginWithEmail,
         loginWithAzure,
         logout,
-        testUsers: TEST_USERS,
       }}
     >
       {children}
