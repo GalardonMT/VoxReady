@@ -1108,13 +1108,11 @@ def get_session_report(session_id: str, user: dict = Depends(verify_token)):
     audio_m = metrics_obj.get("audio") or {}
 
     dur_secs = float(audio_m.get("duracionSegundos", audio_m.get("duracion_segundos", 0.0)) or 0.0)
-    evidence_dur = (final_report.get("recordingEvidence") or {}).get("durationSeconds")
-    playback_dur_secs = float(
-        evidence_dur
-        or final_report.get("durationSeconds")
-        or dur_secs
-        or 0.0
-    )
+    raw_evidence_dur = (final_report.get("recordingEvidence") or {}).get("durationSeconds")
+    raw_report_dur = final_report.get("durationSeconds")
+    valid_evidence_dur = float(raw_evidence_dur) if raw_evidence_dur and float(raw_evidence_dur) >= 1.0 else 0.0
+    valid_report_dur = float(raw_report_dur) if raw_report_dur and float(raw_report_dur) >= 1.0 else 0.0
+    playback_dur_secs = valid_evidence_dur or valid_report_dur or dur_secs or 0.0
     metrics_summary = {
         "eyeContactPct": vision_m.get("eyeContactPct", vision_m.get("contacto_visual_porcentaje", 0.0)),
         "shoulderStabilityScore": vision_m.get("shoulderStabilityScore", vision_m.get("average_posture_score", 0.0)),
