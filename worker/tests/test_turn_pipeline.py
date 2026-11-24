@@ -16,7 +16,7 @@ if str(WORKER_DIR) not in sys.path:
 
 from core.audio_analyzer import aggregate_turn_audio_results
 from core.llm_judge import LLMJudgeService, format_interview_dialogue
-from core.pipeline_orchestrator import split_media
+from core.pipeline_orchestrator import probe_media_duration, remux_webm_for_seeking, split_media
 from core.report_builder import sanitize_report_json
 from core.schemas import (
     DimensionScore,
@@ -379,3 +379,47 @@ def test_llm_judge_structured_dialogue_and_report_builder():
     assert cleaned["dialogueTurns"] == turns
     assert cleaned["durationSeconds"] == 142.5
     assert cleaned["metrics"]["turns_evaluated"] == 2
+
+
+def test_probe_media_duration_rejects_subsecond_header_and_uses_ffmpeg_fallback(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        res = MagicMock()
+        if cmd[0] == "ffprobe":
+            res.returncode = 0
+            res.stdout = "0.001\n"
+            res.stderr = ""
+        else:
+            res.returncode = 0
+            res.stdout = ""
+            res.stderr = "size=N/A time=00:01:32.45 bitrate=N/A speed=90x"
+        return res
+
+    monkeypatch.setattr("core.pipeline_orchestrator.subprocess.run", fake_run)
+    dur = probe_media_duration("fake.webm")
+    assert dur == pytest.approx(92.45, abs=0.01)
+    assert calls[0][0] == "ffprobe"
+    assert calls[1][0] == "ffmpeg"
+
+
+def test_remux_webm_for_seeking_uses_lossless_copy(tmp_path, monkeypatch):
+    src = tmp_path / "in.webm"
+    dst = tmp_path / "out.webm"
+    src.write_bytes(b"raw-webm-bytes")
+
+    seen_cmd = []
+
+    def fake_run(cmd, **_kwargs):
+        seen_cmd.extend(cmd)
+        dst.write_bytes(b"remuxed-webm-with-cues")
+        res = MagicMock()
+        res.returncode = 0
+        res.stderr = ""
+        return res
+
+    monkeypatch.setattr("core.pipeline_orchestrator.subprocess.run", fake_run)
+    ok = remux_webm_for_seeking(str(src), str(dst))
+    assert ok is True
+    assert "-c" in seen_cmd and "copy" in seen_cmd and "webm" in seen_cmd

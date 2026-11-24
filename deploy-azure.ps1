@@ -41,7 +41,7 @@ $CONFIG = @{
         Target     = "runtime"
         Repo       = "analysis-worker"
         App        = "ca-analysis-worker"
-        Prefix     = "v2."
+        Prefix     = "v3."
     }
     backend = @{
         Name       = "Backend API"

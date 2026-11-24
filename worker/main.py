@@ -24,7 +24,7 @@ logger = logging.getLogger("ca-analysis-worker")
 
 app = FastAPI(
     title="ca-analysis-worker",
-    version="2.3.0",
+    version="3.1.0",
     description="Servicio interno de inferencia multimodal y evaluación VISUM para VoxReady"
 )
 
@@ -70,7 +70,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "ca-analysis-worker",
-        "version": "2.3.0"
+        "version": "3.1.0"
     }
 
 
