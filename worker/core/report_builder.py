@@ -628,11 +628,24 @@ def sanitize_report_json(
     for k, v in raw_dims.items():
         camel_k = dim_map.get(k, k)
         if isinstance(v, dict):
-            clean_dims[camel_k] = {
-                "nivel": v.get("nivel", v.get("score_1_5", 1)),
+            dim_clean: Dict[str, Any] = {
+                "nivel": v.get("nivel", v.get("nivel_visum", v.get("score_1_5", 1))),
                 "score": float(v.get("score_100", v.get("score", 0.0))),
-                "criterio": v.get("criterio", v.get("justificacion", ""))
+                "criterio": v.get("criterio", v.get("justificacion", "")),
             }
+            evidencia_txt = v.get("evidencia") or v.get("evidencia_textual")
+            if evidencia_txt:
+                dim_clean["evidencia"] = evidencia_txt
+            if k == "tecnicas_control" and v.get("tecnicas_detectadas") is not None:
+                dim_clean["tecnicasDetectadas"] = list(v.get("tecnicas_detectadas") or [])
+                if v.get("frase_transicion"):
+                    dim_clean["fraseTransicion"] = v.get("frase_transicion")
+            elif k == "alineacion_mensaje_clave":
+                if v.get("mensajes_cumplidos") is not None:
+                    dim_clean["mensajesCumplidos"] = list(v.get("mensajes_cumplidos") or [])
+                if v.get("mensajes_omitidos") is not None:
+                    dim_clean["mensajesOmitidos"] = list(v.get("mensajes_omitidos") or [])
+            clean_dims[camel_k] = dim_clean
         else:
             clean_dims[camel_k] = v
 
@@ -658,10 +671,14 @@ def sanitize_report_json(
     improvements = list(visum_narrative.get("desempeno_observado", {}).get("oportunidades_desarrollo", []))
     cross_signal = str(visum_narrative.get("observacion_senal_cruzada", ""))
 
-    # Si hubo infracción de línea roja, inyectar alerta prioritaria en narrative improvements
+    # Si hubo infracción de línea roja y la narrativa aún no la menciona al inicio, garantizar alerta prioritaria
     if infraccion_lr:
         alerta_lr = f"ALERTA CRÍTICA: Vulneraste una línea roja del escenario ({evidencia_lr or 'Infracción de política institucional'})."
-        if alerta_lr not in improvements:
+        has_red_line_mention = any(
+            "línea roja" in str(item).lower() or "linea roja" in str(item).lower()
+            for item in improvements
+        )
+        if not has_red_line_mention:
             improvements.insert(0, alerta_lr)
 
     score_exp = float(area_scores.get("expression", area_scores.get("expresion", 0.0)))

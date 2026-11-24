@@ -52,6 +52,12 @@ def _make_context(difficulty: str = "intermediate") -> SessionInterviewContext:
                 "sequenceNo": 1,
                 "text": "¿Por qué no evacuaron antes a los vecinos?",
             },
+            {
+                "sessionQuestionId": "55555555-6666-7777-8888-999999999999",
+                "questionId": "66666666-7777-8888-9999-000000000000",
+                "sequenceNo": 2,
+                "text": "¿Qué compensación ofrecerán a las familias afectadas?",
+            },
         ),
     )
 
@@ -109,16 +115,48 @@ def test_gemini_decision_schema_sanitizes_and_hard_prompt_focuses_red_lines():
         }
     )
     assert d_valid.hasFollowUp is True
+    assert d_valid.triggerReason == "flanco_linea_roja"
     assert "protocolo" in d_valid.followUpQuestion
+
+    # Short/invalid question clears triggerReason to keep hasFollowUp=False invariant
+    d_short = GeminiFollowUpDecision.model_validate(
+        {"hasFollowUp": True, "followUpQuestion": "ok", "triggerReason": "evasion"}
+    )
+    assert d_short.hasFollowUp is False
+    assert d_short.triggerReason is None
+
+    # Long multi-sentence output trims cleanly at sentence boundary without mid-sentence "..."
+    long_q = (
+        "¿Por qué no activaron la sirena comunitaria apenas detectaron la fuga en el reactor principal? "
+        + ("Además quisiéramos conocer cada detalle administrativo del turno nocturno y los correos internos " * 3)
+    )
+    d_trimmed = GeminiFollowUpDecision.model_validate(
+        {"hasFollowUp": True, "followUpQuestion": long_q, "triggerReason": "evasion"}
+    )
+    assert d_trimmed.hasFollowUp is True
+    assert d_trimmed.triggerReason == "evasion_nucleo"
+    assert len(d_trimmed.followUpQuestion) <= 240
+    assert d_trimmed.followUpQuestion.endswith("?")
+    assert not d_trimmed.followUpQuestion.endswith("...")
 
     prompt_hard = build_followup_prompt(
         ctx=_make_context("hard"),
-        current_question="¿Por qué demoraron?",
+        current_question="¿Por qué no evacuaron antes a los vecinos?",
         previous_turns=[],
+        current_base_sequence_no=1,
     )
     assert "ALTA PRESIÓN SOBRE LÍNEAS ROJAS" in prompt_hard
     assert "No confirmar negligencia" in prompt_hard
+    assert "[Pregunta base #2] ¿Qué compensación ofrecerán a las familias afectadas?" in prompt_hard
     assert "DATO NO CONFIABLE" in SYSTEM_INSTRUCTION
+
+    prompt_last = build_followup_prompt(
+        ctx=_make_context("intermediate"),
+        current_question="¿Qué compensación ofrecerán a las familias afectadas?",
+        previous_turns=[],
+        current_base_sequence_no=2,
+    )
+    assert "(No quedan preguntas base posteriores en la pauta)" in prompt_last
 
 
 def test_gemini_degrades_safely_on_timeout_or_error(tmp_path):

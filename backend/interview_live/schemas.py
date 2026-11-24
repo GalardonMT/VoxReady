@@ -14,18 +14,91 @@ class FollowUpPolicyPayload(BaseModel):
     pressureLevel: str = "moderate"
 
 
+FollowUpTriggerReason = Literal[
+    "evasion_nucleo",
+    "respuesta_vaga_incompleta",
+    "contradiccion_interna",
+    "flanco_linea_roja",
+    "infraccion_linea_roja",
+    "omision_impacto_o_accion",
+]
+
+_TRIGGER_REASON_ALIASES: dict[str, FollowUpTriggerReason] = {
+    "evasion_nucleo": "evasion_nucleo",
+    "evasion": "evasion_nucleo",
+    "evasión": "evasion_nucleo",
+    "respuesta_vaga_incompleta": "respuesta_vaga_incompleta",
+    "respuesta_vaga": "respuesta_vaga_incompleta",
+    "vaga": "respuesta_vaga_incompleta",
+    "incompleta": "respuesta_vaga_incompleta",
+    "contradiccion_interna": "contradiccion_interna",
+    "contradiccion": "contradiccion_interna",
+    "contradicción": "contradiccion_interna",
+    "flanco_linea_roja": "flanco_linea_roja",
+    "presion_linea_roja": "flanco_linea_roja",
+    "linea_roja": "flanco_linea_roja",
+    "infraccion_linea_roja": "infraccion_linea_roja",
+    "vulneracion_linea_roja": "infraccion_linea_roja",
+    "omision_impacto_o_accion": "omision_impacto_o_accion",
+    "falta_mensaje_clave": "omision_impacto_o_accion",
+    "omision_mensaje_clave": "omision_impacto_o_accion",
+}
+
+
+def _trim_complete_question(text: str, max_chars: int = 240) -> str:
+    """Ensure TTS-safe question length without cutting mid-sentence with ellipsis."""
+    if len(text) <= max_chars:
+        return text
+    window = text[:max_chars].rstrip()
+    for punct in ("?", ".", "!"):
+        idx = window.rfind(punct)
+        if idx >= 15:
+            return window[: idx + 1].strip()
+    space_idx = window.rfind(" ")
+    trimmed = window[:space_idx].rstrip(" ,;:-") if space_idx >= 15 else window.rstrip(" ,;:-")
+    if not trimmed.endswith("?"):
+        if trimmed and not trimmed.startswith("¿"):
+            trimmed = f"¿{trimmed[0].upper()}{trimmed[1:]}"
+        trimmed = f"{trimmed}?"
+    return trimmed
+
+
+def _normalize_trigger_reason(raw_reason: Any) -> FollowUpTriggerReason | None:
+    if raw_reason is None:
+        return None
+    cleaned = str(raw_reason).strip().lower()
+    if not cleaned or cleaned in {"null", "none", "n/a"}:
+        return None
+    if cleaned in _TRIGGER_REASON_ALIASES:
+        return _TRIGGER_REASON_ALIASES[cleaned]
+    if "infracc" in cleaned or "vulner" in cleaned:
+        return "infraccion_linea_roja"
+    if "roja" in cleaned or "flanco" in cleaned:
+        return "flanco_linea_roja"
+    if "contradic" in cleaned:
+        return "contradiccion_interna"
+    if "evas" in cleaned or "desvi" in cleaned:
+        return "evasion_nucleo"
+    if "mensaje" in cleaned or "afectad" in cleaned or "omisi" in cleaned:
+        return "omision_impacto_o_accion"
+    return "respuesta_vaga_incompleta"
+
+
 class GeminiFollowUpDecision(BaseModel):
     hasFollowUp: bool = Field(
         default=False,
-        description="True solo si corresponde formular una contrapregunta incisiva.",
+        description="True solo si corresponde formular una contrapregunta incisiva según la política activa.",
     )
     followUpQuestion: str | None = Field(
         default=None,
-        description="Contrapregunta breve y directa en español (1-2 oraciones, máx 260 caracteres).",
+        description="1 sola pregunta periodística completa en español para lectura en voz alta (25 a 220 caracteres).",
     )
-    triggerReason: str | None = Field(
+    triggerReason: FollowUpTriggerReason | None = Field(
         default=None,
-        description="Motivo editorial breve (evasion, falta_mensaje_clave, presion_linea_roja, contradiccion).",
+        description=(
+            "Código canónico del motivo editorial: evasion_nucleo, respuesta_vaga_incompleta, "
+            "contradiccion_interna, flanco_linea_roja, infraccion_linea_roja u omision_impacto_o_accion."
+        ),
     )
 
     @model_validator(mode="before")
@@ -47,27 +120,25 @@ class GeminiFollowUpDecision(BaseModel):
         q_clean = str(q_raw).strip() if q_raw is not None else ""
         if q_clean.lower() in {"null", "none", "n/a", ""}:
             q_clean = ""
-        if len(q_clean) > 320:
-            q_clean = q_clean[:317].rstrip() + "..."
+        if q_clean:
+            q_clean = _trim_complete_question(q_clean, max_chars=240)
 
         reason_raw = data.get("triggerReason")
         if reason_raw is None and "trigger_reason" in data:
             reason_raw = data.get("trigger_reason")
-        reason_clean = str(reason_raw).strip()[:480] if reason_raw is not None else None
-        if reason_clean and reason_clean.lower() in {"null", "none", ""}:
-            reason_clean = None
+        reason_clean = _normalize_trigger_reason(reason_raw)
 
         if not has_fu_bool or len(q_clean) < 10:
             return {
                 "hasFollowUp": False,
                 "followUpQuestion": None,
-                "triggerReason": reason_clean if has_fu_bool else None,
+                "triggerReason": None,
             }
 
         return {
             "hasFollowUp": True,
             "followUpQuestion": q_clean,
-            "triggerReason": reason_clean,
+            "triggerReason": reason_clean or "respuesta_vaga_incompleta",
         }
 
 

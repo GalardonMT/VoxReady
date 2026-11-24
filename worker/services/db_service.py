@@ -243,7 +243,8 @@ class DatabaseService:
             cur.execute("""
                 SELECT s.id, s.client_id, s.user_id, s.scenario_id,
                        s.rubric_version_id, sc.title, t.context, t.optics,
-                       t.audience, t.id, j.rubric_version_id, s.external_session_id
+                       t.audience, t.id, j.rubric_version_id, s.external_session_id,
+                       sc.difficulty
                 FROM dbo.analysis_job j
                 JOIN dbo.session s ON s.id = j.session_id
                 JOIN dbo.app_user u ON u.id = s.user_id
@@ -306,6 +307,7 @@ class DatabaseService:
                     "context": row[6],
                     "optics": row[7],
                     "audience": row[8],
+                    "difficulty": str(row[12]).strip() if len(row) > 12 and row[12] else "intermediate",
                     "key_messages": key_messages,
                     "red_lines": red_lines,
                 },

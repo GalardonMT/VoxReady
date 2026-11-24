@@ -17,7 +17,7 @@ from azure.storage.blob import BlobServiceClient
 
 try:
     from core.audio_analyzer import AudioAnalyzer, aggregate_turn_audio_results
-    from core.llm_judge import LLMJudgeService, format_interview_dialogue
+    from core.llm_judge import LLMJudgeService, format_interview_dialogue, resolve_turn_followup_reason
     from core.narrative_generator import generate_visum_report
     from core.vision_client import VisionClient
     from core.report_builder import (
@@ -25,6 +25,7 @@ try:
         sanitize_report_json,
         compute_empathy_score,
         compute_governance_metrics,
+        evaluate_metric_bands,
     )
     from core.scoring_rules import (
         WEIGHT_EXPRESSION,
@@ -45,7 +46,7 @@ try:
     from services.recording_evidence import seal_recording_evidence
 except (ImportError, ValueError):
     from worker.core.audio_analyzer import AudioAnalyzer, aggregate_turn_audio_results
-    from worker.core.llm_judge import LLMJudgeService, format_interview_dialogue
+    from worker.core.llm_judge import LLMJudgeService, format_interview_dialogue, resolve_turn_followup_reason
     from worker.core.narrative_generator import generate_visum_report
     from worker.core.vision_client import VisionClient
     from worker.core.report_builder import (
@@ -53,6 +54,7 @@ except (ImportError, ValueError):
         sanitize_report_json,
         compute_empathy_score,
         compute_governance_metrics,
+        evaluate_metric_bands,
     )
     from worker.config.scoring_rules import (
         WEIGHT_EXPRESSION,
@@ -615,6 +617,11 @@ def process_session_pipeline(
             audio_res = aggregate_turn_audio_results(db_turns, rubric_cfg=rubric_cfg)
             turn_eff_durs = audio_res.get("turn_effective_durations", {})
             for t in db_turns:
+                resolved_trigger = (
+                    resolve_turn_followup_reason(t, db_turns)
+                    if t.get("turn_kind") == "follow_up"
+                    else t.get("followup_trigger_reason")
+                )
                 dialogue_turns_payload.append(
                     {
                         "turnId": t["turn_id"],
@@ -624,7 +631,7 @@ def process_session_pipeline(
                         "parentTurnId": t.get("parent_turn_id"),
                         "questionText": t["question_text"],
                         "transcript": (t.get("transcript") or "").strip(),
-                        "triggerReason": t.get("followup_trigger_reason"),
+                        "triggerReason": resolved_trigger,
                         "startOffsetMs": t.get("start_offset_ms"),
                         "endOffsetMs": t.get("end_offset_ms"),
                         "durationSeconds": turn_eff_durs.get(t["turn_index"], t.get("audio_duration_sec", 0.0)),
@@ -772,6 +779,10 @@ def process_session_pipeline(
             transcripcion_vocero=transcript,
             lineas_rojas=red_lines,
             interview_turns=dialogue_turns_payload or None,
+            scenario_title=active_scen.get("title"),
+            optica=active_scen.get("optics"),
+            audiencia=active_scen.get("audience"),
+            dificultad=active_scen.get("difficulty"),
         )
 
         llm_metrics = reporte_juez.model_dump()
@@ -781,9 +792,17 @@ def process_session_pipeline(
         llm_metrics["crisis_control_score"] = int(
             reporte_juez.dimensiones.get("tecnicas_control", {}).get("score_100", 0)
         )
-        llm_metrics["bridging_detected"] = len(
-            reporte_juez.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
-        ) > 0
+        tecnicas_det = reporte_juez.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
+        frase_trans = reporte_juez.dimensiones.get("tecnicas_control", {}).get("frase_transicion")
+        llm_metrics["bridging_detected"] = (
+            any("bridg" in str(t).lower() for t in tecnicas_det) or bool(frase_trans)
+        )
+        llm_metrics["mensajes_cumplidos"] = list(
+            reporte_juez.dimensiones.get("alineacion_mensaje_clave", {}).get("mensajes_cumplidos", [])
+        )
+        llm_metrics["mensajes_omitidos"] = list(
+            reporte_juez.dimensiones.get("alineacion_mensaje_clave", {}).get("mensajes_omitidos", [])
+        )
         llm_metrics["infraccion_linea_roja"] = reporte_juez.infraccion_linea_roja
         llm_metrics["evidencia_linea_roja"] = reporte_juez.evidencia_linea_roja
         llm_metrics["reconocimiento_afectados"] = reporte_juez.reconocimiento_afectados
@@ -856,34 +875,78 @@ def process_session_pipeline(
             "title": active_scen.get("title") or "Incidente Corporativo y Vocería de Crisis",
             "context": contexto,
             "optics": active_scen.get("optics") or "empática, institucional y de control operativo",
+            "audience": active_scen.get("audience") or "opinión pública y medios de comunicación",
+            "difficulty": active_scen.get("difficulty") or "intermediate",
             "key_messages": mensajes,
             "red_lines": red_lines or ["No especular sobre causas no confirmadas ni evadir la responsabilidad institucional."]
         }
+
+        eye_contact_val = vision_summary.get("eye_contact_pct", vision_metrics.get("eye_contact_percentage", 0.0))
+        posture_val = vision_summary.get("shoulder_stability_score", vision_metrics.get("average_posture_score", 0.0))
+        sway_val = vision_summary.get("body_sway_std", 0.0)
+        ratio_fonacion_raw = float(audio_metrics.get("ratio_fonacion", 0.0))
+        ratio_fonacion_pct = round(ratio_fonacion_raw * 100.0 if ratio_fonacion_raw <= 1.0 else ratio_fonacion_raw, 1)
+
+        bandas_rubrica = evaluate_metric_bands(
+            {
+                "wpm_global": audio_metrics.get("wpm_global", 0.0),
+                "densidad_muletillas_pct": audio_metrics.get("densidad_muletillas_pct", 0.0),
+                "ratio_fonacion": ratio_fonacion_raw,
+                "score_diccion": score_diccion,
+                "eye_contact_pct": eye_contact_val,
+                "shoulder_stability_score": posture_val,
+                "body_sway_std": sway_val,
+                "victim_level": victim_level,
+            },
+            rubric_cfg=rubric_cfg,
+        )
+
         consolidated_intermediate = {
             "score_global": score_global,
             "transcript": transcript,
             "dialogue_turns": dialogue_turns_payload,
+            "bandas_rubrica": bandas_rubrica,
+            "dictamen_juez": llm_metrics,
             "evaluacion_areas": {
                 "expresion": {
                     "score": score_visual,
-                    "contacto_visual_pct": vision_summary.get("eye_contact_pct", vision_metrics.get("eye_contact_percentage", 0.0)),
-                    "postura_score": vision_summary.get("shoulder_stability_score", vision_metrics.get("average_posture_score", 0.0)),
+                    "contacto_visual_pct": eye_contact_val,
+                    "postura_score": posture_val,
                     "manos_visibles_pct": vision_summary.get("hands_visible_pct", 0.0),
                     "gesticulacion_activa_pct": vision_summary.get("hands_active_pct", 0.0),
-                    "balanceo_torso_std": vision_summary.get("body_sway_std", 0.0),
+                    "balanceo_torso_std": sway_val,
                 },
                 "tono_voz": {
                     "score": score_verbal,
                     "wpm": audio_metrics.get("wpm_global", 0),
-                    "muletillas_count": len(audio_metrics.get("muletillas_detectadas", []))
+                    "wpm_global": audio_metrics.get("wpm_global", 0),
+                    "ratio_fonacion_pct": ratio_fonacion_pct,
+                    "pausas_vacilacion": int(audio_metrics.get("pausas_vacilacion", 0)),
+                    "pausas_prolongadas": int(audio_metrics.get("pausas_prolongadas", 0)),
+                    "densidad_muletillas_pct": float(audio_metrics.get("densidad_muletillas_pct", 0.0)),
+                    "muletillas_count": len(audio_metrics.get("muletillas_detectadas", [])),
+                    "score_diccion_asr": score_diccion,
                 },
                 "contenido": {
                     "score": score_estrategico,
-                    "adherencia_mensajes": llm_metrics.get("key_message_adherence_score", 0)
+                    "puntaje_juez_sin_truncar": float(reporte_juez.puntaje_global_100),
+                    "truncado_por_linea_roja": bool(
+                        reporte_juez.infraccion_linea_roja
+                        and float(reporte_juez.puntaje_global_100) > score_estrategico
+                    ),
+                    "adherencia_mensajes": llm_metrics.get("key_message_adherence_score", 0),
+                    "adherencia_mensajes_score": llm_metrics.get("key_message_adherence_score", 0),
+                    "control_crisis_score": llm_metrics.get("crisis_control_score", 0),
+                    "bridging_detectado": llm_metrics.get("bridging_detected", False),
+                    "tecnicas_detectadas": list(tecnicas_det),
                 },
                 "empatia": {
                     "score": score_empatia,
-                    "bridging_detectado": llm_metrics.get("bridging_detected", False)
+                    "bridging_detectado": llm_metrics.get("bridging_detected", False),
+                    "reconocimiento_afectados_nivel": victim_level,
+                    "reconocimiento_afectados_criterio": (
+                        rec_afectados.get("criterio", "") if isinstance(rec_afectados, dict) else ""
+                    ),
                 }
             }
         }

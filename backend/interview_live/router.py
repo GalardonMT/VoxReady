@@ -244,6 +244,7 @@ def create_interview_live_router(
             audio_bytes=audio_bytes,
             mime_type=content_type,
             previous_turns=prior_turns,
+            current_base_sequence_no=baseSequenceNo,
         )
 
         await asyncio.to_thread(

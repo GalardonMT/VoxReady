@@ -423,3 +423,187 @@ def test_remux_webm_for_seeking_uses_lossless_copy(tmp_path, monkeypatch):
     ok = remux_webm_for_seeking(str(src), str(dst))
     assert ok is True
     assert "-c" in seen_cmd and "copy" in seen_cmd and "webm" in seen_cmd
+
+
+def test_end_to_end_consistency_judge_subfields_trigger_reason_and_visum_payload():
+    import json
+    from core.llm_judge import LLMJudge
+    from core.narrative_generator import compute_performance_tier, generate_visum_report
+    from core.report_builder import evaluate_metric_bands
+    from core.schemas import InformeVisumResponse
+
+    # Simular filas reales de dbo.session_turn donde followup_trigger_reason vive en el turno base padre
+    turns_sql_shape = [
+        {
+            "turnId": "turn-base-1",
+            "turnIndex": 1,
+            "baseSequenceNo": 1,
+            "turnKind": "base",
+            "questionText": "¿Hubo alertas previas ignoradas?",
+            "transcript": "Nuestra prioridad son los vecinos.",
+            "followup_trigger_reason": "flanco_linea_roja",
+            "durationSeconds": 12.4,
+        },
+        {
+            "turnId": "turn-fu-1",
+            "parentTurnId": "turn-base-1",
+            "turnIndex": 2,
+            "baseSequenceNo": 1,
+            "turnKind": "follow_up",
+            "questionText": "¿Confirma o descarta que existían reportes previos?",
+            "transcript": "Ese punto está bajo peritaje independiente; lo confirmado hoy es la atención a familias.",
+            "triggerReason": None,
+            "durationSeconds": 16.8,
+        },
+    ]
+
+    dialogue_txt = format_interview_dialogue(turns_sql_shape)
+    assert "Motivo detectado en vivo: flanco_linea_roja" in dialogue_txt
+
+    judge = LLMJudge(api_key="fake-key", model="gemini-3.5-flash-lite")
+    mock_eval = EvaluacionLLMResponse(
+        evaluacion_dimensiones=EvaluacionDimensiones(
+            pertinencia_respuesta=DimensionScore(nivel=3, criterio="Rectificó en contrapregunta", evidencia_textual="[Turno 2] peritaje"),
+            tecnicas_control=TecnicasControlScore(
+                nivel=4,
+                criterio="Bridging válido en turno 2",
+                evidencia_textual="lo confirmado hoy es",
+                tecnicas_detectadas=["Bridging", "Flagging"],
+                frase_transicion="lo confirmado hoy es la atención a familias",
+            ),
+            alineacion_mensaje_clave=MensajeClaveScore(
+                nivel=4,
+                criterio="Cumplió mensaje central",
+                evidencia_textual="atención a familias",
+                mensajes_cumplidos=["Atención inmediata a familias"],
+                mensajes_omitidos=["Plazo de restablecimiento"],
+            ),
+            capacidad_sintesis=DimensionScore(nivel=4, criterio="Conciso"),
+            claridad_mensaje=DimensionScore(nivel=4, criterio="Claro"),
+            consistencia_institucional=DimensionScore(nivel=5, criterio="Sin especular"),
+            asertividad_hostilidad=DimensionScore(nivel=4, criterio="Sereno"),
+        ),
+        feedback_pedagogico=FeedbackPedagogico(
+            fortaleza_principal="Delimitación efectiva en la contrapregunta",
+            brecha_critica="Omitió el plazo de restablecimiento",
+            recomendacion_accionable="Incluir horizonte temporal verificado",
+        ),
+        infraccion_linea_roja=False,
+        evidencia_linea_roja=None,
+        reconocimiento_afectados=DimensionScore(nivel=4, criterio="Priorizó familias"),
+    )
+    mock_completion = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.parsed = mock_eval
+    mock_completion.choices = [mock_choice]
+
+    with patch.object(judge.client.beta.chat.completions, "parse", return_value=mock_completion):
+        judge_dict = judge.evaluate_transcript(
+            transcript=dialogue_txt,
+            crisis_context="Contingencia en red sanitaria",
+            key_messages=["Atención inmediata a familias", "Plazo de restablecimiento"],
+            question=turns_sql_shape[0]["questionText"],
+            red_lines=["No admitir negligencia sin peritaje"],
+        )
+
+    assert judge_dict["bridging_detected"] is True
+    assert judge_dict["dimensiones"]["tecnicas_control"]["tecnicas_detectadas"] == ["bridging", "flagging"]
+    assert judge_dict["dimensiones"]["alineacion_mensaje_clave"]["mensajes_omitidos"] == ["Plazo de restablecimiento"]
+    assert judge_dict["dimensiones"]["consistencia_institucional"]["nivel"] == 5
+
+    # Verificar que generate_visum_report inyecte dictamen_juez_contenido, bandas_rubrica y motivo_contrapregunta_ia
+    bandas = evaluate_metric_bands({"wpm_global": 135.0, "eye_contact_pct": 82.0, "victim_level": 4})
+    mock_visum_parsed = InformeVisumResponse(
+        sintesis_ejecutiva={
+            "diagnostico_general": "Desempeño sólido con rectificación oportuna ante contrapregunta.",
+            "fortaleza_principal": "Delimitación ante presión de línea roja.",
+            "foco_desarrollo": "Incorporar plazos operativos verificados.",
+            "continuidad_recomendada": "Practicar nivel difícil.",
+        },
+        desempeno_observado={
+            "evaluacion_general": "Gestionó con serenidad la contrapregunta del turno 2.",
+            "fortalezas": ["Buen contacto visual", "Bridging legítimo", "Empatía hacia familias"],
+            "oportunidades_desarrollo": ["Explicitar plazo de restablecimiento"],
+            "formula_practica_recomendada": "1) Reconocer impacto -> 2) Certezas -> 3) Plazo de acción.",
+        },
+        hallazgos_transversales=[
+            {"prioridad": "Conducción estratégica", "descripcion": "Consolidar todos los mensajes clave desde el turno base."}
+        ],
+        recomendaciones_proximas_vocerias=["Responder y delimitar desde la primera intervención."],
+        consideracion_final="La disciplina comunicacional se consolida entrenando.",
+        observacion_senal_cruzada="El contacto visual óptimo (82%) reforzó la solvencia verbal del cierre.",
+    )
+    fake_visum_client = MagicMock()
+    fake_visum_comp = MagicMock()
+    fake_visum_comp.choices = [MagicMock(message=MagicMock(parsed=mock_visum_parsed))]
+    fake_visum_client.beta.chat.completions.parse.return_value = fake_visum_comp
+
+    visum_out = generate_visum_report(
+        client=fake_visum_client,
+        model_name="gemini-3.5-flash-lite",
+        scenario_info={
+            "title": "Rotura de matriz",
+            "context": "Contingencia sanitaria",
+            "optics": "empática",
+            "audience": "comunidad",
+            "difficulty": "hard",
+            "key_messages": ["Atención inmediata a familias", "Plazo de restablecimiento"],
+            "red_lines": ["No admitir negligencia sin peritaje"],
+        },
+        consolidated_json={
+            "score_global": 81.5,
+            "transcript": dialogue_txt,
+            "dialogue_turns": turns_sql_shape,
+            "bandas_rubrica": bandas,
+            "dictamen_juez": judge_dict,
+            "evaluacion_areas": {
+                "expresion": {"score": 82.0, "contacto_visual_pct": 82.0},
+                "tono_voz": {"score": 84.0, "wpm_global": 135.0, "pausas_prolongadas": 0},
+                "contenido": {"score": 78.0, "bridging_detectado": True},
+                "empatia": {"score": 80.0, "reconocimiento_afectados_nivel": 4},
+            },
+        },
+    )
+
+    sent_user_msg = fake_visum_client.beta.chat.completions.parse.call_args[1]["messages"][1]["content"]
+    sent_json_str = sent_user_msg.split("\n\n", 1)[1]
+    sent_payload = json.loads(sent_json_str)
+    assert sent_payload["metricas_consolidadas"]["tramo_desempeno"] == "solido_sobresaliente"
+    assert sent_payload["bandas_rubrica"]["voice.wpm"] == "optimal"
+    assert sent_payload["dictamen_juez_contenido"]["mensajes_omitidos"] == ["Plazo de restablecimiento"]
+    assert sent_payload["dialogo_por_turnos"][1]["motivo_contrapregunta_ia"] == "flanco_linea_roja"
+
+    cleaned = sanitize_report_json(
+        session_id="s-consistencia",
+        overall_score=82,
+        area_scores={"expression": 82, "voice": 84, "coherence": 78, "empathy": 80},
+        visum_narrative=visum_out,
+        judge_metrics=judge_dict,
+        transcript=dialogue_txt,
+        dialogue_turns=turns_sql_shape,
+    )
+    assert cleaned["metrics"]["judge"]["dimensiones"]["consistenciaInstitucional"]["nivel"] == 5
+    assert cleaned["metrics"]["judge"]["dimensiones"]["tecnicasControl"]["tecnicasDetectadas"] == ["bridging", "flagging"]
+    assert cleaned["metrics"]["judge"]["dimensiones"]["alineacionMensajeClave"]["mensajesOmitidos"] == ["Plazo de restablecimiento"]
+
+    # Verificar tramo crítico y fallback determinista ante línea roja vulnerada si cae la API
+    assert compute_performance_tier(84.0, True) == "critico_o_linea_roja"
+    failing_client = MagicMock()
+    failing_client.beta.chat.completions.parse.side_effect = RuntimeError("API down")
+    failing_client.chat.completions.create.side_effect = RuntimeError("API down")
+    fb_visum = generate_visum_report(
+        client=failing_client,
+        model_name="gemini-3.5-flash-lite",
+        scenario_info={"title": "Crisis"},
+        consolidated_json={
+            "score_global": 42.0,
+            "dictamen_juez": {
+                "infraccion_linea_roja": True,
+                "evidencia_linea_roja": "Admitió culpa sin peritaje",
+                "feedback": {"brecha_critica": "Vulneró línea roja"},
+            },
+        },
+    )
+    assert isinstance(fb_visum["hallazgos_transversales"], list)
+    assert fb_visum["hallazgos_transversales"][0]["prioridad"] == "Delimitación institucional"
+    assert "línea roja" in fb_visum["sintesis_ejecutiva"]["diagnostico_general"].lower()
