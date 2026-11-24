@@ -1,0 +1,98 @@
+# Barras de navegación por rol
+
+## Fase 1: preparación completada
+
+- Fecha: 24 de noviembre de 2026.
+- Rama: `feat/barra-navegacion-roles`.
+- Base: `origin/main`, actualizada mediante `git fetch origin main`.
+- Commit base: `d03f7da47512c22c4d825ee7a2912ab26c6fba33` (merge de PR #19).
+- Árbol de trabajo limpio antes de crear la rama y después de las comprobaciones.
+- Esta fase registra la base y el alcance; la implementación visual comienza en la fase 2.
+
+## Diseño acordado
+
+Conservar el logo real y la paleta de VoxReady. Usar iconos ilustrativos consistentes,
+selección con borde azul y fondo tenue, navegación centrada y separación uniforme.
+El usuario y el botón «Cerrar sesión» se ubican a la derecha.
+Las imágenes aprobadas son referencias visuales; el logo del proyecto es la fuente final.
+
+| Rol | Navegación acordada | Identificación junto al logo |
+| --- | --- | --- |
+| Configurador maestro | Panel Maestro · Evaluación ▾ · Contenidos ▾ · Clientes | Configurador maestro |
+| Cliente | Panel del Cliente · Voceros · Escenarios · Actividad | Nombre del cliente, con alternativa «Cliente» |
+| Vocero | Inicio · Catálogo · Mi Progreso · Microlecciones | Solo el logo |
+
+| Menú de maestro | Pantalla existente | Descripción propuesta |
+| --- | --- | --- |
+| Evaluación: Editor de Rúbrica | `m2` | Define criterios de evaluación |
+| Evaluación: Editor de métricas | `m7` | Configura indicadores y pesos |
+| Evaluación: Cola de Etiquetado | `m3` | Revisa casos pendientes |
+| Contenidos: Catálogo de temas | `m4` | Explora temas y escenarios |
+| Contenidos: Editor de temas y escenarios | `m5` | Crea y ajusta contenidos |
+| Contenidos: Microlecciones | `m6` | Gestiona contenidos de aprendizaje |
+
+Panel Maestro conserva `m1` y Clientes conserva `m8`.
+Cada opción del desplegable tendrá icono a la izquierda, título y descripción corta.
+
+## Inspección de la base
+
+| Fuente | Hallazgo y consideración para implementar |
+| --- | --- |
+| `frontend/src/app/(master)/master/page.tsx` | Ocho opciones planas; navegación por estado. La cola respeta `NEXT_PUBLIC_LABELING_UI_ENABLED`. El editor de métricas permanece montado después de la primera visita. El editor de temas conserva la selección. |
+| `frontend/src/components/client-admin/ClientAdminHeader.tsx` | Cuatro opciones; nombre del cliente y cierre de sesión. Se usa también desde el detalle del vocero del cliente. |
+| `frontend/src/app/(spokesperson)/spokesperson/page.tsx` | Cuatro opciones. `handleHeaderNavigate` y `handleHeaderLogout` solicitan confirmación durante una práctica activa; deben seguir siendo los puntos de entrada. |
+| `frontend/src/app/globals.css` | `.vocero-nav-tabs` tiene `margin-left: auto` y `overflow-x: auto`; se oculta por debajo de 900 px. Las tres barras comparten clases. |
+| `frontend/tests/clientAdminCleanup.test.mjs` y `clientAdminScope.test.mjs` | Algunas aserciones buscan literalmente «Escenarios disponibles» y «Actividad y uso». Actualizarlas junto con los textos en fase 3, conservando las comprobaciones de alcance del rol. |
+
+Stack declarado: Next.js 16.4.6, React 19.2.8 y TypeScript.
+`lucide-react` ya está disponible para los iconos. El frontend exporta páginas estáticas.
+Entorno de comprobación: Node.js 24.13.0 y npm 11.6.2.
+
+## Criterios técnicos
+
+- Reutilizar una estructura de cabecera para la disposición y estilos comunes; mantener las decisiones de navegación y de sesión en cada rol.
+- Usar estilos acotados al nuevo componente, evitando que el contenedor con desplazamiento recorte los desplegables.
+- Conservar las variables de color existentes y los identificadores de pantalla.
+- Implementar los desplegables como controles de expansión: apertura por mouse y clic, `aria-expanded`, foco visible, acceso por Tab y cierre con Escape, al seleccionar una opción y al salir del menú. El menú debe permitir mover el puntero desde su botón hacia las opciones.
+- Resaltar el grupo que contiene la pantalla activa y distinguir la opción seleccionada.
+- Centrar el grupo respecto de la cabecera cuando haya espacio. En anchos pequeños, adaptar la distribución sin solapar marca, navegación y usuario, con acceso a todas las secciones.
+- Evitar nuevas dependencias para estos controles; respetar la preferencia de movimiento reducido.
+
+Se consultó Context7 para Next.js 16.4.5, la versión documentada más cercana disponible,
+y la documentación instalada de Next.js 16.4.6 según `frontend/AGENTS.md`:
+`01-app/03-api-reference/01-directives/use-client.md` y
+`01-app/01-getting-started/05-server-and-client-components.md`.
+La interacción se mantiene en componentes cliente; los estilos pueden encapsularse en CSS Modules.
+Referencias: [use client](https://nextjs.org/docs/app/api-reference/directives/use-client)
+y [CSS Modules](https://nextjs.org/docs/app/getting-started/css#css-modules).
+Para el flujo de rama y commits se aplicó la guía `ecc:git-workflow`.
+
+## Comprobaciones de la base
+
+Ejecutadas desde `frontend/`, antes de cambiar el código de la aplicación:
+
+| Comprobación | Resultado |
+| --- | --- |
+| `npm run build` | Correcta: compilación, TypeScript y exportación de páginas estáticas. |
+| `npm run test:routes` | 2 pruebas correctas. |
+| `npm run test:client-admin` | 10 pruebas correctas. |
+| `npm run test:client-scenarios` | 4 pruebas correctas. |
+| `npm run test:labeling` | 16 pruebas correctas. |
+| `npm run lint` | Falla preexistente: 36 errores y 12 advertencias. |
+
+Los errores de lint incluyen reglas de hooks en `AnalyzingView`, `InterviewerAvatar`,
+`LiveSessionView` y `AuthContext`, tipos `any` en servicios y `CoachReportView`,
+y una variable `module` en `clientSpokespersonsView.test.mjs`.
+Las pruebas emiten advertencias de Node sobre módulos sin tipo declarado.
+No se modificaron dependencias ni configuración para ocultar estos resultados.
+La inspección de esta fase fue de código y de las capturas aportadas; todavía no se ha
+realizado una comprobación visual de la aplicación en navegador.
+
+## Fases siguientes y commits
+
+1. **Fase 2 — Maestro:** crear la estructura compartida y los desplegables de Evaluación y Contenidos; incorporar iconos y descripciones; actualizar el distintivo. Verificar selección, navegación, condición de la cola y conservación de los editores. Commit propuesto: `feat(nav): agrupar la navegacion del maestro`.
+2. **Fase 3 — Cliente y vocero:** adoptar la estructura común, centrar las cuatro opciones, cambiar los textos aprobados y «Cerrar sesión» en los tres roles. Actualizar las aserciones afectadas. Verificar el detalle de voceros y la confirmación durante una práctica activa. Commit propuesto: `feat(nav): unificar las barras de cliente y vocero`.
+3. **Fase 4 — Verificación:** revisar mouse, clic, teclado, pantallas táctiles, anchos pequeños, nombres largos y aspecto de los tres roles. Ejecutar build, pruebas pertinentes y lint de archivos modificados; comparar el lint general con esta base. Registrar lo observado y corregir los problemas encontrados. Commit propuesto: `fix(nav): completar ajustes de accesibilidad y adaptacion` si hay correcciones, o `docs(nav): registrar la validacion final` si solo se documentan resultados.
+
+Una sola rama y un commit por fase. Este documento se actualizará con los resultados
+reales de cada fase; las tareas siguientes aún están pendientes.
