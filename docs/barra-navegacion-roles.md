@@ -118,10 +118,38 @@ No se repitió el lint general: sus fallos base siguen documentados en fase 1.
 Se aplicó `ecc:frontend-patterns` y se volvió a consultar Context7 para componentes cliente,
 CSS Modules y dimensiones de `next/image`, junto a la documentación instalada de Next.js.
 
+## Fase 3: cliente y vocero completados
+
+- Cliente y vocero adoptan `PlatformHeader`, con marca a la izquierda, navegación centrada y usuario y «Cerrar sesión» a la derecha.
+- `SectionNavigation` presenta cuatro botones con iconos de Lucide, separación uniforme y `aria-current` para la sección activa. A 600 px o menos usa dos columnas, con las cuatro secciones accesibles.
+- Cliente conserva el nombre de la organización o «Cliente» como alternativa y el avatar naranja. Los accesos se llaman Panel del Cliente, Voceros, Escenarios y Actividad.
+- Vocero conserva solo el logo a la izquierda. Sus accesos son Inicio, Catálogo, Mi Progreso y Microlecciones.
+- La cabecera reutilizada en el detalle de voceros del cliente mantiene Voceros activo y respeta los retornos a las secciones de `/admin`.
+- Las acciones de cabecera del vocero continúan pasando por `handleHeaderNavigate` y `handleHeaderLogout`. Durante `u4`, cambiar de sección, pulsar el logo o cerrar sesión solicita confirmación.
+- Se actualizaron las aserciones de cliente que dependían de los textos anteriores; se conservaron las comprobaciones de alcance del rol.
+
+Comprobaciones realizadas:
+
+| Comprobación | Resultado |
+| --- | --- |
+| `npm run build` | Correcta: compilación, TypeScript y exportación estática. |
+| ESLint de los componentes TSX y las pruebas modificadas o nuevas de esta fase | Correcto, sin errores ni advertencias. |
+| Rutas, alcance del cliente, escenarios de cliente, navegación del maestro y reglas/presentación de microlecciones | 28 pruebas correctas. |
+| `node --experimental-strip-types --test tests/spokespersonHeaderNavigation.test.mjs` | 4 pruebas correctas: interceptar las salidas durante una práctica, continuarla, confirmar su cancelación y navegar/cerrar sesión fuera de una práctica. |
+| Edge local con respuestas simuladas | Cuatro opciones y selección correctas en ambos roles; navegación centrada a 1600 px; cierre de sesión hacia login; detalle de vocero con Voceros activo y retorno a Escenarios. |
+| Capturas a 1600 × 900 y 375 × 900, cliente y vocero | Revisadas; botones de navegación visibles y dentro del ancho disponible. |
+
+La revisión en Edge empleó un perfil temporal y autenticación simulada; las peticiones de
+datos de la API se bloquearon. Las pruebas de protección durante una práctica invocan los
+manejadores reales de la página con estado controlado, sin montar captura de medios ni
+conectarse al backend. La grabación y la autenticación real no se validaron en esta fase.
+Se siguió la composición de componentes de `ecc:frontend-patterns`, la documentación
+instalada de Next.js y la consulta de Context7 sobre componentes cliente y CSS Modules.
+
 ## Seguimiento de fases y commits
 
 1. **Fase 2 — Maestro, completada:** estructura compartida y desplegables de Evaluación y Contenidos, iconos y descripciones y nuevo distintivo. Commit: `feat(nav): agrupar la navegacion del maestro`.
-2. **Fase 3 — Cliente y vocero:** adoptar la estructura común, centrar las cuatro opciones, cambiar los textos aprobados y «Cerrar sesión» en los tres roles. Actualizar las aserciones afectadas. Verificar el detalle de voceros y la confirmación durante una práctica activa. Commit propuesto: `feat(nav): unificar las barras de cliente y vocero`.
+2. **Fase 3 — Cliente y vocero, completada:** cabecera y navegación comunes, cuatro opciones centradas y textos aprobados. Verificados el detalle de voceros y la protección de prácticas activas. Commit: `feat(nav): unificar las barras de cliente y vocero`.
 3. **Fase 4 — Verificación:** revisar mouse, clic, teclado, pantallas táctiles, anchos pequeños, nombres largos y aspecto de los tres roles. Ejecutar build, pruebas pertinentes y lint de archivos modificados; comparar el lint general con esta base. Registrar lo observado y corregir los problemas encontrados. Commit propuesto: `fix(nav): completar ajustes de accesibilidad y adaptacion` si hay correcciones, o `docs(nav): registrar la validacion final` si solo se documentan resultados.
 
-Una sola rama y un commit por fase. Las fases 3 y 4 siguen pendientes.
+Una sola rama y un commit por fase. La fase 4 sigue pendiente.
