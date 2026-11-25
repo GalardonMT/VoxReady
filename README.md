@@ -62,7 +62,7 @@ Para facilitar el desarrollo local y el monitoreo de la infraestructura en Azure
 ```
 
 Opciones disponibles:
-1. **Iniciar Docker + Azure SQL:** Construye y levanta backend y frontend, con migraciones sobre Azure SQL.
+1. **Iniciar Docker + Azure SQL:** Construye y levanta backend y frontend sin ejecutar migraciones ni `init`.
 2. **Ver Logs del Worker:** Conecta con `az containerapp logs` para ver en tiempo real el procesamiento multimedia y de IA.
 3. **Ver Logs del Backend API:** Muestra las peticiones HTTP entrantes, creación de sesiones y firmas SAS.
 4. **Ver Logs de Visión:** Monitorea el análisis de fotogramas en `ca-vision-service`.
@@ -71,17 +71,18 @@ Opciones disponibles:
 
 ### Arranque con Docker Compose
 El flujo habitual usa Docker conectado a Azure SQL, Blob Storage y Service Bus.
-Consulta [DOCKER_AZURE.md](DOCKER_AZURE.md) para configurar, desplegar y verificar.
+Configura el archivo privado `.env` siguiendo `.env.example`.
 ```bash
-docker compose up --build -d --wait --wait-timeout 240
+docker compose up --build --no-deps -d --wait --wait-timeout 240 api client
 ```
 - **Frontend:** [http://localhost:3000/login/](http://localhost:3000/login/)
 - **Backend (API REST Docs):** [http://localhost:8000/docs](http://localhost:8000/docs)
 
-En PowerShell: `./docker.ps1 up`, `./docker.ps1 verify` y `./docker.ps1 test`.
+En PowerShell: `./docker.ps1 up` y `./docker.ps1 verify`.
 No requiere entornos virtuales ni una base de datos local.
-Para conservar Dev Auth en localhost, usa `./docker.ps1 up -LocalDevAuth`;
-el arranque predeterminado exige Microsoft Entra y desactiva Dev Auth.
+El arranque exige Microsoft Entra y desactiva Dev Auth. Para apagar y volver a
+encender sin reconstruir: `./docker.ps1 stop` y `./docker.ps1 start`.
+`init` queda reservado al perfil manual de mantenimiento y no se inicia con la aplicación.
 
 ---
 
@@ -89,28 +90,25 @@ el arranque predeterminado exige Microsoft Entra y desactiva Dev Auth.
 
 ### Prerrequisitos
 - **Docker Desktop** con motor Linux y Compose 2.20 o posterior.
-- **Compose 2.24.4 o posterior** si usas el modo Dev Auth local.
 - **`.env` local configurado** con las conexiones Azure y autenticación Microsoft Entra; no se incluye en Git.
 - **Azure CLI (`az`)** solo para consultar logs de Container Apps.
 
 ### 1. Iniciar la aplicación con Azure SQL
 ```bash
-docker compose up --build -d --wait --wait-timeout 240
+docker compose up --build --no-deps -d --wait --wait-timeout 240 api client
 ```
 Abre en tu navegador: [http://localhost:3000](http://localhost:3000).
-Si vas a usar el acceso de desarrollo local, inicia con
-`.\docker.ps1 up -LocalDevAuth` en vez del comando anterior.
-En ese modo, agrega `DEV_AUTH_TEST_EMAIL` al `.env` local con el correo de una
-cuenta activa ya preasignada en `app_user`; la API toma de Azure SQL su rol y
-empresa. Una cuenta desconocida no se registra automáticamente.
+El flujo de clientes y voceros usa exclusivamente Microsoft Entra. Una identidad
+sin perfil autorizado no obtiene acceso por iniciar sesión.
 
 ### 2. Verificar conexión y ejecutar pruebas
 ```powershell
 .\docker.ps1 verify
-.\docker.ps1 test
 ```
-Las pruebas de persistencia usan Azure SQL. El worker mantiene su despliegue
-actual en Azure; no se necesita una base local ni un entorno virtual.
+`verify` consulta configuración y metadatos, sin escribir ni crear contenedores
+auxiliares. Las pruebas de persistencia (`test`) y las cargas (`seed`) son
+operaciones separadas que pueden escribir: no forman parte del arranque habitual.
+El worker mantiene su despliegue actual en Azure.
 
 ---
 
@@ -132,8 +130,6 @@ SERVICE_BUS_CONNECTION_STRING="Endpoint=sb://sb-voxready-dev.servicebus.windows.
 BLOB_CONTAINER_NAME="recordings"
 SERVICE_BUS_QUEUE_NAME="analysis-queue"
 DEV_AUTH="false"
-# Solo para .\docker.ps1 up -LocalDevAuth; usa una cuenta preasignada en app_user
-DEV_AUTH_TEST_EMAIL="usuario-preasignado@example.invalid"
 CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestaticapps.net"
 ```
 
@@ -141,13 +137,32 @@ CORS_ORIGINS="http://localhost:3000,https://jolly-stone-0ead4710f.5.azurestatica
 
 ## 🧪 Ejecución de Pruebas
 
-Las pruebas habituales de backend y frontend se ejecutan dentro de Docker:
+Las pruebas de persistencia dentro de Docker pueden escribir en Azure SQL.
+No ejecutarlas como verificación habitual de la base real. La comprobación de
+configuración y metadatos, sin crear usuarios ni ejecutar migraciones, es:
 ```powershell
-.\docker.ps1 test
+.\docker.ps1 verify
 ```
 
-La API se verifica contra Azure SQL y los datos de prueba se revierten al finalizar.
-Los comandos individuales están en [DOCKER_AZURE.md](DOCKER_AZURE.md).
+## Preparación para producción
+
+Definir las URL HTTPS de frontend y API antes de publicar. Configurar
+`VOXREADY_DOCKER_API_URL`, `VOXREADY_DOCKER_REDIRECT_URI` y `CORS_ORIGINS` para
+ese destino; registrar la redirección exacta en Entra y reconstruir el frontend,
+porque sus variables públicas se fijan durante la compilación.
+
+Verificar en la base efectiva las migraciones definitivas
+`backend/migrations/001_access_identity.sql` y
+`backend/migrations/002_spokesperson_account_choice.sql`, sin repetirlas si ya
+están aplicadas. Los archivos `.down.sql` contienen sus reversiones condicionadas.
+Las migraciones requieren revisar recuperación y destino antes de ejecutarlas;
+no se aplican al encender Docker. El perfil `maintenance` y las operaciones
+`seed`/`test` deben mantenerse fuera del arranque habitual.
+
+Las cuentas existentes conservan su mecanismo de compatibilidad. Su vinculación
+individual con Entra requiere revisión segura; no se reasignan perfiles por correo.
+La suspensión bloquea las solicitudes protegidas; los enlaces SAS de grabaciones
+ya emitidos pueden seguir funcionando hasta su vencimiento.
 
 ---
 

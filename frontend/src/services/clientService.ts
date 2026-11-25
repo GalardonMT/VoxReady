@@ -20,6 +20,11 @@ export const clientService = {
       body: JSON.stringify(payload),
     });
   },
+  setStatus(clientId: string, status: 'active' | 'suspended') {
+    return apiFetch<{ id: string; status: 'active' | 'suspended' }>(`${base}/${encodeURIComponent(clientId)}/status`, {
+      method: 'PATCH', body: JSON.stringify({ status }),
+    });
+  },
   async spokespersons(clientId?: string): Promise<SpokespersonCandidate[]> {
     const params = new URLSearchParams();
     if (clientId) params.set('clientId', clientId);

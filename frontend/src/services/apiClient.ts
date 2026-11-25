@@ -27,6 +27,16 @@ export interface ProblemDetails {
   code?: string;
 }
 
+function detailMessage(detail: unknown): string {
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object') {
+    const item = detail as Record<string, unknown>;
+    const message = item.msg || item.message;
+    return typeof message === 'string' ? message : JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
 export class ApiError extends Error {
   constructor(public problem: ProblemDetails) {
     let msg: string;
@@ -34,17 +44,9 @@ export class ApiError extends Error {
     if (typeof detail === 'string') {
       msg = detail;
     } else if (Array.isArray(detail)) {
-      msg = detail
-        .map((item: any) => {
-          if (typeof item === 'string') return item;
-          if (item && typeof item === 'object') {
-            return item.msg || item.message || JSON.stringify(item);
-          }
-          return String(item);
-        })
-        .join(', ');
+      msg = detail.map(detailMessage).join(', ');
     } else if (detail && typeof detail === 'object') {
-      msg = (detail as any).msg || (detail as any).message || JSON.stringify(detail);
+      msg = detailMessage(detail);
     } else {
       msg = problem.title || 'Error en la petición';
     }
@@ -95,13 +97,13 @@ export async function getAuthToken(): Promise<string | null> {
 
   // 2. Try MSAL silent token renewal (if configured and user is signed in)
   try {
-    const { msalInstance, loginRequest, loginRedirectRequest, isAzureConfigured } = await import('./authConfig');
+    const { msalInstance, loginRequest, isAzureConfigured } = await import('./authConfig');
     if (isAzureConfigured) {
       const accounts = msalInstance.getAllAccounts();
       if (accounts.length > 0) {
         const response = await msalInstance.acquireTokenSilent({
           ...loginRequest,
-          account: accounts[0],
+          account: msalInstance.getActiveAccount() || accounts[0],
         });
         if (response.accessToken) {
           setAccessToken(response.accessToken);
@@ -121,30 +123,6 @@ export async function getAuthToken(): Promise<string | null> {
       } catch {
         // redirect will navigate away
       }
-    }
-  }
-
-  // 3. Fallback: if user is logged in as a demo/dev user, try dev token if available
-  const userJson = localStorage.getItem('voxready_user');
-  if (userJson) {
-    try {
-      const user = JSON.parse(userJson);
-      if (user.token) return user.token;
-      const email = user.email || 'vocero@demo.voxready.io';
-      const res = await fetch(`${API_BASE_URL}/dev/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.accessToken) {
-          setAccessToken(data.accessToken);
-          return data.accessToken;
-        }
-      }
-    } catch {
-      // Backend offline or dev token not enabled
     }
   }
 
@@ -193,6 +171,10 @@ export async function apiFetch<T>(
         status: response.status,
         detail: `HTTP status ${response.status} en ${endpoint}`
       };
+    }
+    if (response.status === 403 && response.headers.get('X-VoxReady-Access-Blocked') === 'company') {
+      clearAccessToken();
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('voxready:company-blocked'));
     }
     if (response.status === 401) {
       clearAccessToken();

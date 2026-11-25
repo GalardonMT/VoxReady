@@ -9,6 +9,16 @@ x-api-env: &api-env
   SQL_CONNECTION_STRING: ${SQL_CONNECTION_STRING:?Define SQL_CONNECTION_STRING en .env con la conexion ODBC de Azure SQL}
   ENVIRONMENT: production
   DEV_AUTH: "false"
+  VOXREADY_PENDING_ACCESS_ENABLED: ${VOXREADY_PENDING_ACCESS_ENABLED:-true}
+  VOXREADY_ENTRA_IDENTITY_ENABLED: ${VOXREADY_ENTRA_IDENTITY_ENABLED:-true}
+  VOXREADY_ENTRA_EMAIL_PROOF_CONFIRMED: ${VOXREADY_ENTRA_EMAIL_PROOF_CONFIRMED:-false}
+  VOXREADY_LEGACY_IDENTITY_REVIEW_CONFIRMED: ${VOXREADY_LEGACY_IDENTITY_REVIEW_CONFIRMED:-false}
+  ENTRA_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:?Define NEXT_PUBLIC_AZURE_TENANT_ID}
+  ENTRA_SPA_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:?Define NEXT_PUBLIC_AZURE_CLIENT_ID}
+  ENTRA_ISSUER: ${ENTRA_ISSUER:?Define ENTRA_ISSUER con el issuer del descubrimiento OIDC probado}
+  ENTRA_API_AUDIENCE: ${ENTRA_API_AUDIENCE:?Define ENTRA_API_AUDIENCE con el identificador de la API probada}
+  ENTRA_AUTHORITY: ${NEXT_PUBLIC_AZURE_AUTHORITY:?Define NEXT_PUBLIC_AZURE_AUTHORITY}
+  VOXREADY_LOCAL_ACCESS_DIAGNOSTICS_ENABLED: "false"
   JWKS_URL: ${JWKS_URL:?Define JWKS_URL en .env}
   JWT_ISSUER: ${JWT_ISSUER:?Define JWT_ISSUER en .env}
   JWT_AUDIENCE: ${JWT_AUDIENCE:?Define JWT_AUDIENCE en .env}
@@ -22,6 +32,8 @@ x-api-env: &api-env
 
 services:
   init:
+    # Solo se ejecuta expresamente; nunca al encender VoxReady.
+    profiles: ["maintenance"]
     image: voxready-api:${VOXREADY_IMAGE_TAG:-latest}
     build: *api-build
     environment:
@@ -38,9 +50,8 @@ services:
     environment: *api-env
     ports:
       - "${VOXREADY_API_PORT:-8000}:8000"
-    depends_on:
-      init:
-        condition: service_completed_successfully
+    # Verifica identidad/esquema con SELECT; no aplica migraciones ni seeds.
+    command: ["sh", "-c", "python scripts/verify_access_runtime.py && exec uvicorn main:app --host 0.0.0.0 --port 8000 --no-access-log"]
     restart: unless-stopped
 
   client:
@@ -78,9 +89,6 @@ services:
       ENVIRONMENT: development
       DEV_AUTH: "true"
       VOXREADY_TEST_AZURE_SQL: "1"
-    depends_on:
-      init:
-        condition: service_completed_successfully
 
   test-client:
     profiles: ["test"]

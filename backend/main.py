@@ -3,10 +3,11 @@ import json
 import logging
 import uuid
 import re
+import hashlib
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Literal
 from pydantic import Field, StringConstraints, field_validator
-from fastapi import FastAPI, HTTPException, Depends, Header, Query, Response
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
@@ -21,6 +22,8 @@ import spokesperson_store
 import microlessons as microlesson_store
 import metrics_store
 import client_store
+import pending_access
+import entra_access
 import client_scenarios as client_scenario_store
 import client_usage
 import master_dashboard_store
@@ -30,7 +33,7 @@ from labeling_api import create_labeling_router, LabelingProblem
 # Cargar variables de entorno locales si existen
 try:
     from dotenv import load_dotenv
-    load_dotenv(override=True)
+    load_dotenv(override=False)
     load_dotenv("../.env", override=False)
 except ImportError:
     pass
@@ -86,7 +89,7 @@ def _get_jwks_client() -> PyJWKClient | None:
         _jwks_client = PyJWKClient(JWKS_URL, cache_keys=True)
     return _jwks_client
 
-def verify_token(authorization: str = Header(None)):
+def _verify_identity_token(authorization: str = Header(None)):
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
@@ -144,6 +147,31 @@ def verify_token(authorization: str = Header(None)):
     except Exception as error:
         logger.warning("Falló la validación firmada del token de Microsoft Entra: %s", type(error).__name__)
         raise HTTPException(status_code=401, detail="Token de Microsoft Entra inválido.") from None
+
+
+def verify_token(authorization: str = Header(None)):
+    """Cada solicitud protegida consulta permisos actuales, incluso con un JWT vigente.
+
+    Los perfiles nuevos usan vínculos estables y validación estricta. Con el
+    esquema habilitado, el fallback histórico solo alcanza el conjunto legado.
+    """
+    claims = _verify_identity_token(authorization)
+    identity = None
+    if entra_access.enabled('VOXREADY_ENTRA_IDENTITY_ENABLED'):
+        try:
+            identity = entra_access.verify(authorization)
+        except HTTPException:
+            # La compatibilidad solo alcanzará el conjunto legado, sin mapear
+            # identidades ni permitir fallback hacia perfiles nuevos/vinculados.
+            pass
+    with master_store.database(SQL_CONN_STR) as cursor:
+        if identity:
+            profile_id = entra_access.mapped_profile(cursor, identity)
+            if profile_id:
+                claims = entra_access.BoundClaims(identity, profile_id)
+        profile = master_store.resolve_user(cursor, claims, allow_unassigned_master=True)
+        master_store.require_active_company(cursor, profile)
+    return claims
 
 
 # 4. Esquemas de petición
@@ -211,13 +239,13 @@ def sync_or_get_user(
             row = None
             if user_uuid:
                 cursor.execute(
-                    "SELECT id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
+                    "SELECT id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)" + entra_access.legacy_filter(),
                     (user_uuid,)
                 )
                 row = cursor.fetchone()
             if not row and clean_email:
                 cursor.execute(
-                    "SELECT TOP 2 id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE LOWER(LTRIM(RTRIM(email))) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
+                    "SELECT TOP 2 id, client_id, email, display_name, role, preferred_language FROM dbo.app_user WHERE LOWER(LTRIM(RTRIM(email))) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)" + entra_access.legacy_filter(),
                     (clean_email,)
                 )
                 matches = cursor.fetchall()
@@ -244,10 +272,35 @@ def sync_or_get_user(
 def health_check():
     return {"status": "healthy", "service": "backend-api"}
 
+
+def require_local_access_diagnostics(request: Request):
+    if (os.getenv('VOXREADY_LOCAL_ACCESS_DIAGNOSTICS_ENABLED') != 'true'
+            or request.client is None or request.client.host not in ('127.0.0.1','::1')):
+        raise HTTPException(404, 'No disponible.')
+
+
+@app.get('/health/access-database', dependencies=[Depends(require_local_access_diagnostics)])
+def access_database_probe(response: Response):
+    """Solo la API local autorizada: huella de destino efectivo, sin nombres ni datos."""
+    with master_store.database(SQL_CONN_STR) as cursor:
+        row = cursor.execute("SELECT CONVERT(nvarchar(128),SERVERPROPERTY('ServerName')),DB_NAME(),COL_LENGTH('dbo.pending_access','account_choice')").fetchone()
+    digest = hashlib.sha256(json.dumps([str(row[0]).lower(),str(row[1]).lower()]).encode()).hexdigest()
+    response.headers['Cache-Control'] = 'no-store'
+    return {'databaseFingerprint':digest,'accountChoiceSchemaAvailable':row[2] is not None}
+
 @app.get("/me")
 @app.get("/v1/me")
 def get_current_user_profile(user: dict = Depends(verify_token)):
     """Obtiene el perfil preasignado; rol y empresa provienen de Azure SQL."""
+    if isinstance(user, entra_access.BoundClaims):
+        with master_store.database(SQL_CONN_STR) as cursor:
+            cursor.execute('''SELECT id,client_id,email,display_name,role,preferred_language
+                FROM dbo.app_user WHERE id=? AND is_deleted=0''', user.profile_id)
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(403, 'El perfil vinculado no está disponible.')
+            return dict(zip(('userId', 'clientId', 'email', 'displayName', 'role', 'preferredLanguage'),
+                            (str(row[0]), str(row[1]) if row[1] else None, *row[2:])))
     user_id = user.get("oid") or user.get("sub", "")
     email = (
         user.get("email")
@@ -415,15 +468,6 @@ def create_session(payload: CreateSessionRequest, user: dict = Depends(verify_to
 @app.get("/v1/api/sessions/my")
 def list_my_sessions(status: str = "completed", user: dict = Depends(verify_token)):
     """Obtiene el historial de sesiones del usuario actual (por defecto solo finalizadas con reporte)"""
-    user_oid = user.get("oid") or user.get("sub") or user.get("user_id") or user.get("userId")
-    user_email = (
-        user.get("email")
-        or user.get("preferred_username")
-        or user.get("upn")
-        or user.get("unique_name", "")
-    )
-    client_claim = user.get("clientId") or user.get("client_id") or user.get("tid")
-    DEFAULT_USER_ID = "4CC52B91-3A9C-5659-8363-4F069CC39F9B"
 
     sessions_list = []
 
@@ -433,25 +477,8 @@ def list_my_sessions(status: str = "completed", user: dict = Depends(verify_toke
             with pyodbc.connect(conn_str, timeout=10) as conn:
                 cur = conn.cursor()
 
-                # Resolver id en app_user si es posible
-                user_db_id = None
-                if user_oid and _safe_uuid(user_oid):
-                    cur.execute(
-                        "SELECT id FROM app_user WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
-                        _safe_uuid(user_oid)
-                    )
-                    u_row = cur.fetchone()
-                    if u_row:
-                        user_db_id = u_row[0]
-
-                if not user_db_id and user_email:
-                    cur.execute(
-                        "SELECT id FROM app_user WHERE LOWER(email) = LOWER(?) AND (is_deleted IS NULL OR is_deleted = 0)",
-                        user_email.strip()
-                    )
-                    u_row = cur.fetchone()
-                    if u_row:
-                        user_db_id = u_row[0]
+                profile = master_store.resolve_user(cur, user, allow_unassigned_master=True)
+                master_store.require_active_company(cur, profile)
 
                 # Construir consulta flexible sobre sesiones completadas o con reporte asociado
                 query = """
@@ -476,13 +503,12 @@ def list_my_sessions(status: str = "completed", user: dict = Depends(verify_toke
                     query += " AND s.status = ?"
                     params.append(status)
 
-                # Si hay usuario identificado, filtrar estrictamente por su ID
-                if user_db_id:
-                    query += " AND s.user_id = ?"
-                    params.append(user_db_id)
-                elif client_claim and _safe_uuid(client_claim):
+                if profile['role'] == 'spokesperson':
+                    query += " AND s.user_id = ? AND s.client_id = ?"
+                    params.extend((profile['id'], profile['client_id']))
+                elif profile['role'] == 'client_admin':
                     query += " AND s.client_id = ?"
-                    params.append(_safe_uuid(client_claim))
+                    params.append(profile['client_id'])
 
                 query += " ORDER BY s.created_at DESC"
 
@@ -511,27 +537,12 @@ def list_my_sessions(status: str = "completed", user: dict = Depends(verify_toke
                         "overall_score": score_val,
                         "hasReport": bool(row[6] or row[4] == "completed"),
                     })
-        except Exception as e:
-            logger.warning(f"Aviso al listar sesiones de Azure SQL: {e}")
-
-    # Fallback defensivo si no hay registros o BD desconectada
-    if not sessions_list:
-        sessions_list = [
-            {
-                "sessionId": "session-crisis-001",
-                "session_id": "session-crisis-001",
-                "scenarioId": "crisis-voceria-01",
-                "scenario_id": "crisis-voceria-01",
-                "scenarioTitle": "Retiro Masivo de Alimentos Infantiles",
-                "scenario_title": "Retiro Masivo de Alimentos Infantiles",
-                "createdAt": datetime.now(timezone.utc).isoformat(),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "status": "completed",
-                "overallScore": 84,
-                "overall_score": 84,
-                "hasReport": True,
-            }
-        ]
+        except HTTPException:
+            raise
+        except pyodbc.Error:
+            raise HTTPException(503, 'No se pudo consultar el historial de sesiones.') from None
+    else:
+        raise HTTPException(503, 'Azure SQL no está configurado.')
 
     return sessions_list
 
@@ -1349,6 +1360,19 @@ def master_clients(
         return {"items": items, "total": len(items)}
 
 
+class ClientStatusRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    status: Literal['active', 'suspended']
+
+
+@app.patch('/api/master/clients/{client_id}/status')
+@app.patch('/v1/api/master/clients/{client_id}/status')
+def master_client_status(client_id: uuid.UUID, payload: ClientStatusRequest, user: dict = Depends(verify_token)):
+    with master_store.database(SQL_CONN_STR) as cursor:
+        master_store.resolve_user(cursor, user, master=True)
+        return client_store.set_status(cursor, client_id, payload.status)
+
+
 @app.post('/api/master/clients', status_code=201)
 @app.post('/v1/api/master/clients', status_code=201)
 def master_create_client(payload: MasterClientRequest, user: dict = Depends(verify_token)):
@@ -1987,6 +2011,14 @@ def _issue_labeling_recording_url(evidence: dict, expires_at: datetime) -> str:
 
 def _resolve_labeling_master(cursor, claims):
     return master_store.resolve_user(cursor, claims, master=True)
+
+
+_pending_access_router = pending_access.create_router(
+    verify_token_dependency=verify_token,
+    database_factory=lambda: master_store.database(SQL_CONN_STR),
+)
+app.include_router(_pending_access_router)
+app.include_router(_pending_access_router, prefix='/v1')
 
 
 app.include_router(

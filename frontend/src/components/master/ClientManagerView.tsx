@@ -6,6 +6,7 @@ import { ApiError } from '../../services/apiClient';
 import { clientService } from '../../services/clientService';
 import { normalizeClient, validateClient } from '../../services/clientRules';
 import { ClientSpokespersonsView } from './ClientSpokespersonsView';
+import { PendingAccessView } from './PendingAccessView';
 import { useI18n } from '../../context/I18nContext';
 
 const statusLabels: Record<ClientStatus, string> = { active: 'Activo', suspended: 'Suspendido' };
@@ -92,6 +93,8 @@ export const ClientManagerView: React.FC = () => {
   const [formSpokespersonIds, setFormSpokespersonIds] = useState<string[]>([]);
   const [managedClient, setManagedClient] = useState<ClientInfo | null>(null);
   const [viewedClient, setViewedClient] = useState<ClientInfo | null>(null);
+  const [accessClient, setAccessClient] = useState<ClientInfo | null>(null);
+  const [changingStatus, setChangingStatus] = useState(false);
   const [manageCandidates, setManageCandidates] = useState<SpokespersonCandidate[]>([]);
   const [manageCandidatesLoading, setManageCandidatesLoading] = useState(false);
   const [manageCandidatesError, setManageCandidatesError] = useState('');
@@ -189,6 +192,23 @@ export const ClientManagerView: React.FC = () => {
     } finally { setManageSaving(false); }
   };
 
+  const changeStatus = async (client: ClientInfo) => {
+    const next = client.status === 'suspended' ? 'active' : 'suspended';
+    if (!window.confirm(next === 'suspended'
+      ? `Suspender “${client.name}” bloqueará las solicitudes protegidas de sus usuarios, incluso con una sesión iniciada. ¿Continuar?`
+      : `¿Reactivar “${client.name}”?`)) return;
+    setChangingStatus(true); setLoadError(''); setNotice('');
+    try {
+      const updated = await clientService.setStatus(client.id, next);
+      setClients(current => current.map(item => item.id === updated.id ? { ...item, status: updated.status } : item));
+      setNotice(next === 'suspended' ? 'Empresa suspendida.' : 'Empresa reactivada.');
+    } catch (cause) { setLoadError(errorMessage(cause, 'No se pudo cambiar el estado.')); }
+    finally { setChangingStatus(false); }
+  };
+
+  if (accessClient) {
+    return <PendingAccessView key={accessClient.id} client={accessClient} onBack={() => setAccessClient(null)} />;
+  }
   if (viewedClient) {
     return <ClientSpokespersonsView key={viewedClient.id} client={viewedClient} onBack={() => setViewedClient(null)} />;
   }
@@ -238,6 +258,8 @@ export const ClientManagerView: React.FC = () => {
           <thead><tr><th>Nombre</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{clients.map(client => <tr key={client.id}>
             <td>{client.name}</td><td><span className={`client-status ${client.status ?? 'active'}`}>{statusLabels[client.status ?? 'active']}</span></td>
             <td><div className="master-actions">
+              <button type="button" className="btn ghost" onClick={() => setAccessClient(client)}>Accesos pendientes</button>
+              <button type="button" className="btn ghost" disabled={changingStatus} onClick={() => void changeStatus(client)}>{client.status === 'suspended' ? 'Reactivar' : 'Suspender'}</button>
               <button type="button" className="btn ghost" onClick={() => openSpokespersons(client)}>{t.clientSpokespersons.view}</button>
               <button type="button" className="btn ghost" disabled={manageSaving} onClick={() => openManagement(client)}>Gestionar voceros</button>
             </div></td>

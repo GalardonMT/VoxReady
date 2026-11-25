@@ -153,3 +153,19 @@ LOCAL_DOCKER.md
 lab-worker/
 discurso_prueba_entrevista.txt
 indicaciones/
+
+# Material local de preparacion de accesos: fuera de esta entrega.
+/DOCKER_AZURE.md
+/docs/accesos-pendientes.md
+/docs/access-migration-record.json
+/docs/spokesperson-choice-migration-record.json
+/docs/voceros-cuenta-a-eleccion.md
+/backend/migrations/drafts/
+/backend/tests/test_access_runtime.py
+/backend/tests/test_entra_access.py
+/backend/tests/test_pending_access.py
+/frontend/tests/accessPreparation.test.mjs
+/scripts/apply_access_schema.py
+/scripts/apply_spokesperson_choice_schema.py
+/scripts/run_access_api.py
+/scripts/test_access_offline.py

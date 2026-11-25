@@ -38,7 +38,8 @@ export const en = {
   theme: "Light / dark mode",
   login: {
     title: "Sign in to VoxReady",
-    sub: "Select a test user or enter your credentials.",
+    sub: "Sign in through Microsoft Entra with your authorized VoxReady account.",
+    invitationHint: "If you received an invitation, reopen the original link to complete activation. Creating a Microsoft Entra account does not activate your VoxReady access by itself.",
     emailL: "Email address",
     emailPh: "you@company.com",
     passL: "Password",

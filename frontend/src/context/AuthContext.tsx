@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { UserSession } from '../types/api';
-import { TEST_USERS } from '../mock/mockData';
 import {
   loginRequest,
   loginRedirectRequest,
@@ -16,10 +15,9 @@ interface AuthContextType {
   user: UserSession | null;
   loading: boolean;
   authError: string | null;
-  loginWithEmail: (email: string) => Promise<boolean>;
   loginWithAzure: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
   logout: () => void;
-  testUsers: UserSession[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -64,44 +62,12 @@ async function profileForToken(token: string): Promise<UserSession> {
   };
 }
 
-async function authenticateDevelopmentUser(email: string): Promise<UserSession> {
-  const tokenResponse = await fetch(`${API_BASE_URL}/dev/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: email.trim() }),
-  });
-  if (!tokenResponse.ok) {
-    throw new Error(await responseDetail(tokenResponse, `No se pudo iniciar sesión (${tokenResponse.status}).`));
-  }
-  const body = await tokenResponse.json() as { accessToken?: string };
-  if (!body.accessToken) throw new Error('La API no entregó un token de desarrollo.');
-  setAccessToken(body.accessToken);
-  try {
-    return await profileForToken(body.accessToken);
-  } catch (error) {
-    clearAccessToken();
-    throw error;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Inner provider when MSAL IS available
 // ---------------------------------------------------------------------------
 function MsalAuthProvider({ children }: { children: React.ReactNode }) {
   const { instance, accounts, inProgress } = useMsal();
-  const [user, setUser] = useState<UserSession | null>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('voxready_user');
-      if (saved) {
-        try {
-          return JSON.parse(saved);
-        } catch {
-          /* ignore corrupt data */
-        }
-      }
-    }
-    return null;
-  });
+  const [user, setUser] = useState<UserSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
 
@@ -120,7 +86,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
    */
   const resolveAzureUser = useCallback(async () => {
     if (inProgress !== InteractionStatus.None) return;
-    const account = accounts[0];
+    const account = instance.getActiveAccount() || accounts[0];
     if (!account) {
       const storedToken = getAccessToken();
       if (storedToken) {
@@ -156,7 +122,7 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
       setAuthError(null);
       localStorage.setItem('voxready_user', JSON.stringify(session));
     } catch (err) {
-      console.warn('[Auth] Token acquisition or backend profile fetch failed:', err);
+      console.warn('[Auth] No se pudo validar la sesión.');
       setUser(null);
       clearAccessToken();
       localStorage.removeItem('voxready_user');
@@ -179,30 +145,29 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await instance.loginRedirect(loginRedirectRequest);
     } catch (err) {
-      console.warn('[Auth] loginRedirect failed or cancelled:', err);
+      console.warn('[Auth] No se pudo iniciar o se canceló la autenticación.');
       setLoading(false);
       throw err;
     }
   };
 
-  const loginWithEmail = async (email: string): Promise<boolean> => {
-    setLoading(true);
-    setAuthError(null);
-    try {
-      const session = await authenticateDevelopmentUser(email);
-      setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
-      return true;
-    } catch (error) {
-      setUser(null);
-      clearAccessToken();
-      localStorage.removeItem('voxready_user');
-      setAuthError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
+
+  useEffect(() => {
+    const blocked = () => {
+      setUser(null); clearAccessToken(); localStorage.removeItem('voxready_user');
+      setAuthError('Tu empresa está suspendida o no está disponible. Contacta al configurador maestro.');
+    };
+    const expired = () => {
+      setUser(null); clearAccessToken(); localStorage.removeItem('voxready_user');
+      setAuthError('Tu sesión terminó. Vuelve a ingresar mediante Microsoft Entra.');
+    };
+    window.addEventListener('voxready:company-blocked', blocked);
+    window.addEventListener('voxready:session-expired', expired);
+    return () => {
+      window.removeEventListener('voxready:company-blocked', blocked);
+      window.removeEventListener('voxready:session-expired', expired);
+    };
+  }, []);
 
   const logout = () => {
     setUser(null);
@@ -221,10 +186,9 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
         user,
         loading,
         authError,
-        loginWithEmail,
         loginWithAzure,
+        refreshProfile: resolveAzureUser,
         logout,
-        testUsers: TEST_USERS,
       }}
     >
       {children}
@@ -236,72 +200,14 @@ function MsalAuthProvider({ children }: { children: React.ReactNode }) {
 // Fallback provider when MSAL IS NOT available (no Azure config)
 // ---------------------------------------------------------------------------
 function FallbackAuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<UserSession | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [authError, setAuthError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const storedToken = getAccessToken();
-    if (!storedToken) {
-      localStorage.removeItem('voxready_user');
-      setLoading(false);
-      return;
-    }
-    profileForToken(storedToken).then(session => {
-      setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
-    }).catch(error => {
-      clearAccessToken();
-      localStorage.removeItem('voxready_user');
-      setAuthError(error instanceof Error ? error.message : 'No se pudo validar la sesión.');
-    }).finally(() => setLoading(false));
-  }, []);
-
-  const loginWithEmail = async (email: string): Promise<boolean> => {
-    setLoading(true);
-    setAuthError(null);
-    try {
-      const session = await authenticateDevelopmentUser(email);
-      setUser(session);
-      localStorage.setItem('voxready_user', JSON.stringify(session));
-      return true;
-    } catch (error) {
-      setUser(null);
-      clearAccessToken();
-      localStorage.removeItem('voxready_user');
-      setAuthError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loginWithAzure = async () => {
-    console.warn('[Auth] Azure not configured — loginWithAzure is a no-op');
-  };
-
   const logout = () => {
-    setUser(null);
-    setAuthError(null);
-    localStorage.removeItem('voxready_user');
-    clearAccessToken();
+    clearAccessToken(); localStorage.removeItem('voxready_user');
   };
-
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        authError,
-        loginWithEmail,
-        loginWithAzure,
-        logout,
-        testUsers: TEST_USERS,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
+  const loginWithAzure = async () => { throw new Error('Microsoft Entra no está configurado.'); };
+  return <AuthContext.Provider value={{ user: null, loading: false,
+    authError: 'Microsoft Entra no está configurado.', loginWithAzure, refreshProfile: async () => {}, logout }}>
+    {children}
+  </AuthContext.Provider>;
 }
 
 // ---------------------------------------------------------------------------

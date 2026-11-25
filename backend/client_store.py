@@ -132,6 +132,15 @@ def require_client(cursor, client_id, *, lock=False):
     return str(row[0]), row[1]
 
 
+def set_status(cursor, client_id, status):
+    require_client(cursor, client_id, lock=True)
+    cursor.execute('''UPDATE dbo.client SET status=?,updated_at=SYSUTCDATETIME()
+        WHERE id=? AND is_deleted=0''', status, str(client_id))
+    if cursor.rowcount != 1:
+        raise HTTPException(409, 'La empresa cambió. Recarga la lista.')
+    return {'id': str(client_id), 'status': status}
+
+
 def list_spokespersons(cursor, *, client_id=None, query=""):
     """Lista voceros para el selector maestro, incluidos los no elegibles."""
     target_id = None

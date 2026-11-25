@@ -29,6 +29,7 @@ COPY schemas ./schemas
 COPY services ./services
 COPY scripts ./scripts
 COPY interview_live ./interview_live
+COPY pending_access.py entra_access.py entra_directory.py ./
 
 FROM application AS test
 COPY tests ./tests

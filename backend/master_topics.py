@@ -4,6 +4,7 @@ import logging
 import uuid
 
 import pyodbc
+import entra_access
 from fastapi import HTTPException
 
 logger = logging.getLogger("uvicorn.error")
@@ -63,19 +64,27 @@ def rows(cursor):
 def resolve_user(cursor, claims, master=False, allow_unassigned_master=False):
     """El rol y cliente vienen de app_user, nunca del payload o de localStorage."""
     row = None
-    identity = claims.get("oid") or claims.get("sub")
+    if isinstance(claims, entra_access.BoundClaims):
+        cursor.execute('SELECT id,client_id,role FROM dbo.app_user WHERE id=? AND is_deleted=0', claims.profile_id)
+        row = cursor.fetchone()
+        if row is None:
+            raise HTTPException(403, 'El perfil vinculado no está disponible.')
+        identity = None
+        email = None
+    else:
+        identity = claims.get("oid") or claims.get("sub")
     try:
         identity = str(uuid.UUID(str(identity)))
     except (TypeError, ValueError, AttributeError):
         identity = None
     if identity:
-        cursor.execute("SELECT id,client_id,role FROM dbo.app_user WHERE id=? AND (is_deleted IS NULL OR is_deleted=0)", identity)
+        cursor.execute("SELECT id,client_id,role FROM dbo.app_user WHERE id=? AND (is_deleted IS NULL OR is_deleted=0)" + entra_access.legacy_filter(), identity)
         row = cursor.fetchone()
     email = (claims.get("email") or claims.get("preferred_username") or claims.get("upn") or claims.get("unique_name"))
     if not email and isinstance(claims.get("emails"), list) and claims["emails"]:
         email = claims["emails"][0]
     if row is None and email:
-        cursor.execute("SELECT id,client_id,role FROM dbo.app_user WHERE LOWER(email)=LOWER(?) AND (is_deleted IS NULL OR is_deleted=0)", email)
+        cursor.execute("SELECT id,client_id,role FROM dbo.app_user WHERE LOWER(LTRIM(RTRIM(email)))=LOWER(?) AND (is_deleted IS NULL OR is_deleted=0)" + entra_access.legacy_filter(), email.strip())
         matches = cursor.fetchall()
         if len(matches) == 1:
             row = matches[0]
@@ -87,6 +96,21 @@ def resolve_user(cursor, claims, master=False, allow_unassigned_master=False):
     if not master and not profile["client_id"] and not (allow_unassigned_master and profile["role"] == "master_config"):
         raise HTTPException(403, "El usuario no tiene una empresa asignada.")
     return profile
+
+
+def require_active_company(cursor, profile):
+    """Sin caché de autorización: una suspensión bloquea la siguiente solicitud."""
+    if profile['role'] not in ('master_config', 'client_admin', 'spokesperson'):
+        raise HTTPException(403, 'El usuario no tiene un rol válido.')
+    if profile['role'] == 'master_config':
+        return
+    cursor.execute("SELECT status,is_deleted FROM dbo.client WHERE id=?", profile['client_id'])
+    company = cursor.fetchone()
+    if company is None or company[0] != 'active' or company[1]:
+        raise HTTPException(
+            403, 'Tu empresa está suspendida o no está disponible. Contacta al configurador maestro.',
+            headers={'X-VoxReady-Access-Blocked': 'company'},
+        )
 
 
 def require_topic(cursor, topic_id, lock=False):

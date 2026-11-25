@@ -3,7 +3,6 @@
 import React, { useState } from 'react';
 import { useI18n } from '../../context/I18nContext';
 import { useAuth } from '../../context/AuthContext';
-import { UserSession } from '../../types/api';
 import { isAzureConfigured } from '../../services/authConfig';
 
 interface LoginViewProps {
@@ -12,23 +11,10 @@ interface LoginViewProps {
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const { t } = useI18n();
-  const { loginWithEmail, loginWithAzure, loading, authError, testUsers } = useAuth();
+  const { loginWithAzure, loading, authError } = useAuth();
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [azureLoading, setAzureLoading] = useState(false);
-
-  const handleSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setError('');
-    const success = await loginWithEmail(email);
-    if (success) {
-      if (onLoginSuccess) onLoginSuccess();
-    } else {
-      setError(t.login.err);
-    }
-  };
 
   const handleAzureLogin = async () => {
     setError('');
@@ -44,12 +30,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     } finally {
       setAzureLoading(false);
     }
-  };
-
-  const handleSelectTestUser = async (user: UserSession) => {
-    setError('');
-    const success = await loginWithEmail(user.email);
-    if (success && onLoginSuccess) onLoginSuccess();
   };
 
   if (loading || azureLoading) {
@@ -94,6 +74,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
               type="button"
               className="login-btn login-btn-azure"
               onClick={handleAzureLogin}
+              disabled={loading || azureLoading}
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -110,65 +91,16 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
               {t.login.azureBtn ?? 'Iniciar sesión con Microsoft'}
             </button>
 
-            <div className="login-divider">{t.login.dividerOr ?? 'o'}</div>
           </>
         )}
+        {!isAzureConfigured && <p className="login-err" role="alert">El ingreso con Microsoft Entra no está configurado. Contacta al configurador maestro.</p>}
+        <p className="legend">El registro y la recuperación de acceso se realizan en Microsoft Entra.</p>
 
-        {/* ---- Email / password credentials form ---- */}
-        <form onSubmit={(event) => void handleSubmit(event)}>
-          <div className="login-field">
-            <label>{t.login.emailL}</label>
-            <input
-              type="email"
-              className="login-input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t.login.emailPh}
-              autoComplete="username"
-            />
-          </div>
+        {(error || authError) && <p className="login-err" role="alert">{error || authError}</p>}
+        {(error || authError)?.includes('Usuario no registrado en VoxReady') && (
+          <p className="legend">{t.login.invitationHint}</p>
+        )}
 
-          <div className="login-field">
-            <label>{t.login.passL}</label>
-            <input
-              type="password"
-              className="login-input"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t.login.passPh}
-              autoComplete="current-password"
-            />
-          </div>
-
-          <button type="submit" className="login-btn">
-            {t.login.signIn}
-          </button>
-        </form>
-
-        {(error || authError) && <p className="login-err">{error || authError}</p>}
-
-        <div className="login-divider">{t.login.testL}</div>
-
-        {/* ---- Demo test users list ---- */}
-        <div>
-          {testUsers.map((user) => (
-            <button
-              key={user.userId}
-              type="button"
-              className="tu"
-              onClick={() => void handleSelectTestUser(user)}
-            >
-              <span className="tuava">{user.initials}</span>
-              <span className="tumeta">
-                <span className="tuname">{user.displayName}</span>
-                <span className="turole">
-                  {t.roles[user.role]} · {user.email}
-                </span>
-              </span>
-              <span className="tugo">→</span>
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   );

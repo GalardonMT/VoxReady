@@ -14,9 +14,9 @@ const authority = process.env.NEXT_PUBLIC_AZURE_AUTHORITY || `https://login.micr
 
 /**
  * Whether Azure auth is fully configured.
- * When false the app falls back to the demo/mock login flow.
+ * When false the sign-in screen reports missing Entra configuration.
  */
-export const isAzureConfigured = Boolean(tenantId && clientId);
+export const isAzureConfigured = Boolean(tenantId && clientId && apiScope.endsWith('/access_as_user'));
 
 let authorityHost = 'login.microsoftonline.com';
 try {
