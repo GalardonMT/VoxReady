@@ -193,12 +193,14 @@ class VisionClient:
 
         files = []
         file_handles = []
+        sent_names: List[str] = []
         try:
             for fp in frame_paths:
                 p = Path(fp)
                 if p.exists() and p.stat().st_size > 0:
                     fh = open(p, "rb")
                     file_handles.append(fh)
+                    sent_names.append(p.name)
                     files.append(("frames", (p.name, fh, "image/jpeg")))
 
             if not files:
@@ -220,6 +222,14 @@ class VisionClient:
                     if resp.status_code == 200:
                         data = resp.json()
                         summary = data.get("summary", {})
+                        raw_details = data.get("frame_details", [])
+                        if isinstance(raw_details, list) and len(raw_details) == len(sent_names):
+                            tagged_details = [
+                                ({"frame_name": fname, **d} if isinstance(d, dict) and "frame_name" not in d else d)
+                                for fname, d in zip(sent_names, raw_details)
+                            ]
+                        else:
+                            tagged_details = raw_details if isinstance(raw_details, list) else []
                         logger.info(f"Lote procesado exitosamente por ca-vision-service: {summary}")
                         return {
                             "summary": summary,
@@ -235,7 +245,7 @@ class VisionClient:
                             "hands_active_pct": summary.get("hands_active_pct", 0.0),
                             "body_sway_std": summary.get("body_sway_std", 0.0),
                             "shoulder_stability_score": summary.get("shoulder_stability_score", 100.0),
-                            "frame_details": data.get("frame_details", []),
+                            "frame_details": tagged_details,
                         }
                     else:
                         logger.warning(
@@ -420,6 +430,7 @@ class VisionClient:
                 "ladeo_cabeza_grados_promedio": avg_head_roll,
                 "estabilidad_balanceo_score": avg_posture_stability,
             },
+            "frame_details": valid_results,
         }
 
     def analyze_frames_with_requests(self, frame_paths: List[str], fps: float = 0.5) -> Dict[str, Any]:

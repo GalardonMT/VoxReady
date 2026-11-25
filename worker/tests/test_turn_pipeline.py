@@ -607,3 +607,226 @@ def test_end_to_end_consistency_judge_subfields_trigger_reason_and_visum_payload
     assert isinstance(fb_visum["hallazgos_transversales"], list)
     assert fb_visum["hallazgos_transversales"][0]["prioridad"] == "Delimitación institucional"
     assert "línea roja" in fb_visum["sintesis_ejecutiva"]["diagnostico_general"].lower()
+
+
+def test_three_layer_per_turn_impact_voice_vision_and_judge_coherence():
+    import json
+    from core.narrative_generator import generate_visum_report
+    from core.report_builder import compute_turn_vision_metrics
+    from core.schemas import EvaluacionTurno, InformeVisumResponse
+
+    # Capa B: verificar métricas vocales por turno (muletillas, pausas intra-turno y WPM individual)
+    turns_raw = [
+        {
+            "turn_index": 1,
+            "base_sequence_no": 1,
+            "turn_kind": "base",
+            "question_text": "¿Qué medidas tomaron?",
+            "transcript": "eh activamos brigadas ahora",
+            "start_offset_ms": 1000,
+            "end_offset_ms": 5000,
+            "audio_duration_sec": 4.0,
+            "speech_time_sec": 3.0,
+            "words": [
+                {"word": "eh", "start": 0.1, "end": 0.4, "confidence": 0.9},
+                {"word": "activamos", "start": 2.1, "end": 2.8, "confidence": 0.95},  # gap 1.7s -> prolonged pause
+                {"word": "brigadas", "start": 2.9, "end": 3.5, "confidence": 0.94},
+                {"word": "ahora", "start": 3.6, "end": 4.0, "confidence": 0.96},
+            ],
+        },
+        {
+            "turn_index": 2,
+            "base_sequence_no": 1,
+            "turn_kind": "follow_up",
+            "question_text": "¿Confirma falla humana?",
+            "transcript": "quizás hubo descuido interno",
+            "start_offset_ms": 6000,
+            "end_offset_ms": 9000,
+            "audio_duration_sec": 3.0,
+            "speech_time_sec": 2.4,
+            "words": [
+                {"word": "quizás", "start": 0.1, "end": 0.8, "confidence": 0.91},
+                {"word": "hubo", "start": 0.9, "end": 1.4, "confidence": 0.92},
+                {"word": "descuido", "start": 1.5, "end": 2.2, "confidence": 0.93},
+                {"word": "interno", "start": 2.3, "end": 3.0, "confidence": 0.95},
+            ],
+        },
+    ]
+    audio_agg = aggregate_turn_audio_results(turns_raw)
+    tam = audio_agg["turn_audio_metrics"]
+    assert tam[1]["wordCount"] == 4
+    assert tam[1]["prolongedPauses"] == 1
+    assert tam[1]["fillersCount"] == 1
+    assert tam[1]["fillers"] == ["eh"]
+    assert tam[2]["prolongedPauses"] == 0
+    assert tam[2]["fillersCount"] == 0
+
+    # Capa C: visión por turno sobre fotogramas submuestreados a 2 FPS (frame_00003=1250ms..frame_00018=8750ms)
+    frame_files = [
+        "frame_00003.jpg",  # 1250ms -> Turno 1
+        "frame_00006.jpg",  # 2750ms -> Turno 1
+        "frame_00009.jpg",  # 4250ms -> Turno 1
+        "frame_00014.jpg",  # 6750ms -> Turno 2
+        "frame_00017.jpg",  # 8250ms -> Turno 2
+    ]
+    vision_payload = {
+        "summary": {"shoulder_stability_score": 90.0},
+        "frame_details": [
+            {"valid": True, "eye_contact": True, "pose_detected": True, "shoulder_slope": 0.01, "hands_visible": True},
+            {"valid": True, "eye_contact": True, "pose_detected": True, "shoulder_slope": 0.01, "hands_visible": True},
+            {"valid": True, "eye_contact": True, "pose_detected": True, "shoulder_slope": 0.01, "hands_visible": False},
+            {"valid": True, "eye_contact": False, "pose_detected": True, "shoulder_slope": 0.03, "hands_visible": False},
+            {"valid": True, "eye_contact": False, "pose_detected": True, "shoulder_slope": 0.03, "hands_visible": False},
+        ],
+    }
+    tvm = compute_turn_vision_metrics(vision_payload, turns_raw, frame_files=frame_files, adaptive_fps=2.0)
+    assert tvm[1]["framesAnalyzed"] == 3
+    assert tvm[1]["eyeContactPct"] == 100.0
+    assert tvm[2]["framesAnalyzed"] == 2
+    assert tvm[2]["eyeContactPct"] == 0.0
+    assert tvm[2]["shoulderStabilityScore"] < tvm[1]["shoulderStabilityScore"]
+
+    # Capa A: si un turno reporta riesgo_linea_roja="infraccion", el Juez sincroniza infraccion_linea_roja=True y Nivel 1
+    judge = LLMJudgeService(api_key="fake-key", model="gemini-3.5-flash-lite")
+    mock_eval = EvaluacionLLMResponse(
+        evaluacion_dimensiones=EvaluacionDimensiones(
+            pertinencia_respuesta=DimensionScore(nivel=3, criterio="Respondió pero especuló"),
+            tecnicas_control=TecnicasControlScore(nivel=2, criterio="Sin puente sólido"),
+            alineacion_mensaje_clave=MensajeClaveScore(nivel=3, criterio="Parcial"),
+            capacidad_sintesis=DimensionScore(nivel=3, criterio="Breve"),
+            claridad_mensaje=DimensionScore(nivel=3, criterio="Claro"),
+            consistencia_institucional=DimensionScore(nivel=4, criterio="Inconsistente con turno 2"),
+            asertividad_hostilidad=DimensionScore(nivel=3, criterio="Neutro"),
+        ),
+        feedback_pedagogico=FeedbackPedagogico(
+            fortaleza_principal="Respuesta inicial directa",
+            brecha_critica="Especuló falla interna en contrapregunta",
+            recomendacion_accionable="Delimitar sin admitir hipótesis no peritadas",
+        ),
+        infraccion_linea_roja=False,  # omitido por error del LLM -> debe promoverse a True por Turno 2
+        evidencia_linea_roja=None,
+        reconocimiento_afectados=DimensionScore(nivel=3, criterio="Mención general"),
+        evaluacion_por_turno=[
+            EvaluacionTurno(
+                turn_index=1,
+                estado_pertinencia="responde",
+                impacto_turno="positivo",
+                mensajes_clave_usados=["Brigadas activadas"],
+                tecnica_control_usada="ninguna",
+                riesgo_linea_roja="ninguno",
+                observacion_breve="Informó acción inmediata.",
+            ),
+            EvaluacionTurno(
+                turn_index=2,
+                estado_pertinencia="responde",
+                impacto_turno="neutro",
+                mensajes_clave_usados=[],
+                tecnica_control_usada="ninguna",
+                riesgo_linea_roja="infraccion",
+                observacion_breve="Especuló sobre descuido interno prohibido por línea roja.",
+            ),
+        ],
+    )
+    mock_comp = MagicMock()
+    mock_comp.choices = [MagicMock(message=MagicMock(parsed=mock_eval))]
+    with patch.object(judge.client.beta.chat.completions, "parse", return_value=mock_comp):
+        rep = judge.evaluate_response(
+            pregunta_periodista=turns_raw[0]["question_text"],
+            mensajes_clave=["Brigadas activadas"],
+            contexto_crisis="Incidente",
+            transcripcion_vocero="...",
+            lineas_rojas=["No especular falla interna"],
+            interview_turns=[
+                {
+                    "turnIndex": 1,
+                    "baseSequenceNo": 1,
+                    "turnKind": "base",
+                    "questionText": turns_raw[0]["question_text"],
+                    "transcript": turns_raw[0]["transcript"],
+                },
+                {
+                    "turnIndex": 2,
+                    "baseSequenceNo": 1,
+                    "turnKind": "follow_up",
+                    "questionText": turns_raw[1]["question_text"],
+                    "transcript": turns_raw[1]["transcript"],
+                },
+            ],
+        )
+
+    assert rep.infraccion_linea_roja is True
+    assert rep.dimensiones["consistencia_institucional"]["nivel"] == 1
+    assert rep.evaluacion_por_turno[1]["impact"] == "riesgo"
+    assert rep.evaluacion_por_turno[1]["redLineRisk"] == "infraccion"
+
+    # Verificar propagación de las 3 capas hacia generate_visum_report
+    fake_visum_client = MagicMock()
+    fake_visum_comp = MagicMock()
+    fake_visum_comp.choices = [
+        MagicMock(
+            message=MagicMock(
+                parsed=InformeVisumResponse(
+                    sintesis_ejecutiva={
+                        "diagnostico_general": "Alerta por línea roja en turno 2.",
+                        "fortaleza_principal": "Apertura directa.",
+                        "foco_desarrollo": "Delimitación.",
+                        "continuidad_recomendada": "Reentrenar nivel intermedio.",
+                    },
+                    desempeno_observado={
+                        "evaluacion_general": "Cayó en especulación en la contrapregunta.",
+                        "fortalezas": ["Respuesta inicial clara"],
+                        "oportunidades_desarrollo": ["Corregir vulneración de línea roja"],
+                        "formula_practica_recomendada": "Delimitar peritaje -> Certezas.",
+                    },
+                    hallazgos_transversales=[
+                        {"prioridad": "Delimitación institucional", "descripcion": "No especular bajo presión."}
+                    ],
+                    recomendaciones_proximas_vocerias=["Sostener límites institucionales."],
+                    consideracion_final="Entrenar bajo presión.",
+                    observacion_senal_cruzada="En el turno 2 el contacto visual cayó de 100% a 0% al especular.",
+                )
+            )
+        )
+    ]
+    fake_visum_client.beta.chat.completions.parse.return_value = fake_visum_comp
+
+    enriched_turns = [
+        {
+            "turnIndex": 1,
+            "baseSequenceNo": 1,
+            "turnKind": "base",
+            "questionText": turns_raw[0]["question_text"],
+            "transcript": turns_raw[0]["transcript"],
+            "durationSeconds": 4.0,
+            "evaluation": {k: v for k, v in rep.evaluacion_por_turno[0].items() if k != "turnIndex"},
+            "voiceMetrics": tam[1],
+            "visionMetrics": tvm[1],
+        },
+        {
+            "turnIndex": 2,
+            "baseSequenceNo": 1,
+            "turnKind": "follow_up",
+            "questionText": turns_raw[1]["question_text"],
+            "transcript": turns_raw[1]["transcript"],
+            "durationSeconds": 3.0,
+            "evaluation": {k: v for k, v in rep.evaluacion_por_turno[1].items() if k != "turnIndex"},
+            "voiceMetrics": tam[2],
+            "visionMetrics": tvm[2],
+        },
+    ]
+    generate_visum_report(
+        client=fake_visum_client,
+        model_name="gemini-3.5-flash-lite",
+        scenario_info={"title": "Incidente"},
+        consolidated_json={
+            "score_global": 45.0,
+            "dialogue_turns": enriched_turns,
+            "dictamen_juez": rep.model_dump(),
+        },
+    )
+    visum_msg = fake_visum_client.beta.chat.completions.parse.call_args[1]["messages"][1]["content"]
+    visum_payload = json.loads(visum_msg.split("\n\n", 1)[1])
+    assert visum_payload["dialogo_por_turnos"][0]["voz_turno"]["fillersCount"] == 1
+    assert visum_payload["dialogo_por_turnos"][0]["vision_turno"]["eyeContactPct"] == 100.0
+    assert visum_payload["dialogo_por_turnos"][1]["vision_turno"]["eyeContactPct"] == 0.0
+    assert visum_payload["dialogo_por_turnos"][1]["evaluacion_turno"]["redLineRisk"] == "infraccion"

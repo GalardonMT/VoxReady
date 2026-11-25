@@ -34,9 +34,9 @@ PRINCIPIOS DE CONSISTENCIA Y FIDELIDAD ESTRICTA (REGLAS INQUEBRANTABLES):
    - Ritmo (WPM), ratio de fonación, pausas de vacilación/prolongadas, densidad de muletillas y dicción -> Control respiratorio/emocional, claridad expositiva y peso de las ideas.
    - Dimensiones del Juez (pertinencia, mensajes cumplidos/omitidos, técnicas de control, empatía verbal y líneas rojas) -> Disciplina informativa, sensibilidad hacia los afectados y conducción de agenda.
 4. REGLA ANTI-ALUCINACIÓN EN SEÑAL CRUZADA (`observacion_senal_cruzada`):
-   - Las métricas de visión y voz corresponden al desempeño agregado de la sesión (no a micro-eventos segundo a segundo), mientras que el diálogo muestra el texto exacto por turno.
-   - NUNCA inventes que el vocero hizo un gesto específico en una frase exacta (ej. prohibido inventar "desvió la mirada al decir X en el segundo 15").
-   - Redacta `observacion_senal_cruzada` contrastando de forma rigurosa la tendencia global medida en cámara y voz frente al contenido real de sus intervenciones (ej. sinergia entre postura estable y firmeza verbal, o disonancia entre buen ritmo vocal y evasión/transgresión en el contenido del Turno N).
+   - Apóyate estrictamente en las métricas globales y en los indicadores por turno (`evaluacion_turno`, `voz_turno` y `vision_turno` dentro de `dialogo_por_turnos` cuando estén presentes).
+   - Si `dialogo_por_turnos` incluye métricas por turno, PUEDES contrastar variaciones reales entre turnos (ej. caída de contacto visual o aumento de WPM/muletillas en una contrapregunta frente al turno base).
+   - NUNCA inventes microgestos en segundos o palabras específicas que no estén respaldados por los datos medidos del expediente.
 5. FÓRMULAS PRÁCTICAS VISUM (ELIGE Y ADAPTA AL ESCENARIO LA MÁS PERTINENTE A LA BRECHA PRINCIPAL):
    - Crisis operacional o con afectados -> Secuencia en 3 pasos adaptada al caso: 1) Reconocer el impacto humano/operativo -> 2) Explicar certezas verificadas sin especular -> 3) Detallar acciones concretas en curso.
    - Entrevista de alta complejidad técnica/regulatoria -> Fórmula de traducción pedagógica adaptada al caso: "Para que todas las personas lo entiendan con claridad, lo esencial aquí se resume en tres hechos..."
@@ -387,6 +387,9 @@ def generate_visum_report(
                         "duracion_respuesta_seg": t.get("durationSeconds"),
                         "periodista": t.get("questionText"),
                         "vocero": t.get("transcript"),
+                        **({"evaluacion_turno": t["evaluation"]} if t.get("evaluation") else {}),
+                        **({"voz_turno": t["voiceMetrics"]} if t.get("voiceMetrics") else {}),
+                        **({"vision_turno": t["visionMetrics"]} if t.get("visionMetrics") else {}),
                     }
                     for t in dialogue_turns
                 ]

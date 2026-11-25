@@ -26,6 +26,7 @@ try:
         compute_empathy_score,
         compute_governance_metrics,
         evaluate_metric_bands,
+        compute_turn_vision_metrics,
     )
     from core.scoring_rules import (
         WEIGHT_EXPRESSION,
@@ -55,6 +56,7 @@ except (ImportError, ValueError):
         compute_empathy_score,
         compute_governance_metrics,
         evaluate_metric_bands,
+        compute_turn_vision_metrics,
     )
     from worker.config.scoring_rules import (
         WEIGHT_EXPRESSION,
@@ -616,28 +618,40 @@ def process_session_pipeline(
             logger.info(f"Consolidando acústica y transcripción desde {len(db_turns)} turnos persistidos...")
             audio_res = aggregate_turn_audio_results(db_turns, rubric_cfg=rubric_cfg)
             turn_eff_durs = audio_res.get("turn_effective_durations", {})
+            turn_audio_map = audio_res.get("turn_audio_metrics", {})
+            adaptive_fps_used = 1.0 if (master_video_duration is not None and master_video_duration > 300.0) else 2.0
+            turn_vision_map = compute_turn_vision_metrics(
+                vision_metrics=vision_metrics,
+                turns=db_turns,
+                frame_files=frame_files,
+                adaptive_fps=adaptive_fps_used,
+            )
             for t in db_turns:
+                t_idx_val = int(t["turn_index"])
                 resolved_trigger = (
                     resolve_turn_followup_reason(t, db_turns)
                     if t.get("turn_kind") == "follow_up"
                     else t.get("followup_trigger_reason")
                 )
-                dialogue_turns_payload.append(
-                    {
-                        "turnId": t["turn_id"],
-                        "turnIndex": t["turn_index"],
-                        "baseSequenceNo": t["base_sequence_no"],
-                        "turnKind": t["turn_kind"],
-                        "parentTurnId": t.get("parent_turn_id"),
-                        "questionText": t["question_text"],
-                        "transcript": (t.get("transcript") or "").strip(),
-                        "triggerReason": resolved_trigger,
-                        "startOffsetMs": t.get("start_offset_ms"),
-                        "endOffsetMs": t.get("end_offset_ms"),
-                        "durationSeconds": turn_eff_durs.get(t["turn_index"], t.get("audio_duration_sec", 0.0)),
-                        "asrStatus": t.get("asr_status", "completed"),
-                    }
-                )
+                turn_item: Dict[str, Any] = {
+                    "turnId": t["turn_id"],
+                    "turnIndex": t_idx_val,
+                    "baseSequenceNo": t["base_sequence_no"],
+                    "turnKind": t["turn_kind"],
+                    "parentTurnId": t.get("parent_turn_id"),
+                    "questionText": t["question_text"],
+                    "transcript": (t.get("transcript") or "").strip(),
+                    "triggerReason": resolved_trigger,
+                    "startOffsetMs": t.get("start_offset_ms"),
+                    "endOffsetMs": t.get("end_offset_ms"),
+                    "durationSeconds": turn_eff_durs.get(t_idx_val, t.get("audio_duration_sec", 0.0)),
+                    "asrStatus": t.get("asr_status", "completed"),
+                }
+                if t_idx_val in turn_audio_map:
+                    turn_item["voiceMetrics"] = turn_audio_map[t_idx_val]
+                if t_idx_val in turn_vision_map:
+                    turn_item["visionMetrics"] = turn_vision_map[t_idx_val]
+                dialogue_turns_payload.append(turn_item)
         else:
             logger.info("Ejecutando análisis acústico y transcripción monolítica con NVIDIA Riva ASR (modo legacy)...")
             if not riva_key:
@@ -784,6 +798,20 @@ def process_session_pipeline(
             audiencia=active_scen.get("audience"),
             dificultad=active_scen.get("difficulty"),
         )
+
+        # Enlazar evaluación individual del Juez a cada turno de dialogue_turns_payload
+        if dialogue_turns_payload and reporte_juez.evaluacion_por_turno:
+            turn_eval_map = {
+                int(te["turnIndex"]): te
+                for te in reporte_juez.evaluacion_por_turno
+                if isinstance(te, dict) and te.get("turnIndex") is not None
+            }
+            for dt in dialogue_turns_payload:
+                dt_idx = int(dt.get("turnIndex") or 0)
+                if dt_idx in turn_eval_map:
+                    eval_copy = dict(turn_eval_map[dt_idx])
+                    eval_copy.pop("turnIndex", None)
+                    dt["evaluation"] = eval_copy
 
         llm_metrics = reporte_juez.model_dump()
         llm_metrics["key_message_adherence_score"] = int(

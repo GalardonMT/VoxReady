@@ -1,6 +1,8 @@
 import datetime
 import hashlib
-from typing import Dict, Any, Optional
+import re
+from pathlib import Path
+from typing import Dict, Any, List, Optional
 
 try:
     from config.scoring_rules import (
@@ -326,6 +328,100 @@ def calculate_expression_area_score(vision_summary: dict) -> dict:
             "balanceo_torso_std": sway_std
         }
     }
+
+
+def compute_turn_vision_metrics(
+    vision_metrics: Dict[str, Any],
+    turns: List[Dict[str, Any]],
+    frame_files: Optional[List[str]] = None,
+    adaptive_fps: float = 2.0,
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Segmenta los frame_details de MediaPipe dentro del intervalo [startOffsetMs, endOffsetMs]
+    de cada turno, usando el índice real de fotograma (frame_%05d.jpg) para ser exacto incluso
+    cuando VISION_MAX_FRAMES aplica submuestreo uniforme.
+    """
+    if not isinstance(vision_metrics, dict) or not turns or adaptive_fps <= 0:
+        return {}
+
+    frame_details = vision_metrics.get("frame_details")
+    if not isinstance(frame_details, list) or not frame_details:
+        return {}
+
+    files_list = frame_files or []
+    default_posture = float(
+        (vision_metrics.get("summary") or vision_metrics).get("shoulder_stability_score", 85.0)
+    )
+
+    timed_frames: List[tuple[float, Dict[str, Any]]] = []
+    for idx, detail in enumerate(frame_details):
+        if not isinstance(detail, dict) or not detail.get("valid", True):
+            continue
+        fname = str(detail.get("frame_name") or "").strip()
+        if not fname and idx < len(files_list):
+            fname = Path(files_list[idx]).name
+
+        match = re.search(r"frame_(\d+)", fname, re.IGNORECASE)
+        frame_no = int(match.group(1)) if match else (idx + 1)
+        ts_ms = ((max(1, frame_no) - 0.5) / float(adaptive_fps)) * 1000.0
+        timed_frames.append((ts_ms, detail))
+
+    if not timed_frames:
+        return {}
+
+    per_turn_vision: Dict[int, Dict[str, Any]] = {}
+    for t_pos, turn in enumerate(turns, start=1):
+        t_idx = int(turn.get("turnIndex") or turn.get("turn_index") or t_pos)
+        start_ms = turn.get("startOffsetMs") if turn.get("startOffsetMs") is not None else turn.get("start_offset_ms")
+        end_ms = turn.get("endOffsetMs") if turn.get("endOffsetMs") is not None else turn.get("end_offset_ms")
+        if start_ms is None or end_ms is None:
+            continue
+        start_f = float(start_ms)
+        end_f = float(end_ms)
+        if end_f <= start_f:
+            continue
+
+        matched = [d for ts, d in timed_frames if start_f <= ts <= end_f]
+        if not matched:
+            continue
+
+        n = len(matched)
+        eye_pct = round(
+            (sum(1 for f in matched if f.get("eye_contact") or f.get("mirada_directa")) / n) * 100.0,
+            1,
+        )
+        hands_pct = round(
+            (sum(1 for f in matched if f.get("hands_visible")) / n) * 100.0,
+            1,
+        )
+        slopes = [
+            float(f["shoulder_slope"])
+            for f in matched
+            if f.get("pose_detected") and f.get("shoulder_slope") is not None
+        ]
+        if slopes:
+            avg_slope = sum(slopes) / len(slopes)
+            posture_pct = round(max(0.0, min(100.0, 100.0 - (avg_slope * 1500.0))), 1)
+        else:
+            direct_scores = [
+                float(f["posture_stability_score"])
+                for f in matched
+                if f.get("posture_stability_score") is not None
+            ]
+            posture_pct = (
+                round(sum(direct_scores) / len(direct_scores), 1)
+                if direct_scores
+                else round(default_posture, 1)
+            )
+
+        per_turn_vision[t_idx] = {
+            "eyeContactPct": eye_pct,
+            "shoulderStabilityScore": posture_pct,
+            "handsVisiblePct": hands_pct,
+            "framesAnalyzed": n,
+        }
+
+    return per_turn_vision
 
 
 class ReportBuilder:
@@ -663,7 +759,8 @@ def sanitize_report_json(
             "nivel": rec_afectados_raw.get("nivel", 3) if isinstance(rec_afectados_raw, dict) else 3,
             "score": float(rec_afectados_raw.get("score_100", rec_afectados_raw.get("score", 50.0))) if isinstance(rec_afectados_raw, dict) else 50.0,
             "criterio": rec_afectados_raw.get("criterio", "Mención neutra de afectados.") if isinstance(rec_afectados_raw, dict) else "Mención neutra de afectados."
-        }
+        },
+        "evaluacionPorTurno": list(judge_metrics.get("evaluacion_por_turno", judge_metrics.get("evaluacionPorTurno", [])) or []),
     }
 
     # 5. Narrativa y Señal Cruzada

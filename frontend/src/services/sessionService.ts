@@ -54,7 +54,7 @@ const INITIAL_REPORT: CoachReport = {
     },
     {
       name: 'Contenido y discurso',
-      channel: 'Llama 3.2 90B Juez',
+      channel: 'Gemini 3.5 Juez',
       score: 85,
       criteria: 'Apego a mensajes clave institucionales'
     },
@@ -386,7 +386,7 @@ export const sessionService = {
             },
             {
               name: 'Contenido y discurso',
-              channel: 'Llama 3.2 90B Juez',
+              channel: 'Gemini 3.5 Juez',
               score: coherenceScore,
               criteria: 'Apego a mensajes clave y coherencia estratégica'
             },

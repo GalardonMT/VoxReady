@@ -305,12 +305,22 @@ class LLMJudgeService:
 
         if interview_turns:
             dialogue_block = format_interview_dialogue(interview_turns)
+            turn_eval_instruction = (
+                '6. "evaluacion_por_turno": lista con exactamente 1 objeto por cada [Turno N] presente en el diálogo:\n'
+                '   {{"turn_index": N, "estado_pertinencia": "responde"|"delimita"|"evade"|"incompleta", '
+                '"impacto_turno": "positivo"|"neutro"|"riesgo", "mensajes_clave_usados": ["..."], '
+                '"tecnica_control_usada": "bridging"|"flagging"|"hooking"|"ninguna", '
+                '"riesgo_linea_roja": "ninguno"|"flanco_abierto"|"infraccion", '
+                '"observacion_breve": "<1 oración concisa sobre el efecto real de esta respuesta>"}}\n'
+                '   (Regla de coherencia: si algún turno tiene "riesgo_linea_roja": "infraccion", entonces "infraccion_linea_roja" global DEBE ser true).'
+            )
             interaction_section = f"""DIÁLOGO COMPLETO DE LA ENTREVISTA POR TURNOS (PREGUNTAS BASE Y CONTRAPREGUNTAS EN VIVO):
 {dialogue_block}
 
 GUÍA DE AUDITORÍA MULTI-TURNO:
-Evalúa el desempeño global ponderando cada par pregunta-respuesta y la evolución del vocero bajo contrapregunta: verifica si el motivo detectado en vivo se confirma en la transcripción y si en la contrapregunta el vocero logró corregir el flanco (máximo Nivel 3 en pertinencia si hubo evasión inicial), reincidió en evasión (Nivel 1–2), sostuvo sus mensajes clave o cedió hacia una línea roja."""
+Evalúa tanto el impacto individual de cada turno (en "evaluacion_por_turno") como el desempeño global consolidado: verifica si el motivo detectado en vivo se confirma en la transcripción y si en la contrapregunta el vocero logró corregir el flanco (máximo Nivel 3 en pertinencia si hubo evasión inicial), reincidió en evasión (Nivel 1–2), sostuvo sus mensajes clave o cedió hacia una línea roja."""
         else:
+            turn_eval_instruction = '6. "evaluacion_por_turno": [] (lista vacía en evaluaciones monolíticas sin turnos numerados).'
             interaction_section = f"""PREGUNTA FORMULADA POR EL PERIODISTA:
 "{pregunta_periodista}"
 
@@ -349,6 +359,7 @@ Devuelve un único objeto JSON con estas claves exactas:
 3. "infraccion_linea_roja": true o false (booleano primitivo true o false, NUNCA un objeto o diccionario). Si es true, verifica que "consistencia_institucional.nivel" sea 1.
 4. "evidencia_linea_roja": string citando la línea roja vulnerada y la frase exacta del vocero, o null si "infraccion_linea_roja" es false.
 5. "reconocimiento_afectados": {{"nivel": 1..5, "criterio": "<justificación breve>", "evidencia_textual": "<cita literal o texto vacío>"}}
+{turn_eval_instruction}
 """
 
         messages = [
@@ -418,7 +429,7 @@ Devuelve un único objeto JSON con estas claves exactas:
                             model=target_model,
                             messages=messages,
                             temperature=0.2,
-                            max_tokens=3072,
+                            max_tokens=4096,
                             timeout=self.timeout,
                             response_format={"type": "json_object"},
                             extra_body={"reasoning_effort": effort},
@@ -443,6 +454,29 @@ Devuelve un único objeto JSON con estas claves exactas:
                 err_detail = f" - Detalle API: {last_error.response.text}"
             logger.error(f"[LLMJudge] Fallo crítico evaluando respuesta tras reintentos: {last_error}{err_detail}")
             raise RuntimeError(f"Error evaluando el contenido con LLM Juez: {last_error}{err_detail}") from last_error
+
+        # Sincronizar coherencia entre evaluacion_por_turno e infraccion_linea_roja global
+        turn_evals_list: List[Dict[str, Any]] = []
+        for te in parsed_eval.evaluacion_por_turno or []:
+            if te.riesgo_linea_roja == "infraccion":
+                te.impacto_turno = "riesgo"
+                if not parsed_eval.infraccion_linea_roja:
+                    parsed_eval.infraccion_linea_roja = True
+                    if not parsed_eval.evidencia_linea_roja and te.observacion_breve:
+                        parsed_eval.evidencia_linea_roja = f"[Turno {te.turn_index}] {te.observacion_breve}"
+            elif te.estado_pertinencia == "evade" and te.impacto_turno == "positivo":
+                te.impacto_turno = "riesgo"
+            turn_evals_list.append(
+                {
+                    "turnIndex": te.turn_index,
+                    "pertinenceStatus": te.estado_pertinencia,
+                    "impact": te.impacto_turno,
+                    "keyMessagesUsed": list(te.mensajes_clave_usados or []),
+                    "controlTechnique": te.tecnica_control_usada,
+                    "redLineRisk": te.riesgo_linea_roja,
+                    "briefObservation": te.observacion_breve,
+                }
+            )
 
         # Si hubo infracción de línea roja, asegurar Nivel 1 en consistencia_institucional
         if parsed_eval.infraccion_linea_roja:
@@ -506,6 +540,7 @@ Devuelve un único objeto JSON con estas claves exactas:
             infraccion_linea_roja=parsed_eval.infraccion_linea_roja,
             evidencia_linea_roja=parsed_eval.evidencia_linea_roja,
             reconocimiento_afectados=rec_dict,
+            evaluacion_por_turno=turn_evals_list,
         )
 
 

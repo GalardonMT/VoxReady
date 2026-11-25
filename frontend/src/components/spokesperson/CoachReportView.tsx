@@ -91,7 +91,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
     ? [
         { name: d.areas[0], score: report.areas[0].score, icon: '👁️', channel: report.areas[0].criteria || 'MediaPipe Vision' },
         { name: d.areas[1], score: report.areas[1].score, icon: '🎙️', channel: report.areas[1].criteria || 'Voz / Parakeet' },
-        { name: d.areas[2], score: report.areas[2].score, icon: '📄', channel: report.areas[2].criteria || 'NVIDIA LLM Apego' },
+        { name: d.areas[2], score: report.areas[2].score, icon: '📄', channel: report.areas[2].criteria || 'Gemini 3.5 Juez' },
         { name: d.areas[3], score: report.areas[3].score, icon: '🤝', channel: report.areas[3].criteria || 'Control de Crisis' }
       ]
     : [
@@ -161,7 +161,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
             </div>
             <div style={{ fontSize: '13px', color: 'var(--muted)', marginTop: '2px' }}>
               Sesión: <code style={{ color: 'var(--accent2)', fontWeight: 600 }}>{sessionId}</code>
-              {report?.date ? ` · Evaluada el ${report.date}` : ''} · Inferencia multimodal NVIDIA & MediaPipe
+              {report?.date ? ` · Evaluada el ${report.date}` : ''} · Inferencia multimodal Gemini, Parakeet & MediaPipe
             </div>
           </div>
 
@@ -213,7 +213,7 @@ export const CoachReportView: React.FC<CoachReportViewProps> = ({
           }}
         >
           <div style={{ fontSize: '11px', textTransform: 'uppercase', fontWeight: 700, color: 'var(--muted)', marginBottom: '4px' }}>
-            Dictamen del Juez de Crisis (NVIDIA Llama 3.2 90B):
+            Dictamen del Juez de Crisis (Gemini 3.5 Flash Lite):
           </div>
           “{quote}”
         </div>
