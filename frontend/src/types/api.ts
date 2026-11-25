@@ -446,6 +446,32 @@ export interface MetricsSummary {
   durationSeconds?: number;
 }
 
+export interface DialogueTurnEvaluation {
+  pertinenceStatus: 'responde' | 'delimita' | 'evade' | 'incompleta';
+  impact: 'positivo' | 'neutro' | 'riesgo';
+  keyMessagesUsed?: string[];
+  controlTechnique?: 'bridging' | 'flagging' | 'hooking' | 'ninguna';
+  redLineRisk?: 'ninguno' | 'flanco_abierto' | 'infraccion';
+  briefObservation?: string;
+}
+
+export interface DialogueTurnVoiceMetrics {
+  wordCount: number;
+  wpm: number;
+  phonationRatioPct: number;
+  prolongedPauses: number;
+  hesitationPauses: number;
+  fillersCount: number;
+  fillers?: string[];
+}
+
+export interface DialogueTurnVisionMetrics {
+  eyeContactPct: number;
+  shoulderStabilityScore?: number;
+  handsVisiblePct: number;
+  framesAnalyzed: number;
+}
+
 export interface DialogueTurnReportItem {
   turnId?: string;
   turnIndex: number;
@@ -459,6 +485,9 @@ export interface DialogueTurnReportItem {
   endOffsetMs?: number | null;
   durationSeconds?: number | null;
   asrStatus?: string;
+  evaluation?: DialogueTurnEvaluation;
+  voiceMetrics?: DialogueTurnVoiceMetrics;
+  visionMetrics?: DialogueTurnVisionMetrics;
 }
 
 export interface FullVisumReport {
@@ -502,8 +531,23 @@ export interface FullVisumReport {
     };
     judge?: {
       puntajeGlobal100?: number;
-      dimensiones?: Record<string, { nivel: number; score: number; criterio: string }>;
+      infraccionLineaRoja?: boolean;
+      evidenciaLineaRoja?: string | null;
+      dimensiones?: Record<
+        string,
+        {
+          nivel: number;
+          score: number;
+          criterio: string;
+          evidencia?: string;
+          tecnicasDetectadas?: string[];
+          fraseTransicion?: string;
+          mensajesCumplidos?: string[];
+          mensajesOmitidos?: string[];
+        }
+      >;
       feedback?: Record<string, unknown>;
+      evaluacionPorTurno?: Array<DialogueTurnEvaluation & { turnIndex: number }>;
     };
   };
   transcript?: string;

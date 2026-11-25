@@ -61,40 +61,60 @@ def _clean_and_parse_json(content: str) -> dict:
 
 
 SYSTEM_PROMPT = """
-Eres un consultor senior de Media Training y Manejo de Crisis corporativas, riguroso, crítico y pedagógico.
-Tu tarea es auditar la respuesta transcrita de un vocero frente a una pregunta periodística o de confrontación pública.
+Eres un consultor senior y auditor jefe de Media Training y Manejo de Crisis corporativas (Metodología VISUM), riguroso, imparcial y pedagógico.
+Tu tarea es auditar la transcripción de la intervención de un vocero frente a una entrevista periodística (de turno único o multi-turno con contrapreguntas en vivo).
 
-Debes evaluar las 7 dimensiones estratégicas estándar utilizando exclusivamente los 5 niveles de desempeño (escala 1 a 5):
-- Nivel 1 (Deficiente): La conducta afecta significativamente la efectividad de la vocería o genera un riesgo comunicacional/legal.
-- Nivel 2 (Bajo): Existen brechas frecuentes y perceptibles que dificultan el desempeño o denotan evasión evidente.
-- Nivel 3 (Adecuado): Cumple funcionalmente el estándar, aunque presenta oportunidades claras de mejora en naturalidad o agilidad.
-- Nivel 4 (Sólido): Desempeño consistente, efectivo y adecuado incluso ante preguntas hostiles.
-- Nivel 5 (Sobresaliente): Dominio consistente, adaptación estratégica impecable y alta capacidad de persuasión.
+ESCALA CONDUCTUAL ESTÁNDAR (ENTEROS DE 1 A 5):
+- Nivel 1 (Deficiente): Conducta contraproducente que anula la efectividad de la vocería, evade abiertamente o abre un riesgo reputacional/legal severo.
+- Nivel 2 (Bajo): Brechas frecuentes y notorias, evasión parcial con frases vacías, vaguedad reiterada o pérdida de control ante presión.
+- Nivel 3 (Adecuado): Cumple funcionalmente el estándar mínimo (delimita y comunica lo esencial), pero con oportunidades claras en agilidad, síntesis o naturalidad.
+- Nivel 4 (Sólido): Desempeño consistente, claro y estratégico incluso bajo presión o contrapreguntas incisivas.
+- Nivel 5 (Sobresaliente): Dominio ejemplar; responde/delimita con precisión quirúrgica, conduce la agenda con naturalidad y sostiene total coherencia y empatía.
 
-REGLAS DE EVALUACIÓN OBLIGATORIAS:
-1. FILTRO ANTI-EVASIÓN (PERTINENCIA ANTES DE BRIDGING):
-   Evalúa si el vocero responde o delimita el núcleo de la pregunta antes de transicionar al mensaje estratégico.
-   Frases protocolares como "entiendo la situación" o "comprendo su punto" NO constituyen respuesta ni delimitación.
-   Si el vocero introduce una frase puente (bridging) para recitar su mensaje clave sin haber delimitado o respondido la pregunta específica formulada, la dimensión 'pertinencia_respuesta' DEBE ser calificada obligatoriamente con Nivel 1 (si ignora totalmente) o Nivel 2 (si evade usando solo una frase vacía de cortesía). Está PROHIBIDO calificar con Nivel 3, 4 o 5 cuando hay evasión. El control del mensaje nunca es evasión.
-2. TÉCNICAS DE CONTROL: Identifica si existen frases deliberadas de:
-   - Bridging: puente hacia el mensaje ('lo crucial aquí es', 'el hecho concreto es').
-   - Flagging: marcar lo central ('el punto principal que debe quedar claro').
-   - Hooking: dejar un anzuelo temático para guiar la siguiente pregunta.
-3. CERO PSICOLOGIZACIÓN: No asumas ni intentes adivinar emociones internas ('estaba asustado', 'sintió culpa'). Limítate estrictamente a lo que las palabras observables reflejan.
-4. CONSISTENCIA INSTITUCIONAL: Penaliza severamente cualquier especulación sobre cifras, causas no confirmadas o promesas que comprometan legalmente a la organización.
-5. EVALUACIÓN DE LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS):
-   Revisa exhaustivamente la transcripción frente a las líneas rojas especificadas. Si el vocero confirma, admite explícitamente o transgrede alguna línea roja institucional:
-   - Marca "infraccion_linea_roja": true.
-   - Extrae en "evidencia_linea_roja" la frase exacta del vocero y la línea roja vulnerada.
-   - Asigna Nivel 1 (0 pts) a la dimensión 'consistencia_institucional'.
-   Si no hubo transgresión, marca "infraccion_linea_roja": false y "evidencia_linea_roja": null.
-6. EVALUACIÓN DE RECONOCIMIENTO DEL AFECTADO / EMPATÍA VERBAL:
-   Evalúa en una escala de 1 a 5 cómo abordó el vocero a las personas, víctimas o clientes perjudicados:
-   - Nivel 5: Prioriza de inmediato el impacto humano o a los clientes antes de presentar cualquier descargo corporativo o justificación técnica.
-   - Nivel 4: Muestra empatía genuina y clara hacia los afectados antes de pasar al plan de acción.
-   - Nivel 3: Hace mención secundaria, formal o tardía a los afectados, priorizando la explicación operativa.
-   - Nivel 2: Mención impersonal o condescendiente, minimizando el impacto en las personas.
-   - Nivel 1: Omisión total de las víctimas o afectados; se enfoca exclusivamente en balances económicos, procedimientos internos o en eludir responsabilidades.
+CRITERIOS OBLIGATORIOS POR DIMENSIÓN (7 DIMENSIONES ESTRATÉGICAS):
+1. pertinencia_respuesta (Peso 25% — FILTRO ANTI-EVASIÓN):
+   - Evalúa si el vocero responde al núcleo de cada pregunta O delimita con fundamento válido (ej. investigación/peritaje en curso, alcance regulatorio) ANTES de transicionar a su mensaje clave.
+   - Frases protocolares vacías ("entiendo la situación", "comprendo su punto", "gracias por la pregunta") NO constituyen respuesta ni delimitación.
+   - Si el vocero ignora la pregunta y salta a recitar mensajes clave -> Nivel 1. Si usa solo cortesía vacía y desvía -> Nivel 2. Está PROHIBIDO asignar Nivel 3, 4 o 5 si predomina la evasión. El control legítimo del mensaje nunca es evasión.
+   - REGLA MULTI-TURNO: Si el vocero evadió inicialmente una pregunta base pero RECTIFICÓ y respondió/delimitó con solvencia ante la contrapregunta inmediata, califica como máximo con Nivel 3. Si reincidió en evasión ante la contrapregunta -> Nivel 1 o 2. Si respondió/delimitó desde el primer turno y sostuvo el rigor en contrapreguntas -> Nivel 4 o 5.
+2. alineacion_mensaje_clave (Peso 25%):
+   - Nivel 5: Posiciona todos los mensajes clave obligatorios de forma orgánica y adaptada a las preguntas.
+   - Nivel 4: Posiciona la mayoría de los mensajes clave (o todos con leve rigidez) manteniendo relevancia.
+   - Nivel 3: Posiciona parcialmente los mensajes clave (al menos la idea central), omitiendo secundarios.
+   - Nivel 2: Mención tangencial, incompleta o desconectada de los mensajes clave.
+   - Nivel 1: Omite por completo los mensajes clave del escenario o los contradice.
+   - Registra exactamente qué mensajes de la lista oficial fueron cubiertos en 'mensajes_cumplidos' y cuáles faltaron en 'mensajes_omitidos'.
+3. tecnicas_control (Peso 15%):
+   - Identifica el uso deliberado y pertinente de:
+     * "bridging": transición legítima tras responder/delimitar ("lo concreto hasta ahora es...", "precisamente por eso la medida inmediata es...").
+     * "flagging": énfasis jerárquico ("el punto central que debe quedar claro es...").
+     * "hooking": apertura estratégica de datos o acciones que orienta el interés periodístico.
+   - IMPORTANTE: Usar frases puente para EVADIR sin haber delimitado la pregunta es mal uso de la técnica y no puede superar Nivel 2. Nivel 4–5 exige transiciones fluidas luego de responder/delimitar. Lista las técnicas válidas observadas en 'tecnicas_detectadas' (valores permitidos: "bridging", "flagging", "hooking") y cita la mejor en 'frase_transicion' (o null si no hubo).
+4. consistencia_institucional (Peso 15%):
+   - Evalúa disciplina fáctica: no especular sobre causas no confirmadas, no inventar cifras fuera del contexto, no culpar a terceros sin pruebas y no asumir compromisos legales temerarios.
+   - Si "infraccion_linea_roja" es true, DEBES asignar obligatoriamente Nivel 1 (0 pts) en esta dimensión.
+5. asertividad_hostilidad (Peso 10%):
+   - Evalúa aplomo verbal ante preguntas tensas o contrapreguntas incisivas: firmeza serena y respetuosa (Nivel 4–5) vs. tono defensivo, sarcástico, confrontacional con el periodista o dubitativo/sumiso (Nivel 1–2).
+6. capacidad_sintesis (Peso 5%):
+   - Evalúa economía verbal y foco: ideas estructuradas y directas al titular (Nivel 4–5) vs. rodeos extensos, redundancia circular o respuestas telegráficas insuficientes (Nivel 1–2).
+7. claridad_mensaje (Peso 5%):
+   - Evalúa comprensión para la audiencia objetivo: lenguaje llano y traducción pedagógica de tecnicismos (Nivel 4–5) vs. jerga críptica, sintaxis confusa o ambigüedad (Nivel 1–2).
+   - NOTA SOBRE ASR: El texto proviene de reconocimiento automático de voz (ASR). No penalices errores fonéticos menores, puntuación automática imperfecta o homófonos propios del transcriptor si la estructura oral de la idea del vocero es clara.
+
+REGLAS TRANSVERSALES ADICIONALES:
+A. CERO PSICOLOGIZACIÓN: Prohibido inferir estados mentales o emocionales internos ("estaba asustado", "sintió culpa", "quiso ocultar"). Describe únicamente conductas discursivas observables y citas textuales.
+B. AUDITORÍA ESTRICTA DE LÍNEAS ROJAS:
+   - "infraccion_linea_roja": true SOLO si el vocero confirma, admite, valida, promete o especula explícitamente sobre lo prohibido por una línea roja del escenario.
+   - Si el periodista menciona el tema de la línea roja y el vocero lo NIEGA o DELIMITA correctamente sin cruzarla, eso NO es infracción ("infraccion_linea_roja": false, "evidencia_linea_roja": null).
+   - Cuando sea true, incluye en "evidencia_linea_roja" tanto la línea roja vulnerada como la cita textual exacta del vocero (indicando el número de turno si aplica).
+C. RECONOCIMIENTO DE AFECTADOS / STAKEHOLDERS (EMPATÍA VERBAL, ESCALA 1–5):
+   - Si el escenario involucra personas, víctimas, trabajadores, pacientes, usuarios o comunidad perjudicada:
+     * Nivel 5: Prioriza desde el inicio el impacto humano/usuarios con empatía genuina antes de explicaciones técnicas o descargos corporativos.
+     * Nivel 4: Reconoce con claridad y respeto a los afectados antes o junto al plan de acción.
+     * Nivel 3: Mención secundaria, tardía o meramente protocolar, priorizando lo operativo.
+     * Nivel 2: Mención impersonal, fría o minimizadora del impacto en las personas.
+     * Nivel 1: Omisión total de los afectados centrándose solo en defensa corporativa, procesos internos o balances económicos.
+   - Si el escenario es puramente técnico, regulatorio o financiero sin víctimas humanas directas: evalúa en la misma escala 1–5 cómo reconoce y atiende las preocupaciones legítimas de la audiencia/stakeholders afectados según la óptica del escenario.
 
 Responde ÚNICAMENTE con un objeto JSON válido según la estructura requerida.
 """
@@ -110,8 +130,43 @@ PESOS_DIMENSIONES = {
 }
 
 
+def resolve_turn_followup_reason(
+    turn: Dict[str, Any],
+    all_turns: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Resuelve el motivo editorial (triggerReason) de una contrapregunta, ya sea en el propio turno o en su turno base padre."""
+    kind = str(turn.get("turnKind") or turn.get("turn_kind") or "base")
+    if kind != "follow_up":
+        return None
+
+    direct = turn.get("triggerReason") or turn.get("followup_trigger_reason")
+    if direct and str(direct).strip():
+        return str(direct).strip()
+
+    parent_id = str(turn.get("parentTurnId") or turn.get("parent_turn_id") or "").strip()
+    base_seq = turn.get("baseSequenceNo") if turn.get("baseSequenceNo") is not None else turn.get("base_sequence_no")
+
+    for candidate in all_turns:
+        c_kind = str(candidate.get("turnKind") or candidate.get("turn_kind") or "base")
+        if c_kind != "base":
+            continue
+        c_id = str(candidate.get("turnId") or candidate.get("turn_id") or "").strip()
+        c_base_seq = (
+            candidate.get("baseSequenceNo")
+            if candidate.get("baseSequenceNo") is not None
+            else candidate.get("base_sequence_no")
+        )
+        if (parent_id and c_id and c_id == parent_id) or (
+            not parent_id and base_seq is not None and c_base_seq == base_seq
+        ):
+            reason = candidate.get("triggerReason") or candidate.get("followup_trigger_reason")
+            if reason and str(reason).strip():
+                return str(reason).strip()
+    return None
+
+
 def format_interview_dialogue(interview_turns: List[Dict[str, Any]]) -> str:
-    """Formatea los turnos estructurados (base y contrapregunta) para el Juez LLM y VISUM."""
+    """Formatea los turnos estructurados (base y contrapregunta con su triggerReason) para el Juez LLM y VISUM."""
     ordered = sorted(
         interview_turns,
         key=lambda t: int(t.get("turnIndex") or t.get("turn_index") or 0),
@@ -123,11 +178,12 @@ def format_interview_dialogue(interview_turns: List[Dict[str, Any]]) -> str:
         kind = str(turn.get("turnKind") or turn.get("turn_kind") or "base")
         q_text = str(turn.get("questionText") or turn.get("question_text") or "").strip()
         ans_text = str(turn.get("transcript") or "").strip() or "(Sin respuesta inteligible)"
-        header = (
-            f"[Turno {t_idx} · Contrapregunta IA sobre Pregunta Base #{base_seq}]"
-            if kind == "follow_up"
-            else f"[Turno {t_idx} · Pregunta Base #{base_seq}]"
-        )
+        if kind == "follow_up":
+            reason = resolve_turn_followup_reason(turn, ordered)
+            reason_suffix = f" · Motivo detectado en vivo: {reason}" if reason else ""
+            header = f"[Turno {t_idx} · Contrapregunta IA sobre Pregunta Base #{base_seq}{reason_suffix}]"
+        else:
+            header = f"[Turno {t_idx} · Pregunta Base #{base_seq}]"
         blocks.append(f"{header}\nPeriodista: \"{q_text}\"\nVocero: \"{ans_text}\"")
     return "\n\n".join(blocks)
 
@@ -230,6 +286,10 @@ class LLMJudgeService:
         transcripcion_vocero: str,
         lineas_rojas: Optional[List[str]] = None,
         interview_turns: Optional[List[Dict[str, Any]]] = None,
+        scenario_title: Optional[str] = None,
+        optica: Optional[str] = None,
+        audiencia: Optional[str] = None,
+        dificultad: Optional[str] = None,
     ) -> ReporteJuezConsolidado:
 
         lineas_rojas_list = lineas_rojas or []
@@ -238,25 +298,41 @@ class LLMJudgeService:
         else:
             lineas_rojas_text = "- (No hay líneas rojas definidas para este escenario)"
 
+        titulo_escenario = (scenario_title or "Simulación de Vocería en Crisis").strip()
+        optica_escenario = (optica or "institucional, empática y rigurosa").strip()
+        audiencia_escenario = (audiencia or "opinión pública y medios de comunicación").strip()
+        dificultad_escenario = (dificultad or "intermediate").strip()
+
         if interview_turns:
             dialogue_block = format_interview_dialogue(interview_turns)
+            turn_eval_instruction = (
+                '6. "evaluacion_por_turno": lista con exactamente 1 objeto por cada [Turno N] presente en el diálogo:\n'
+                '   {{"turn_index": N, "estado_pertinencia": "responde"|"delimita"|"evade"|"incompleta", '
+                '"impacto_turno": "positivo"|"neutro"|"riesgo", "mensajes_clave_usados": ["..."], '
+                '"tecnica_control_usada": "bridging"|"flagging"|"hooking"|"ninguna", '
+                '"riesgo_linea_roja": "ninguno"|"flanco_abierto"|"infraccion", '
+                '"observacion_breve": "<1 oración concisa sobre el efecto real de esta respuesta>"}}\n'
+                '   (Regla de coherencia: si algún turno tiene "riesgo_linea_roja": "infraccion", entonces "infraccion_linea_roja" global DEBE ser true).'
+            )
             interaction_section = f"""DIÁLOGO COMPLETO DE LA ENTREVISTA POR TURNOS (PREGUNTAS BASE Y CONTRAPREGUNTAS EN VIVO):
 {dialogue_block}
 
-INSTRUCCIÓN ESPECÍFICA PARA ENTREVISTA MULTI-TURNO:
-Evalúa integralmente todas las intervenciones del vocero considerando la relación pregunta-respuesta en cada turno, incluyendo cómo reaccionó ante las contrapreguntas del periodista (si rectificó evasiones, sostuvo la disciplina de mensajes clave o cedió ante la presión hacia líneas rojas)."""
+GUÍA DE AUDITORÍA MULTI-TURNO:
+Evalúa tanto el impacto individual de cada turno (en "evaluacion_por_turno") como el desempeño global consolidado: verifica si el motivo detectado en vivo se confirma en la transcripción y si en la contrapregunta el vocero logró corregir el flanco (máximo Nivel 3 en pertinencia si hubo evasión inicial), reincidió en evasión (Nivel 1–2), sostuvo sus mensajes clave o cedió hacia una línea roja."""
         else:
+            turn_eval_instruction = '6. "evaluacion_por_turno": [] (lista vacía en evaluaciones monolíticas sin turnos numerados).'
             interaction_section = f"""PREGUNTA FORMULADA POR EL PERIODISTA:
 "{pregunta_periodista}"
 
 TRANSCRIPCIÓN DE LA RESPUESTA REAL DEL VOCERO:
 "{transcripcion_vocero}" """
 
-        user_prompt = f"""
+        user_prompt = f"""ESCENARIO: {titulo_escenario}
+ÓPTICA INSTITUCIONAL: {optica_escenario} | AUDIENCIA OBJETIVO: {audiencia_escenario} | DIFICULTAD: {dificultad_escenario}
 CONTEXTO DEL ESCENARIO:
 {contexto_crisis}
 
-MENSAJES CLAVE OBLIGATORIOS QUE EL VOCERO DEBÍA TRANSMITIR:
+MENSAJES CLAVE OBLIGATORIOS QUE EL VOCERO DEBÍA POSICIONAR:
 {json.dumps(mensajes_clave, ensure_ascii=False, indent=2)}
 
 LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS PARA EL VOCERO):
@@ -264,23 +340,26 @@ LÍNEAS ROJAS DEL ESCENARIO (ESTRICTAMENTE PROHIBIDAS PARA EL VOCERO):
 
 {interaction_section}
 
-REGLAS CRÍTICAS DE AUDITORÍA:
-1. 'pertinencia_respuesta':
-   - Si el vocero NO responde ni delimita la pregunta concreta (ej: ignora la consulta sobre alertas o hechos imputados y salta directo a recitar mensajes clave con bridging), asigna obligatoriamente NIVEL 1 o 2.
-   - Si el vocero delimita o responde la pregunta antes de tender el puente al mensaje clave, califica según la solidez demostrada (Nivel 3, 4 o 5).
-2. 'infraccion_linea_roja':
-   - Si el vocero confirma o transgrede alguna línea roja, marca "infraccion_linea_roja": true, detalla "evidencia_linea_roja" y asigna Nivel 1 a 'consistencia_institucional'.
-   - En caso contrario, "infraccion_linea_roja": false y "evidencia_linea_roja": null.
-3. 'reconocimiento_afectados':
-   - Evalúa el trato y la prioridad hacia las personas/clientes perjudicados (escala 1 a 5).
-
-Genera el análisis en formato JSON estricto con las claves:
-- evaluacion_dimensiones (pertinencia_respuesta, tecnicas_control, alineacion_mensaje_clave, capacidad_sintesis, claridad_mensaje, consistencia_institucional, asertividad_hostilidad)
-  Cada dimensión debe contener: 'nivel' (entero de 1 a 5), 'criterio' (justificación cualitativa), 'evidencia_textual' (cita exacta o texto vacío).
-- feedback_pedagogico: {{"fortaleza_principal": "<texto (si no hay aspectos positivos, describir brevemente la ausencia de fortalezas en vez de null)>", "brecha_critica": "<texto>", "recomendacion_accionable": "<texto>"}}
-- infraccion_linea_roja: true o false (booleano primitivo true o false, NUNCA un objeto o diccionario)
-- evidencia_linea_roja: string con la cita textual de transgresión, o null si no hubo infracción
-- reconocimiento_afectados: {{"nivel": <int 1-5>, "criterio": "<justificación breve>", "evidencia_textual": "<cita o texto vacío>"}}
+INSTRUCCIONES DE SALIDA JSON ESTRICTA:
+Devuelve un único objeto JSON con estas claves exactas:
+1. "evaluacion_dimensiones": objeto con las 7 claves obligatorias:
+   - "pertinencia_respuesta": {{"nivel": 1..5, "criterio": "...", "evidencia_textual": "..."}}
+   - "tecnicas_control": {{"nivel": 1..5, "criterio": "...", "evidencia_textual": "...", "tecnicas_detectadas": ["bridging"|"flagging"|"hooking"], "frase_transicion": "..." o null}}
+   - "alineacion_mensaje_clave": {{"nivel": 1..5, "criterio": "...", "evidencia_textual": "...", "mensajes_cumplidos": ["..."], "mensajes_omitidos": ["..."]}}
+   - "capacidad_sintesis": {{"nivel": 1..5, "criterio": "...", "evidencia_textual": "..."}}
+   - "claridad_mensaje": {{"nivel": 1..5, "criterio": "...", "evidencia_textual": "..."}}
+   - "consistencia_institucional": {{"nivel": 1..5, "criterio": "...", "evidencia_textual": "..."}}
+   - "asertividad_hostilidad": {{"nivel": 1..5, "criterio": "...", "evidencia_textual": "..."}}
+   (En todas las citas de 'evidencia_textual', usa frases literales del vocero indicando "[Turno N]" cuando haya múltiples turnos, o "" si hubo omisión total).
+2. "feedback_pedagogico": {{
+     "fortaleza_principal": "<principal competencia demostrada con sustento en el diálogo (si no hay fortalezas consolidadas, describir objetivamente la ausencia de fortalezas en vez de null)>",
+     "brecha_critica": "<principal vulnerabilidad estratégica observada y su riesgo comunicacional>",
+     "recomendacion_accionable": "<acción concreta y entrenable para corregir la brecha crítica en la próxima vocería>"
+   }}
+3. "infraccion_linea_roja": true o false (booleano primitivo true o false, NUNCA un objeto o diccionario). Si es true, verifica que "consistencia_institucional.nivel" sea 1.
+4. "evidencia_linea_roja": string citando la línea roja vulnerada y la frase exacta del vocero, o null si "infraccion_linea_roja" es false.
+5. "reconocimiento_afectados": {{"nivel": 1..5, "criterio": "<justificación breve>", "evidencia_textual": "<cita literal o texto vacío>"}}
+{turn_eval_instruction}
 """
 
         messages = [
@@ -350,7 +429,7 @@ Genera el análisis en formato JSON estricto con las claves:
                             model=target_model,
                             messages=messages,
                             temperature=0.2,
-                            max_tokens=3072,
+                            max_tokens=4096,
                             timeout=self.timeout,
                             response_format={"type": "json_object"},
                             extra_body={"reasoning_effort": effort},
@@ -376,6 +455,29 @@ Genera el análisis en formato JSON estricto con las claves:
             logger.error(f"[LLMJudge] Fallo crítico evaluando respuesta tras reintentos: {last_error}{err_detail}")
             raise RuntimeError(f"Error evaluando el contenido con LLM Juez: {last_error}{err_detail}") from last_error
 
+        # Sincronizar coherencia entre evaluacion_por_turno e infraccion_linea_roja global
+        turn_evals_list: List[Dict[str, Any]] = []
+        for te in parsed_eval.evaluacion_por_turno or []:
+            if te.riesgo_linea_roja == "infraccion":
+                te.impacto_turno = "riesgo"
+                if not parsed_eval.infraccion_linea_roja:
+                    parsed_eval.infraccion_linea_roja = True
+                    if not parsed_eval.evidencia_linea_roja and te.observacion_breve:
+                        parsed_eval.evidencia_linea_roja = f"[Turno {te.turn_index}] {te.observacion_breve}"
+            elif te.estado_pertinencia == "evade" and te.impacto_turno == "positivo":
+                te.impacto_turno = "riesgo"
+            turn_evals_list.append(
+                {
+                    "turnIndex": te.turn_index,
+                    "pertinenceStatus": te.estado_pertinencia,
+                    "impact": te.impacto_turno,
+                    "keyMessagesUsed": list(te.mensajes_clave_usados or []),
+                    "controlTechnique": te.tecnica_control_usada,
+                    "redLineRisk": te.riesgo_linea_roja,
+                    "briefObservation": te.observacion_breve,
+                }
+            )
+
         # Si hubo infracción de línea roja, asegurar Nivel 1 en consistencia_institucional
         if parsed_eval.infraccion_linea_roja:
             parsed_eval.evaluacion_dimensiones.consistencia_institucional.nivel = 1
@@ -396,13 +498,22 @@ Genera el análisis en formato JSON estricto con las claves:
             score_dim_100 = ((nivel - 1) / 4.0) * 100.0
             puntaje_global_100 += score_dim_100 * peso
 
-            dimensiones_normalizadas[dim] = {
+            entry: Dict[str, Any] = {
+                "nivel": nivel,
                 "nivel_visum": nivel,
                 "score_100": round(score_dim_100, 2),
                 "peso_ponderado": peso,
                 "criterio": dim_data.get("criterio"),
                 "evidencia": dim_data.get("evidencia_textual"),
             }
+            if dim == "tecnicas_control":
+                entry["tecnicas_detectadas"] = list(dim_data.get("tecnicas_detectadas") or [])
+                entry["frase_transicion"] = dim_data.get("frase_transicion")
+            elif dim == "alineacion_mensaje_clave":
+                entry["mensajes_cumplidos"] = list(dim_data.get("mensajes_cumplidos") or [])
+                entry["mensajes_omitidos"] = list(dim_data.get("mensajes_omitidos") or [])
+
+            dimensiones_normalizadas[dim] = entry
 
         # Procesar reconocimiento de afectados
         rec_obj = parsed_eval.reconocimiento_afectados
@@ -429,6 +540,7 @@ Genera el análisis en formato JSON estricto con las claves:
             infraccion_linea_roja=parsed_eval.infraccion_linea_roja,
             evidencia_linea_roja=parsed_eval.evidencia_linea_roja,
             reconocimiento_afectados=rec_dict,
+            evaluacion_por_turno=turn_evals_list,
         )
 
 
@@ -475,9 +587,11 @@ class LLMJudge(LLMJudgeService):
             reporte_dict["crisis_control_score"] = int(
                 reporte.dimensiones.get("tecnicas_control", {}).get("score_100", 75)
             )
-            reporte_dict["bridging_detected"] = len(
-                reporte.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
-            ) > 0
+            tecnicas_det = reporte.dimensiones.get("tecnicas_control", {}).get("tecnicas_detectadas", [])
+            frase_trans = reporte.dimensiones.get("tecnicas_control", {}).get("frase_transicion")
+            reporte_dict["bridging_detected"] = (
+                any("bridg" in str(t).lower() for t in tecnicas_det) or bool(frase_trans)
+            )
             reporte_dict["infraccion_linea_roja"] = reporte.infraccion_linea_roja
             reporte_dict["evidencia_linea_roja"] = reporte.evidencia_linea_roja
             reporte_dict["reconocimiento_afectados"] = reporte.reconocimiento_afectados

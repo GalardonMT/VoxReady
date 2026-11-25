@@ -119,6 +119,28 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
     claridadMensaje: 'Claridad y precisión del mensaje'
   };
 
+  const triggerReasonLabels: Record<string, string> = {
+    evasion_nucleo: 'Evasión del núcleo',
+    respuesta_vaga_incompleta: 'Respuesta vaga o incompleta',
+    contradiccion_interna: 'Contradicción detectada',
+    flanco_linea_roja: 'Flanco cercano a línea roja',
+    infraccion_linea_roja: 'Línea roja vulnerada',
+    omision_impacto_o_accion: 'Omisión de afectados o acciones'
+  };
+
+  const pertinenceMeta: Record<string, { label: string; color: string }> = {
+    responde: { label: 'Responde directo', color: '#10b981' },
+    delimita: { label: 'Delimita con criterio', color: '#3b82f6' },
+    incompleta: { label: 'Respuesta parcial', color: '#f59e0b' },
+    evade: { label: 'Evade la pregunta', color: '#ef4444' }
+  };
+
+  const impactMeta: Record<string, { label: string; color: string; bg: string }> = {
+    positivo: { label: 'Impacto positivo', color: '#10b981', bg: 'rgba(16, 185, 129, 0.14)' },
+    neutro: { label: 'Impacto neutro', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.14)' },
+    riesgo: { label: 'Impacto en riesgo', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.14)' }
+  };
+
   if (loading) {
     return (
       <div className="canvas-content" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '360px', padding: '40px 20px' }}>
@@ -392,7 +414,7 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             transition: 'all 0.2s'
           }}
         >
-          📝 Transcripción Completa
+          💬 Impacto por Respuesta y Transcripción
         </button>
       </div>
 
@@ -703,13 +725,31 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
               <div>
                 <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--ink)', margin: 0 }}>
-                  Evaluación Pedagógica del LLM Juez (NVIDIA Llama 3.2 90B)
+                  Evaluación Pedagógica del LLM Juez (Gemini 3.5 Flash Lite)
                 </h3>
                 <p style={{ fontSize: '12.5px', color: 'var(--muted)', margin: '2px 0 0 0' }}>
                   Puntaje global del juez: <strong style={{ color: getScoreColor(judge?.puntajeGlobal100 ?? 50) }}>{judge?.puntajeGlobal100 ?? 50} / 100</strong>
                 </p>
               </div>
             </div>
+
+            {judge?.infraccionLineaRoja && (
+              <div
+                style={{
+                  background: 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  borderLeft: '4px solid #ef4444',
+                  borderRadius: '8px',
+                  padding: '12px 14px',
+                  marginBottom: '14px',
+                  fontSize: '12.5px',
+                  color: 'var(--ink)'
+                }}
+              >
+                <strong style={{ color: '#ef4444' }}>🚨 Alerta de Línea Roja Vulnerada: </strong>
+                {judge.evidenciaLineaRoja || 'Se registró una transgresión a los límites institucionales del escenario.'}
+              </div>
+            )}
 
             {/* Listado de las 7 dimensiones con sus criterios */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -762,32 +802,64 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
       )}
 
       {/* =========================================================================
-          TAB 4: TRANSCRIPCIÓN COMPLETA
+          TAB 4: IMPACTO POR RESPUESTA Y TRANSCRIPCIÓN COMPLETA
           ========================================================================= */}
       {activeTab === 'transcript' && (
         <div className="card" style={{ padding: '22px' }}>
-          <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', color: 'var(--accent2)', marginBottom: '12px' }}>
-            📝 Transcripción Completa del Ejercicio de Vocería
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', color: 'var(--accent2)' }}>
+              💬 Desglose de Impacto por Respuesta (3 Capas: Contenido, Voz y Visión)
+            </div>
+            {report?.dialogueTurns && report.dialogueTurns.some((t) => t.evaluation) && (
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '11.5px', fontWeight: 700 }}>
+                <span style={{ padding: '3px 9px', borderRadius: '999px', background: 'rgba(16, 185, 129, 0.12)', color: '#10b981' }}>
+                   Positivas: {report.dialogueTurns.filter((t) => t.evaluation?.impact === 'positivo').length}
+                </span>
+                <span style={{ padding: '3px 9px', borderRadius: '999px', background: 'rgba(245, 158, 11, 0.12)', color: '#f59e0b' }}>
+                   Neutras: {report.dialogueTurns.filter((t) => t.evaluation?.impact === 'neutro').length}
+                </span>
+                <span style={{ padding: '3px 9px', borderRadius: '999px', background: 'rgba(239, 68, 68, 0.12)', color: '#ef4444' }}>
+                   En riesgo: {report.dialogueTurns.filter((t) => t.evaluation?.impact === 'riesgo').length}
+                </span>
+              </div>
+            )}
           </div>
+
           {report?.dialogueTurns && report.dialogueTurns.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               {report.dialogueTurns.map((turn, idx) => {
                 const isFu = turn.turnKind === 'follow_up';
+                const ev = turn.evaluation;
+                const vm = turn.voiceMetrics;
+                const vis = turn.visionMetrics;
+                const impInfo = ev ? impactMeta[ev.impact] || impactMeta.neutro : null;
+                const pertInfo = ev ? pertinenceMeta[ev.pertinenceStatus] || pertinenceMeta.responde : null;
+                const reasonLabel = turn.triggerReason
+                  ? triggerReasonLabels[turn.triggerReason] || turn.triggerReason
+                  : null;
+                const borderAccent =
+                  ev?.impact === 'riesgo'
+                    ? '#ef4444'
+                    : ev?.impact === 'positivo'
+                    ? '#10b981'
+                    : isFu
+                    ? '#f59e0b'
+                    : 'var(--accent2)';
+
                 return (
                   <div
                     key={turn.turnId || `${turn.turnIndex}-${idx}`}
                     style={{
                       background: 'var(--soft)',
                       borderRadius: '10px',
-                      padding: '14px 16px',
+                      padding: '15px 18px',
                       border: isFu
                         ? '1px solid rgba(245, 158, 11, 0.35)'
                         : '1px solid var(--line)',
-                      borderLeft: isFu
-                        ? '4px solid #f59e0b'
-                        : '4px solid var(--accent2)'
+                      borderLeft: `4px solid ${borderAccent}`
                     }}
                   >
+                    {/* Cabecera del turno: tipo, motivo de contrapregunta, impacto y pertinencia */}
                     <div
                       style={{
                         display: 'flex',
@@ -795,37 +867,83 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
                         alignItems: 'center',
                         flexWrap: 'wrap',
                         gap: '8px',
-                        marginBottom: '8px'
+                        marginBottom: '10px'
                       }}
                     >
-                      <span
-                        style={{
-                          fontSize: '11px',
-                          fontWeight: 800,
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.5px',
-                          padding: '2px 8px',
-                          borderRadius: '999px',
-                          background: isFu ? 'rgba(245, 158, 11, 0.14)' : 'rgba(99, 102, 241, 0.14)',
-                          color: isFu ? '#f59e0b' : '#818cf8'
-                        }}
-                      >
-                        {isFu
-                          ? `⚡ Contrapregunta IA · sobre Pregunta #${turn.baseSequenceNo}`
-                          : `Pregunta Base #${turn.baseSequenceNo}`}
-                      </span>
-                      {typeof turn.durationSeconds === 'number' && turn.durationSeconds > 0 && (
-                        <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
-                          Duración respuesta: {turn.durationSeconds.toFixed(1)}s
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 800,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px',
+                            padding: '3px 9px',
+                            borderRadius: '999px',
+                            background: isFu ? 'rgba(245, 158, 11, 0.14)' : 'rgba(99, 102, 241, 0.14)',
+                            color: isFu ? '#f59e0b' : '#818cf8'
+                          }}
+                        >
+                          {isFu
+                            ? `⚡ Turno ${turn.turnIndex} · Contrapregunta IA (Base #${turn.baseSequenceNo})`
+                            : `Turno ${turn.turnIndex} · Pregunta Base #${turn.baseSequenceNo}`}
                         </span>
-                      )}
+                        {isFu && reasonLabel && (
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              padding: '2px 8px',
+                              borderRadius: '999px',
+                              background: 'rgba(245, 158, 11, 0.1)',
+                              border: '1px solid rgba(245, 158, 11, 0.3)',
+                              color: '#f59e0b'
+                            }}
+                          >
+                            Motivo: {reasonLabel}
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        {pertInfo && (
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              padding: '2px 9px',
+                              borderRadius: '999px',
+                              border: `1px solid ${pertInfo.color}55`,
+                              color: pertInfo.color
+                            }}
+                          >
+                            {pertInfo.label}
+                          </span>
+                        )}
+                        {impInfo && (
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 800,
+                              padding: '3px 10px',
+                              borderRadius: '999px',
+                              background: impInfo.bg,
+                              color: impInfo.color,
+                              border: `1px solid ${impInfo.color}40`
+                            }}
+                          >
+                            {impInfo.label}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
+                    {/* Pregunta del periodista */}
                     <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--ink)', marginBottom: '8px', lineHeight: 1.5 }}>
                       <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Periodista: </span>
                       “{turn.questionText}”
                     </div>
 
+                    {/* Respuesta del vocero */}
                     <div
                       style={{
                         fontSize: '13.5px',
@@ -843,6 +961,146 @@ export const FullVisumReportView: React.FC<FullVisumReportViewProps> = ({
                       </span>
                       {turn.transcript?.trim() || '(Sin transcripción inteligible registrada en este turno)'}
                     </div>
+
+                    {/* Capa A: Veredicto estratégico del Juez en este turno */}
+                    {ev && (ev.briefObservation || ev.redLineRisk !== 'ninguno' || (ev.keyMessagesUsed && ev.keyMessagesUsed.length > 0) || (ev.controlTechnique && ev.controlTechnique !== 'ninguna')) && (
+                      <div
+                        style={{
+                          marginTop: '10px',
+                          padding: '10px 12px',
+                          borderRadius: '8px',
+                          background: ev.redLineRisk === 'infraccion' ? 'rgba(239, 68, 68, 0.08)' : 'rgba(99, 102, 241, 0.06)',
+                          border: ev.redLineRisk === 'infraccion' ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid var(--line)',
+                          fontSize: '12.5px',
+                          lineHeight: 1.5,
+                          color: 'var(--ink)'
+                        }}
+                      >
+                        {ev.redLineRisk === 'infraccion' && (
+                          <div style={{ fontWeight: 800, color: '#ef4444', marginBottom: '4px', fontSize: '12px' }}>
+                            🚨 Transgresión de línea roja en esta respuesta
+                          </div>
+                        )}
+                        {ev.redLineRisk === 'flanco_abierto' && (
+                          <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: '4px', fontSize: '12px' }}>
+                            ⚠️ Bordeó una línea roja / dejó flanco abierto
+                          </div>
+                        )}
+                        {ev.briefObservation && (
+                          <div style={{ marginBottom: ((ev.keyMessagesUsed && ev.keyMessagesUsed.length > 0) || (ev.controlTechnique && ev.controlTechnique !== 'ninguna')) ? '6px' : 0 }}>
+                            <strong style={{ color: 'var(--accent2)' }}>Impacto estratégico: </strong>
+                            {ev.briefObservation}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          {ev.controlTechnique && ev.controlTechnique !== 'ninguna' && (
+                            <span
+                              style={{
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                padding: '2px 8px',
+                                borderRadius: '6px',
+                                background: 'rgba(99, 102, 241, 0.15)',
+                                color: '#818cf8'
+                              }}
+                            >
+                              Técnica: {ev.controlTechnique}
+                            </span>
+                          )}
+                          {ev.keyMessagesUsed && ev.keyMessagesUsed.map((km, kIdx) => (
+                            <span
+                              key={kIdx}
+                              style={{
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                padding: '2px 8px',
+                                borderRadius: '6px',
+                                background: 'rgba(16, 185, 129, 0.12)',
+                                color: '#10b981'
+                              }}
+                            >
+                              ✓ {km}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Capas B y C: Mini-KPIs de Voz y Visión medidos en este turno */}
+                    {(vm || vis || (typeof turn.durationSeconds === 'number' && turn.durationSeconds > 0)) && (
+                      <div
+                        style={{
+                          marginTop: '10px',
+                          paddingTop: '8px',
+                          borderTop: '1px dashed var(--line)',
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '12px',
+                          fontSize: '11.5px',
+                          color: 'var(--muted)'
+                        }}
+                      >
+                        {typeof turn.durationSeconds === 'number' && turn.durationSeconds > 0 && (
+                          <span>
+                            ⏱️ Duración: <strong style={{ color: 'var(--ink)' }}>{turn.durationSeconds.toFixed(1)}s</strong>
+                          </span>
+                        )}
+                        {vm && (
+                          <>
+                            <span>
+                              🎙️ Ritmo:{' '}
+                              <strong
+                                style={{
+                                  color:
+                                    vm.wpm >= 120 && vm.wpm <= 150
+                                      ? '#10b981'
+                                      : vm.wpm >= 100 && vm.wpm <= 170
+                                      ? '#f59e0b'
+                                      : '#ef4444'
+                                }}
+                              >
+                                {vm.wpm.toFixed(0)} WPM
+                              </strong>
+                            </span>
+                            <span>
+                              ⏸️ Pausas &gt;1.5s:{' '}
+                              <strong style={{ color: vm.prolongedPauses > 1 ? '#ef4444' : 'var(--ink)' }}>
+                                {vm.prolongedPauses}
+                              </strong>
+                            </span>
+                            <span>
+                              💬 Muletillas:{' '}
+                              <strong style={{ color: vm.fillersCount > 2 ? '#f59e0b' : 'var(--ink)' }}>
+                                {vm.fillersCount}
+                              </strong>
+                              {vm.fillers && vm.fillers.length > 0 ? ` (${Array.from(new Set(vm.fillers)).join(', ')})` : ''}
+                            </span>
+                          </>
+                        )}
+                        {vis && (
+                          <>
+                            <span>
+                              👁️ Contacto visual:{' '}
+                              <strong style={{ color: getScoreColor(vis.eyeContactPct) }}>
+                                {vis.eyeContactPct.toFixed(0)}%
+                              </strong>
+                            </span>
+                            {typeof vis.shoulderStabilityScore === 'number' && (
+                              <span>
+                                🧍 Postura:{' '}
+                                <strong style={{ color: getScoreColor(vis.shoulderStabilityScore) }}>
+                                  {vis.shoulderStabilityScore.toFixed(0)}%
+                                </strong>
+                              </span>
+                            )}
+                            <span>
+                              🙌 Manos visibles:{' '}
+                              <strong style={{ color: 'var(--ink)' }}>{vis.handsVisiblePct.toFixed(0)}%</strong>
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}

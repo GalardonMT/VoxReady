@@ -443,6 +443,7 @@ def aggregate_turn_audio_results(
     total_speech_time = 0.0
     cumulative_offset_sec = 0.0
     turn_effective_durations: Dict[int, float] = {}
+    turn_audio_metrics: Dict[int, Dict[str, Any]] = {}
     dialogue_transcript_parts: List[str] = []
 
     for idx, turn in enumerate(ordered):
@@ -504,6 +505,7 @@ def aggregate_turn_audio_results(
 
         # Pausas estrictamente INTRA-TURNO
         turn_prolonged_asr: List[Dict[str, Any]] = []
+        turn_hesitation_count = 0
         for i in range(len(cleaned_turn_words) - 1):
             gap = max(0.0, cleaned_turn_words[i + 1]["start"] - cleaned_turn_words[i]["end"])
             if gap >= 1.50:
@@ -517,11 +519,14 @@ def aggregate_turn_audio_results(
                 )
             elif gap >= 0.70:
                 pausas_vacilacion_count += 1
+                turn_hesitation_count += 1
             elif gap >= 0.25:
                 pausas_naturales_count += 1
 
+        turn_prolonged_count = 0
         if turn_prolonged_asr:
             pausas_prolongadas_all.extend(turn_prolonged_asr)
+            turn_prolonged_count = len(turn_prolonged_asr)
         elif raw_acoustic_pauses:
             for ap in raw_acoustic_pauses:
                 if not isinstance(ap, dict):
@@ -537,6 +542,29 @@ def aggregate_turn_audio_results(
                         "turn_index": turn_idx,
                     }
                 )
+                turn_prolonged_count += 1
+
+        turn_word_count = len(cleaned_turn_words)
+        turn_wpm = (
+            round(turn_word_count / max(0.01, eff_duration / 60.0), 1)
+            if turn_word_count > 0 and eff_duration >= 0.4
+            else 0.0
+        )
+        turn_phon_pct = (
+            round(min(100.0, (eff_speech / eff_duration) * 100.0), 1)
+            if eff_duration > 0.0
+            else 0.0
+        )
+        turn_fillers = [w["word"] for w in cleaned_turn_words if w["word"] in MULETILLAS_TARGET]
+        turn_audio_metrics[turn_idx] = {
+            "wordCount": turn_word_count,
+            "wpm": turn_wpm,
+            "phonationRatioPct": turn_phon_pct,
+            "prolongedPauses": turn_prolonged_count,
+            "hesitationPauses": turn_hesitation_count,
+            "fillersCount": len(turn_fillers),
+            "fillers": turn_fillers[:10],
+        }
 
         # Aplanar palabras con timeline consistente y confidence preservado para labeling_runtime
         for w in cleaned_turn_words:
@@ -640,4 +668,5 @@ def aggregate_turn_audio_results(
         "acoustic_analysis": acustica,
         "metrics": metrics,
         "turn_effective_durations": turn_effective_durations,
+        "turn_audio_metrics": turn_audio_metrics,
     }
